@@ -199,6 +199,10 @@ const AUTH_USER_KEY = "belal_auth_user";
 const POS_DEVICE_CODE_KEY = "belal_pos_device_code";
 const THEME_KEY = "belal_theme";
 
+function appAssetPath(path: string) {
+  return `${import.meta.env.BASE_URL || "./"}${path.replace(/^\//, "")}`;
+}
+
 type ThemeMode = "light" | "dark";
 
 type AuthUser = {
@@ -1018,7 +1022,7 @@ function LoginPage({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <img
-              src="/logo.png"
+              src={appAssetPath("/logo.png")}
               alt="Muhaseb"
               className="size-8 object-contain"
             />
@@ -1495,7 +1499,7 @@ function AdminShell({
             <div className="flex items-center gap-3 rounded-xl border border-sidebar-border bg-sidebar-accent p-4">
               <div className="flex size-12 items-center justify-center rounded-xl border border-primary/25 bg-background">
                 <img
-                  src="/logo.png"
+                  src={appAssetPath("/logo.png")}
                   alt="Muhaseb"
                   className="size-10 object-contain"
                 />

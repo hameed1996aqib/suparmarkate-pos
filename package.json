@@ -10,7 +10,7 @@
     "dev:api": "npm --workspace @supermarket/api run dev",
     "dev:desktop": "npm --workspace @supermarket/desktop run dev",
     "build:api": "npm --workspace @supermarket/api run build",
-    "typecheck:api": "npm --workspace @supermarket/api run typecheck",
+    "typecheck:api": "npm run prisma:generate && npm --workspace @supermarket/api run typecheck",
     "typecheck": "npm --workspace @supermarket/api run typecheck && npm --workspace @supermarket/desktop run typecheck && npm --workspace mobile-scanner run typecheck",
     "build": "npm run build:api && npm --workspace @supermarket/desktop run build",
     "build:desktop": "npm --workspace @supermarket/desktop run build",

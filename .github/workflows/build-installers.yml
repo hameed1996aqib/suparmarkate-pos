@@ -10,6 +10,8 @@ jobs:
   desktop-windows:
     name: Desktop Windows Installer
     runs-on: windows-latest
+    env:
+      DATABASE_URL: postgresql://supermarket:supermarket_password@localhost:5432/supermarket_db
 
     steps:
       - name: Checkout

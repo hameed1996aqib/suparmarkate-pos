@@ -16,6 +16,8 @@ RUN npm ci --workspace @supermarket/api --include-workspace-root
 COPY apps/api apps/api
 COPY scripts/docker scripts/docker
 
+ENV DATABASE_URL="postgresql://supermarket:supermarket_password@postgres:5432/supermarket_db"
+
 RUN npm run prisma:generate && npm run build:api
 
 WORKDIR /app/apps/api

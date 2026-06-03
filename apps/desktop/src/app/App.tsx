@@ -9,7 +9,7 @@
   type TextareaHTMLAttributes,
 } from "react";
 import {
-  BrowserRouter,
+  HashRouter,
   Navigate,
   NavLink,
   Route,
@@ -728,7 +728,7 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <div dir="rtl" className={themeClassName}>
         <Toaster richColors position="top-center" />
         <AdminShell
@@ -910,7 +910,7 @@ function App() {
           </Routes>
         </AdminShell>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 

@@ -62,7 +62,7 @@ function execute(
 }
 
 function dockerContainer() {
-  return process.env.PG_DOCKER_CONTAINER || "supermarket_postgres";
+  return process.env.PG_DOCKER_CONTAINER || "muhaseb_postgres";
 }
 
 async function createDump(filePath: string) {

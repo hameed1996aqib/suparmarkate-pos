@@ -97,7 +97,7 @@ BACKUP_UPLOADS_ENABLED="true"
 PG_DUMP_PATH="pg_dump"
 PG_RESTORE_PATH="pg_restore"
 PG_DOCKER_FALLBACK="true"
-PG_DOCKER_CONTAINER="supermarket_postgres"
+PG_DOCKER_CONTAINER="muhaseb_postgres"
 ```
 
 Only Admin users should run backup or restore. Before a real restore, take a fresh backup of the current database and test restore on a copy first.

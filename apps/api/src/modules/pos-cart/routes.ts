@@ -1,15 +1,17 @@
 import { Hono } from "hono";
 
 export const posCartRoute = new Hono();
+const posWebSocketPort = process.env.POS_WS_PORT || "4001";
 
 function getUrls(c: any, sessionId: string) {
   const url = new URL(c.req.url);
   const apiBaseUrl = `${url.protocol}//${url.host}`;
   const hostname = url.hostname;
+  const wsProtocol = url.protocol === "https:" ? "wss" : "ws";
 
   return {
     apiBaseUrl,
-    desktopWebSocketUrl: `ws://${hostname}:4001?sessionId=${sessionId}&clientType=desktop`,
+    desktopWebSocketUrl: `${wsProtocol}://${hostname}:${posWebSocketPort}?sessionId=${sessionId}&clientType=desktop`,
     mobileConnectPageUrl: `${apiBaseUrl}/api/pos/sessions/${sessionId}/connect`,
     mobileScanHttpUrl: `${apiBaseUrl}/api/pos/scan`
   };

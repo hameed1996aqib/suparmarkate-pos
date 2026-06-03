@@ -21,6 +21,7 @@ import {
 } from "../../lib/pos-realtime";
 
 export const posRoute = new Hono();
+const posWebSocketPort = process.env.POS_WS_PORT || "4001";
 
 const createSessionSchema = z.object({
   name: z.string().trim().max(120).optional().nullable()
@@ -36,9 +37,10 @@ function getBaseUrls(c: any, sessionId: string) {
   const url = new URL(c.req.url);
   const apiBaseUrl = `${url.protocol}//${url.host}`;
   const hostname = url.hostname;
+  const wsProtocol = url.protocol === "https:" ? "wss" : "ws";
 
-  const mobileWebSocketUrl = `ws://${hostname}:4001?sessionId=${sessionId}&clientType=mobile`;
-  const desktopWebSocketUrl = `ws://${hostname}:4001?sessionId=${sessionId}&clientType=desktop`;
+  const mobileWebSocketUrl = `${wsProtocol}://${hostname}:${posWebSocketPort}?sessionId=${sessionId}&clientType=mobile`;
+  const desktopWebSocketUrl = `${wsProtocol}://${hostname}:${posWebSocketPort}?sessionId=${sessionId}&clientType=desktop`;
   const scanHttpUrl = `${apiBaseUrl}/api/pos/scan`;
 
   const qrPayload = JSON.stringify({

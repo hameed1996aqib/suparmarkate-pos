@@ -1,0 +1,40 @@
+{
+  "name": "@supermarket/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "prisma": "prisma",
+    "seed": "tsx src/seed.ts",
+    "backup:create": "tsx src/scripts/create-backup.ts",
+    "stock:reconcile": "tsx src/scripts/reconcile-stock-balances.ts",
+    "db:metrics": "tsx src/scripts/database-metrics.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.14",
+    "@prisma/adapter-pg": "7.8.0",
+    "@prisma/client": "7.8.0",
+    "bwip-js": "^4.10.1",
+    "dotenv": "16.6.1",
+    "hono": "4.12.23",
+    "pg": "8.13.1",
+    "qrcode": "^1.5.4",
+    "redis": "^6.0.0",
+    "sharp": "^0.34.5",
+    "ws": "8.21.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/pg": "8.11.10",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "8.5.13",
+    "prisma": "7.8.0",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3"
+  }
+}

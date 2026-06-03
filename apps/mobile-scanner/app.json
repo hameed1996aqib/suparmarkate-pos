@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Muhaseb",
+    "slug": "muhaseb",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "muhaseb",
+    "userInterfaceStyle": "dark",
+    "icon": "./assets/app-icon.png",
+    "splash": {
+      "image": "./assets/app-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#080E1E"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.muhaseb.posscanner",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "CAMERA",
+        "VIBRATE",
+        "ACCESS_NETWORK_STATE"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/app-icon.png",
+        "backgroundColor": "#080E1E"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.muhaseb.posscanner",
+      "supportsTablet": true
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Muhaseb to access your camera",
+          "barcodeScannerEnabled": true
+        }
+      ],
+      "expo-splash-screen",
+      "expo-font"
+    ],
+    "extra": {
+      "appRole": "pos-mobile-scanner"
+    }
+  }
+}

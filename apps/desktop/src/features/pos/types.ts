@@ -1,0 +1,171 @@
+export type PosSessionResponse = {
+  data: {
+    session: {
+      id: string;
+      name: string;
+    };
+    connection: {
+      sessionId: string;
+      apiBaseUrl: string;
+      desktopWebSocketUrl: string;
+      mobileWebSocketUrl: string;
+      mobileScanHttpUrl: string;
+      qrImageUrl: string;
+      qrPageUrl: string;
+      testPageUrl: string;
+    };
+  };
+};
+
+export type Currency = {
+  id: string;
+  code: string;
+  name?: string;
+  symbol?: string | null;
+  isBase?: boolean;
+  latestRate?: number | null;
+};
+
+export type Warehouse = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+};
+
+export type CashRegister = {
+  id: string;
+  name: string;
+  accounts: Array<{
+    id: string;
+    currencyId: string;
+    balance: string | number;
+  }>;
+};
+
+export type BankAccount = {
+  id: string;
+  name: string;
+  bankName?: string | null;
+  accountNumber?: string | null;
+  currencyId: string;
+  balance: string | number;
+  isActive?: boolean;
+  currency?: Currency | null;
+};
+
+export type CustomerOption = {
+  id: string;
+  code?: string | null;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  type?: string | null;
+  isActive?: boolean;
+  balance?: number;
+  accountsCount?: number;
+  source?: string | null;
+};
+
+export type ProductSearchItem = {
+  id: string;
+  name: string;
+  sku?: string | null;
+  barcode?: string | null;
+  imageUrl?: string | null;
+  isActive?: boolean;
+  hasExpiry?: boolean;
+  categoryId?: string | null;
+  category?: {
+    id: string;
+    name: string;
+  } | null;
+  baseUnit?: {
+    id: string;
+    name: string;
+    shortName?: string | null;
+  } | null;
+  units?: Array<{
+    id: string;
+    unitId: string;
+    salePrice?: string | number | null;
+    isDefaultSale?: boolean;
+    unit?: {
+      name: string;
+      shortName?: string | null;
+    } | null;
+  }>;
+};
+
+export type ServerCartItem = {
+  key: string;
+  productId: string;
+  productName: string;
+  barcode?: string | null;
+  warehouseId: string;
+  warehouseName?: string | null;
+  unitId: string;
+  unitName: string;
+  quantity: number;
+  unitPrice: number;
+  discount: number;
+  lineTotal: number;
+  totalStock?: number;
+  expiryDate?: string | null;
+  lotId?: string | null;
+};
+
+export type ServerCart = {
+  sessionId: string;
+  items: ServerCartItem[];
+  updatedAt: string;
+};
+
+export type ServerCartSummary = {
+  sessionId: string;
+  itemsCount: number;
+  total: number;
+  updatedAt: string;
+};
+
+export type PosDefaults = {
+  currencies: Currency[];
+  warehouses: Warehouse[];
+  cashRegisters: CashRegister[];
+  bankAccounts: BankAccount[];
+  currency: Currency | null;
+  warehouse: Warehouse | null;
+  cashAccountId: string;
+  bankAccountId: string;
+};
+
+export type CartPayload = {
+  cart: ServerCart;
+  summary: ServerCartSummary;
+};
+
+export type HeldCart = {
+  id: string;
+  sessionId: string;
+  name: string;
+  cart: ServerCart;
+  summary: ServerCartSummary;
+  createdAt: string;
+};
+
+export type PosShiftSale = {
+  id: string;
+  invoiceNo: string;
+  saleId: string;
+  receiptUrl?: string | null;
+  total: number;
+  paidAmount: number;
+  changeAmount: number;
+  createdAt: string;
+};
+
+export type PosShiftSummary = {
+  id: string;
+  openedAt: string;
+  closedAt?: string | null;
+  sales: PosShiftSale[];
+};

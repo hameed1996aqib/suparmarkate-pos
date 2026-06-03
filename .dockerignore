@@ -1,0 +1,12 @@
+node_modules
+apps/*/node_modules
+apps/desktop/dist
+apps/desktop/release
+apps/api/dist
+apps/api/uploads
+apps/api/data
+apps/api/exports
+apps/mobile-scanner/android/.gradle
+apps/mobile-scanner/.expo
+.git
+*.log

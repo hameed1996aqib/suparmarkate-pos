@@ -1,0 +1,18 @@
+{
+  "name": "Muhaseb",
+  "short_name": "Muhaseb",
+  "description": "LAN-ready supermarket management system",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050b10",
+  "theme_color": "#25c5c3",
+  "dir": "rtl",
+  "lang": "fa",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

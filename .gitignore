@@ -1,0 +1,7 @@
+node_modules
+apps/mobile-scanner/.git-backup/
+dist
+.env
+.DS_Store
+*.log
+apps/api/src/generated

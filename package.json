@@ -1,0 +1,38 @@
+{
+  "name": "supermarket-pos",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace @supermarket/api run dev",
+    "dev:desktop": "npm --workspace @supermarket/desktop run dev",
+    "build:api": "npm --workspace @supermarket/api run build",
+    "typecheck:api": "npm --workspace @supermarket/api run typecheck",
+    "typecheck": "npm --workspace @supermarket/api run typecheck && npm --workspace @supermarket/desktop run typecheck && npm --workspace mobile-scanner run typecheck",
+    "build": "npm run build:api && npm --workspace @supermarket/desktop run build",
+    "build:desktop": "npm --workspace @supermarket/desktop run build",
+    "dist:desktop:win": "npm --workspace @supermarket/desktop run dist:win",
+    "db:up": "docker compose up -d postgres redis",
+    "server:docker": "powershell -ExecutionPolicy Bypass -File scripts/windows/start-docker-server.ps1",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "prisma:generate": "npm --workspace @supermarket/api run prisma -- generate",
+    "prisma:deploy": "npm --workspace @supermarket/api run prisma -- migrate deploy",
+    "prisma:migrate": "npm --workspace @supermarket/api run prisma -- migrate dev",
+    "prisma:studio": "npm --workspace @supermarket/api run prisma -- studio",
+    "seed:admin": "npm run prisma:deploy && npm --workspace @supermarket/api run seed",
+    "android": "npm --workspace mobile-scanner run android",
+    "ios": "npm --workspace mobile-scanner run ios",
+    "server:install": "powershell -ExecutionPolicy Bypass -File scripts/windows/install-server.ps1",
+    "server:startup": "powershell -ExecutionPolicy Bypass -File scripts/windows/register-startup.ps1",
+    "server:firewall": "powershell -ExecutionPolicy Bypass -File scripts/windows/configure-firewall.ps1"
+  },
+  "dependencies": {
+    "expo": "~54.0.34",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  }
+}

@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  esbuild: true
+  msw: true
+fetchTimeout: 600000
+storeDir: D:/pnpm-store

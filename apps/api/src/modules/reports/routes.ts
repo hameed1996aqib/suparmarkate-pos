@@ -1,0 +1,843 @@
+import { Hono } from "hono";
+import { prisma } from "../../lib/prisma";
+import { getCurrentCurrencyRates } from "../../lib/currency-rates";
+import { MoneyDirection, MoneyTransactionType, PartyType } from "../../generated/prisma/enums";
+import { Prisma } from "../../generated/prisma/client";
+import { cacheGetJson, cacheSetJson } from "../../lib/cache";
+
+export const reportsRoute = new Hono();
+
+function toNumber(value: unknown) {
+  return Number(value ?? 0);
+}
+
+function parseReportDate(value?: string) {
+  const source = value && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? value
+    : new Date().toISOString().slice(0, 10);
+  const start = new Date(`${source}T00:00:00.000`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { source, start, end };
+}
+
+function parseReportRange(from?: string, to?: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fromSource = from && /^\d{4}-\d{2}-\d{2}$/.test(from) ? from : today;
+  const toSource = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? to : fromSource;
+  const start = new Date(`${fromSource}T00:00:00.000`);
+  const end = new Date(`${toSource}T00:00:00.000`);
+  end.setDate(end.getDate() + 1);
+
+  return {
+    from: fromSource,
+    to: toSource,
+    start,
+    end
+  };
+}
+
+function parseEmployeePerformanceRange(period?: string, date?: string) {
+  const source = date && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? date
+    : new Date().toISOString().slice(0, 10);
+  const end = new Date(`${source}T00:00:00.000`);
+  end.setDate(end.getDate() + 1);
+  const start = new Date(end);
+
+  if (period === "week") {
+    start.setDate(start.getDate() - 7);
+  } else if (period === "month") {
+    start.setDate(1);
+  } else {
+    start.setDate(start.getDate() - 1);
+  }
+
+  return {
+    key: period === "week" || period === "month" ? period : "day",
+    date: source,
+    start,
+    end
+  };
+}
+
+function emptyReportRow(id: string, name: string) {
+  return {
+    id,
+    name,
+    saleCount: 0,
+    totalSales: 0,
+    paidSales: 0,
+    remainingSales: 0,
+    moneyIn: 0,
+    moneyOut: 0,
+    cashIn: 0,
+    bankIn: 0,
+    netCashFlow: 0
+  };
+}
+
+reportsRoute.get("/daily-cashier", async (c) => {
+  const { source, start, end } = parseReportDate(c.req.query("date"));
+
+  const [sales, moneyTransactions] = await Promise.all([
+    prisma.sale.findMany({
+      where: {
+        saleDate: {
+          gte: start,
+          lt: end
+        },
+        status: { not: "CANCELLED" }
+      },
+      include: {
+        cashier: true,
+        posDevice: true,
+        currency: true
+      },
+      orderBy: {
+        saleDate: "desc"
+      }
+    }),
+    prisma.moneyTransaction.findMany({
+      where: {
+        createdAt: {
+          gte: start,
+          lt: end
+        }
+      },
+      include: {
+        createdByUser: true,
+        posDevice: true,
+        cashRegisterAccount: {
+          include: {
+            cashRegister: true
+          }
+        },
+        bankAccount: true,
+        currency: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      }
+    })
+  ]);
+  const byCashier = new Map<string, ReturnType<typeof emptyReportRow>>();
+  const byDevice = new Map<string, ReturnType<typeof emptyReportRow>>();
+
+  function cashierRow(user?: { id: string; displayName: string; username: string } | null) {
+    const id = user?.id || "unknown";
+    const name = user?.displayName || user?.username || "بدون کاربر";
+
+    if (!byCashier.has(id)) {
+      byCashier.set(id, emptyReportRow(id, name));
+    }
+
+    return byCashier.get(id)!;
+  }
+
+  function deviceRow(device?: { id: string; name: string; code: string | null } | null) {
+    const id = device?.id || "unknown";
+    const name = device?.name || device?.code || "بدون دستگاه";
+
+    if (!byDevice.has(id)) {
+      byDevice.set(id, emptyReportRow(id, name));
+    }
+
+    return byDevice.get(id)!;
+  }
+
+  for (const sale of sales) {
+    const rows = [cashierRow(sale.cashier), deviceRow(sale.posDevice)];
+
+    for (const row of rows) {
+      row.saleCount += 1;
+      row.totalSales += toNumber(sale.baseTotal);
+      row.paidSales += toNumber(sale.basePaidAmount);
+      row.remainingSales += toNumber(sale.baseRemainingAmount);
+    }
+  }
+
+  for (const transaction of moneyTransactions) {
+    const rows = [
+      cashierRow(transaction.createdByUser),
+      deviceRow(transaction.posDevice)
+    ];
+    const amount = toNumber(transaction.baseAmount);
+    const isCash = Boolean(transaction.cashRegisterAccountId);
+    const isIn = transaction.direction === MoneyDirection.IN;
+
+    for (const row of rows) {
+      if (isIn) {
+        row.moneyIn += amount;
+        if (isCash) {
+          row.cashIn += amount;
+        } else {
+          row.bankIn += amount;
+        }
+      } else {
+        row.moneyOut += amount;
+      }
+      row.netCashFlow = row.moneyIn - row.moneyOut;
+    }
+  }
+
+  const totalSales = sales.reduce((sum, sale) => sum + toNumber(sale.baseTotal), 0);
+  const paidSales = sales.reduce((sum, sale) => sum + toNumber(sale.basePaidAmount), 0);
+  const remainingSales = sales.reduce(
+    (sum, sale) => sum + toNumber(sale.baseRemainingAmount),
+    0
+  );
+  const moneyIn = moneyTransactions
+    .filter((item) => item.direction === MoneyDirection.IN)
+    .reduce((sum, item) => sum + toNumber(item.baseAmount), 0);
+  const moneyOut = moneyTransactions
+    .filter((item) => item.direction === MoneyDirection.OUT)
+    .reduce((sum, item) => sum + toNumber(item.baseAmount), 0);
+
+  return c.json({
+    data: {
+      date: source,
+      range: {
+        start,
+        end
+      },
+      summary: {
+        saleCount: sales.length,
+        transactionCount: moneyTransactions.length,
+        totalSales,
+        paidSales,
+        remainingSales,
+        moneyIn,
+        moneyOut,
+        netCashFlow: moneyIn - moneyOut
+      },
+      byCashier: Array.from(byCashier.values()).sort(
+        (a, b) => b.totalSales - a.totalSales
+      ),
+      byDevice: Array.from(byDevice.values()).sort(
+        (a, b) => b.totalSales - a.totalSales
+      ),
+      recentTransactions: moneyTransactions.slice(0, 30).map((item) => ({
+        id: item.id,
+        createdAt: item.createdAt,
+        type: item.type,
+        direction: item.direction,
+        amount: toNumber(item.baseAmount),
+        originalAmount: toNumber(item.amount),
+        exchangeRate: toNumber(item.exchangeRate),
+        currency: item.currency.code,
+        account:
+          item.cashRegisterAccount?.cashRegister?.name ||
+          item.bankAccount?.name ||
+          "-",
+        user:
+          item.createdByUser?.displayName ||
+          item.createdByUser?.username ||
+          "-",
+        device: item.posDevice?.name || item.posDevice?.code || "-",
+        note: item.note
+      }))
+    }
+  });
+});
+
+reportsRoute.get("/employee-performance", async (c) => {
+  const range = parseEmployeePerformanceRange(c.req.query("period"), c.req.query("date"));
+
+  const [employees, sales, moneyTransactions, attendanceRecords] = await Promise.all([
+    prisma.employee.findMany({
+      where: { deletedAt: null },
+      include: { user: true },
+      orderBy: { fullName: "asc" }
+    }),
+    prisma.sale.findMany({
+      where: {
+        saleDate: { gte: range.start, lt: range.end },
+        status: { not: "CANCELLED" }
+      },
+      include: { cashier: true }
+    }),
+    prisma.moneyTransaction.findMany({
+      where: { createdAt: { gte: range.start, lt: range.end } },
+      include: { createdByUser: true }
+    }),
+    prisma.attendanceRecord.findMany({
+      where: { date: { gte: range.start, lt: range.end } },
+      include: { employee: true }
+    })
+  ]);
+
+  const rows = new Map<string, ReturnType<typeof emptyReportRow> & {
+    employeeId: string | null;
+    userId: string | null;
+    position: string | null;
+    workedHours: number;
+    overtimeHours: number;
+    presentDays: number;
+    halfDays: number;
+    absentDays: number;
+    lateDays: number;
+  }>();
+  const employeeByUserId = new Map(
+    employees.filter((item) => item.userId).map((item) => [item.userId as string, item])
+  );
+  const employeeById = new Map(employees.map((item) => [item.id, item]));
+
+  function ensureRow(input: {
+    key: string;
+    name: string;
+    employeeId?: string | null;
+    userId?: string | null;
+    position?: string | null;
+  }) {
+    if (!rows.has(input.key)) {
+      rows.set(input.key, {
+        ...emptyReportRow(input.key, input.name),
+        employeeId: input.employeeId ?? null,
+        userId: input.userId ?? null,
+        position: input.position ?? null,
+        workedHours: 0,
+        overtimeHours: 0,
+        presentDays: 0,
+        halfDays: 0,
+        absentDays: 0,
+        lateDays: 0
+      });
+    }
+    return rows.get(input.key)!;
+  }
+
+  for (const employee of employees) {
+    ensureRow({
+      key: employee.userId || employee.id,
+      name: employee.fullName,
+      employeeId: employee.id,
+      userId: employee.userId,
+      position: employee.position
+    });
+  }
+
+  for (const sale of sales) {
+    const employee = sale.cashierId ? employeeByUserId.get(sale.cashierId) : undefined;
+    const row = ensureRow({
+      key: sale.cashierId || "unknown",
+      name: employee?.fullName || sale.cashier?.displayName || sale.cashier?.username || "بدون کاربر",
+      employeeId: employee?.id ?? null,
+      userId: sale.cashierId || null,
+      position: employee?.position ?? null
+    });
+    row.saleCount += 1;
+    row.totalSales += toNumber(sale.baseTotal);
+    row.paidSales += toNumber(sale.basePaidAmount);
+    row.remainingSales += toNumber(sale.baseRemainingAmount);
+  }
+
+  for (const transaction of moneyTransactions) {
+    const employee = transaction.createdByUserId
+      ? employeeByUserId.get(transaction.createdByUserId)
+      : undefined;
+    const row = ensureRow({
+      key: transaction.createdByUserId || "unknown",
+      name: employee?.fullName || transaction.createdByUser?.displayName || transaction.createdByUser?.username || "بدون کاربر",
+      employeeId: employee?.id ?? null,
+      userId: transaction.createdByUserId || null,
+      position: employee?.position ?? null
+    });
+    const amount = toNumber(transaction.baseAmount);
+    if (transaction.direction === MoneyDirection.IN) {
+      row.moneyIn += amount;
+    } else {
+      row.moneyOut += amount;
+    }
+    row.netCashFlow = row.moneyIn - row.moneyOut;
+  }
+
+  for (const record of attendanceRecords) {
+    const employee = employeeById.get(record.employeeId) || record.employee;
+    const row = ensureRow({
+      key: employee.userId || employee.id,
+      name: employee.fullName,
+      employeeId: employee.id,
+      userId: employee.userId,
+      position: employee.position
+    });
+    row.workedHours += toNumber(record.workedMinutes) / 60;
+    row.overtimeHours += toNumber(record.overtimeMinutes) / 60;
+    if (record.status === "HALF_PRESENT" || record.status === "MISSING_CHECKOUT") row.halfDays += 1;
+    else if (record.status === "ABSENT") row.absentDays += 1;
+    else row.presentDays += 1;
+    if (record.status === "LATE" || toNumber(record.lateMinutes) > 0) row.lateDays += 1;
+  }
+
+  const dataRows = Array.from(rows.values()).map((row) => ({
+    ...row,
+    workedHours: Math.round(row.workedHours * 100) / 100,
+    overtimeHours: Math.round(row.overtimeHours * 100) / 100,
+    averageInvoice: row.saleCount ? row.totalSales / row.saleCount : 0
+  }));
+
+  return c.json({
+    data: {
+      period: range.key,
+      date: range.date,
+      range: { start: range.start, end: range.end },
+      summary: {
+        employeeCount: dataRows.length,
+        saleCount: dataRows.reduce((sum, row) => sum + row.saleCount, 0),
+        totalSales: dataRows.reduce((sum, row) => sum + row.totalSales, 0),
+        moneyIn: dataRows.reduce((sum, row) => sum + row.moneyIn, 0),
+        moneyOut: dataRows.reduce((sum, row) => sum + row.moneyOut, 0),
+        workedHours: Math.round(dataRows.reduce((sum, row) => sum + row.workedHours, 0) * 100) / 100
+      },
+      rows: dataRows.sort((a, b) => b.totalSales - a.totalSales)
+    }
+  });
+});
+
+reportsRoute.get("/management", async (c) => {
+  const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+  const cacheKey = `reports:management:v2:${from}:${to}`;
+  const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
+  if (cached) return c.json({ data: cached, cache: "hit" });
+
+  const [
+    saleRows, purchaseRows, returnRows, moneyRows, cogsRows, topProducts,
+    partyBalanceSummaryRows, receivableRows, payableRows, lowStockRows,
+    expiryLots, recentSales, recentPurchases, incomeExpenses
+  ] = await Promise.all([
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT COUNT(*)::int count, COALESCE(SUM("baseTotal"), 0) total,
+        COALESCE(SUM("basePaidAmount"), 0) paid, COALESCE(SUM("baseRemainingAmount"), 0) remaining
+      FROM "Sale" WHERE "saleDate" >= ${start} AND "saleDate" < ${end} AND "status" <> 'CANCELLED'
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT COUNT(*)::int count, COALESCE(SUM("baseTotal"), 0) total,
+        COALESCE(SUM("basePaidAmount"), 0) paid, COALESCE(SUM("baseRemainingAmount"), 0) remaining
+      FROM "Purchase" WHERE "purchaseDate" >= ${start} AND "purchaseDate" < ${end} AND "status" <> 'CANCELLED'
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT
+        COALESCE((SELECT SUM("baseSubtotal") FROM "SaleReturn"
+          WHERE "createdAt" >= ${start} AND "createdAt" < ${end} AND "cancelledAt" IS NULL), 0) "saleTotal",
+        COALESCE((SELECT SUM("baseSubtotal") FROM "PurchaseReturn"
+          WHERE "createdAt" >= ${start} AND "createdAt" < ${end} AND "cancelledAt" IS NULL), 0) "purchaseTotal"
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT
+        COALESCE(SUM(mt."baseAmount") FILTER (
+          WHERE mt."type" = 'INCOME' AND NOT EXISTS (
+            SELECT 1 FROM "MoneyTransaction" cancel
+            WHERE cancel."type" = 'ADJUSTMENT' AND cancel."referenceId" = mt.id
+              AND cancel."referenceType" = 'INCOME_CANCEL'
+          )
+        ), 0) income,
+        COALESCE(SUM(mt."baseAmount") FILTER (
+          WHERE mt."type" = 'EXPENSE' AND NOT EXISTS (
+            SELECT 1 FROM "MoneyTransaction" cancel
+            WHERE cancel."type" = 'ADJUSTMENT' AND cancel."referenceId" = mt.id
+              AND cancel."referenceType" = 'EXPENSE_CANCEL'
+          )
+        ), 0) expense
+      FROM "MoneyTransaction" mt WHERE mt."createdAt" >= ${start} AND mt."createdAt" < ${end}
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT
+        COALESCE((SELECT SUM(COALESCE(si."baseTotalCost", si."totalCost"))
+          FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId"
+          WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s."status" <> 'CANCELLED'), 0)
+        - COALESCE((SELECT SUM(COALESCE(sri."baseTotalCost", sri."totalCost"))
+          FROM "SaleReturnItem" sri JOIN "SaleReturn" sr ON sr.id = sri."saleReturnId"
+          WHERE sr."createdAt" >= ${start} AND sr."createdAt" < ${end} AND sr."cancelledAt" IS NULL), 0) total
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT p.id, p.name, COALESCE(SUM(si."quantityBase"), 0) quantity,
+        COALESCE(SUM(si."totalPrice" * s."exchangeRate"), 0) "totalSales",
+        COALESCE(SUM(COALESCE(si."baseTotalCost", si."totalCost")), 0) cogs
+      FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
+      WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s."status" <> 'CANCELLED'
+      GROUP BY p.id, p.name ORDER BY "totalSales" DESC LIMIT 25
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      WITH balances AS (
+        SELECT p.type,
+          GREATEST(pa."debitBalance" - pa."creditBalance", 0) * COALESCE(rate."rateToBase", 1) receivable,
+          GREATEST(pa."creditBalance" - pa."debitBalance", 0) * COALESCE(rate."rateToBase", 1) payable
+        FROM "PartyAccount" pa
+        JOIN "Party" p ON p.id = pa."partyId"
+        LEFT JOIN LATERAL (
+          SELECT cr."rateToBase" FROM "CurrencyRate" cr
+          WHERE cr."currencyId" = pa."currencyId" AND cr."deletedAt" IS NULL
+            AND cr."effectiveAt" <= NOW()
+          ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC LIMIT 1
+        ) rate ON true
+        WHERE p."deletedAt" IS NULL
+      )
+      SELECT
+        COALESCE(SUM(receivable) FILTER (WHERE type IN ('CUSTOMER', 'BOTH')), 0) receivables,
+        COALESCE(SUM(payable) FILTER (WHERE type IN ('SUPPLIER', 'BOTH')), 0) payables
+      FROM balances
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT pa.id, pa."partyId", p.name, c.code currency,
+        GREATEST(pa."debitBalance" - pa."creditBalance", 0) * COALESCE(rate."rateToBase", 1) receivable
+      FROM "PartyAccount" pa JOIN "Party" p ON p.id = pa."partyId"
+      JOIN "Currency" c ON c.id = pa."currencyId"
+      LEFT JOIN LATERAL (
+        SELECT cr."rateToBase" FROM "CurrencyRate" cr
+        WHERE cr."currencyId" = pa."currencyId" AND cr."deletedAt" IS NULL
+          AND cr."effectiveAt" <= NOW()
+        ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC LIMIT 1
+      ) rate ON true
+      WHERE p."deletedAt" IS NULL AND p.type IN ('CUSTOMER', 'BOTH')
+        AND pa."debitBalance" > pa."creditBalance"
+      ORDER BY receivable DESC LIMIT 25
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT pa.id, pa."partyId", p.name, c.code currency,
+        GREATEST(pa."creditBalance" - pa."debitBalance", 0) * COALESCE(rate."rateToBase", 1) payable
+      FROM "PartyAccount" pa JOIN "Party" p ON p.id = pa."partyId"
+      JOIN "Currency" c ON c.id = pa."currencyId"
+      LEFT JOIN LATERAL (
+        SELECT cr."rateToBase" FROM "CurrencyRate" cr
+        WHERE cr."currencyId" = pa."currencyId" AND cr."deletedAt" IS NULL
+          AND cr."effectiveAt" <= NOW()
+        ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC LIMIT 1
+      ) rate ON true
+      WHERE p."deletedAt" IS NULL AND p.type IN ('SUPPLIER', 'BOTH')
+        AND pa."creditBalance" > pa."debitBalance"
+      ORDER BY payable DESC LIMIT 25
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT sb.id, p.name product, w.name warehouse, sb."quantityBase" quantity,
+        p."minStock", u.name unit
+      FROM "StockBalance" sb JOIN "Product" p ON p.id = sb."productId"
+      JOIN "Warehouse" w ON w.id = sb."warehouseId"
+      JOIN "Unit" u ON u.id = p."baseUnitId"
+      WHERE p."minStock" > 0 AND p."isActive" = true AND p."deletedAt" IS NULL
+        AND sb."quantityBase" <= p."minStock"
+      ORDER BY sb."quantityBase" ASC LIMIT 100
+    `),
+    prisma.stockLot.findMany({
+      where: { remainingQuantity: { gt: 0 }, expiryDate: { gte: new Date(), lte: new Date(Date.now() + 45 * 86400000) } },
+      include: { product: true, warehouse: true }, orderBy: { expiryDate: "asc" }, take: 25
+    }),
+    prisma.sale.findMany({
+      where: { saleDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      include: { cashier: true, customer: true }, orderBy: { saleDate: "desc" }, take: 30
+    }),
+    prisma.purchase.findMany({
+      where: { purchaseDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      include: { supplier: true }, orderBy: { purchaseDate: "desc" }, take: 30
+    }),
+    prisma.moneyTransaction.findMany({
+      where: { createdAt: { gte: start, lt: end }, type: { in: [MoneyTransactionType.INCOME, MoneyTransactionType.EXPENSE] } },
+      include: { category: true, cashRegisterAccount: { include: { cashRegister: true } }, bankAccount: true, createdByUser: true },
+      orderBy: { createdAt: "desc" }, take: 30
+    })
+  ]);
+  const cancelledIncomeExpenseIds = new Set(
+    incomeExpenses.length
+      ? (
+          await prisma.moneyTransaction.findMany({
+            where: {
+              type: MoneyTransactionType.ADJUSTMENT,
+              referenceType: { in: ["INCOME_CANCEL", "EXPENSE_CANCEL"] },
+              referenceId: { in: incomeExpenses.map((item) => item.id) }
+            },
+            select: { referenceId: true }
+          })
+        )
+          .map((item) => item.referenceId)
+          .filter((id): id is string => Boolean(id))
+      : []
+  );
+
+  const sales = saleRows[0], purchases = purchaseRows[0], returns = returnRows[0], money = moneyRows[0];
+  const netSales = toNumber(sales.total) - toNumber(returns.saleTotal);
+  const netCogs = toNumber(cogsRows[0].total);
+  const receivables = toNumber(partyBalanceSummaryRows[0]?.receivables);
+  const payables = toNumber(partyBalanceSummaryRows[0]?.payables);
+  const data = {
+    range: { from, to, start, end },
+    summary: {
+      salesCount: toNumber(sales.count), salesTotal: toNumber(sales.total), salesPaid: toNumber(sales.paid),
+      salesRemaining: toNumber(sales.remaining), salesReturnTotal: toNumber(returns.saleTotal), netSales,
+      purchasesCount: toNumber(purchases.count), purchasesTotal: toNumber(purchases.total), purchasesPaid: toNumber(purchases.paid),
+      purchasesRemaining: toNumber(purchases.remaining), purchaseReturnTotal: toNumber(returns.purchaseTotal),
+      netPurchases: toNumber(purchases.total) - toNumber(returns.purchaseTotal), cogs: netCogs,
+      grossProfit: netSales - netCogs, incomeTotal: toNumber(money.income), expenseTotal: toNumber(money.expense),
+      netProfit: netSales - netCogs + toNumber(money.income) - toNumber(money.expense), receivables, payables
+    },
+    topProducts: topProducts.map((row) => ({ ...row, quantity: toNumber(row.quantity), totalSales: toNumber(row.totalSales),
+      cogs: toNumber(row.cogs), profit: toNumber(row.totalSales) - toNumber(row.cogs) })),
+    receivables: receivableRows.map((row) => ({ ...row, receivable: toNumber(row.receivable) })),
+    payables: payableRows.map((row) => ({ ...row, payable: toNumber(row.payable) })),
+    lowStock: lowStockRows.map((row) => ({ ...row, quantity: toNumber(row.quantity), minStock: toNumber(row.minStock) })),
+    expiringLots: expiryLots.map((lot) => ({ id: lot.id, product: lot.product.name, warehouse: lot.warehouse.name,
+      expiryDate: lot.expiryDate, quantity: toNumber(lot.remainingQuantity) })),
+    recentSales: recentSales.map((sale) => ({ id: sale.id, invoiceNo: sale.invoiceNo, date: sale.saleDate,
+      customer: sale.customer?.name || "-", cashier: sale.cashier?.displayName || sale.cashier?.username || "-",
+      total: toNumber(sale.baseTotal), paid: toNumber(sale.basePaidAmount), remaining: toNumber(sale.baseRemainingAmount) })),
+    recentPurchases: recentPurchases.map((purchase) => ({ id: purchase.id, invoiceNo: purchase.invoiceNo, date: purchase.purchaseDate,
+      supplier: purchase.supplier?.name || "-", total: toNumber(purchase.baseTotal), paid: toNumber(purchase.basePaidAmount),
+      remaining: toNumber(purchase.baseRemainingAmount) })),
+    incomeExpenses: incomeExpenses.filter((item) => !cancelledIncomeExpenseIds.has(item.id)).map((item) => ({ id: item.id, date: item.createdAt, type: item.type,
+      category: item.category?.name || "-", account: item.cashRegisterAccount?.cashRegister?.name || item.bankAccount?.name || "-",
+      user: item.createdByUser?.displayName || item.createdByUser?.username || "-", amount: toNumber(item.baseAmount), note: item.note }))
+  };
+  await cacheSetJson(cacheKey, data, 30);
+  return c.json({ data, cache: "miss" });
+});
+
+reportsRoute.get("/management-legacy", async (c) => {
+  return c.json({ message: "Legacy management report is disabled" }, 410);
+  /*
+  const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+
+  const [
+    sales,
+    saleItems,
+    saleReturns,
+    purchases,
+    purchaseReturns,
+    moneyTransactions,
+    partyAccounts,
+    stockRows,
+    expiryLots,
+    rates
+  ] = await Promise.all([
+    prisma.sale.findMany({
+      where: { saleDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      include: { cashier: true, customer: true, currency: true },
+      orderBy: { saleDate: "desc" }
+    }),
+    prisma.saleItem.findMany({
+      where: {
+        sale: {
+          saleDate: { gte: start, lt: end },
+          status: { not: "CANCELLED" }
+        }
+      },
+      include: { product: true, sale: true }
+    }),
+    prisma.saleReturn.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      include: { items: true, customer: true }
+    }),
+    prisma.purchase.findMany({
+      where: { purchaseDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      include: { supplier: true, currency: true },
+      orderBy: { purchaseDate: "desc" }
+    }),
+    prisma.purchaseReturn.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      include: { supplier: true }
+    }),
+    prisma.moneyTransaction.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      include: {
+        category: true,
+        cashRegisterAccount: { include: { cashRegister: true } },
+        bankAccount: true,
+        createdByUser: true
+      },
+      orderBy: { createdAt: "desc" }
+    }),
+    prisma.partyAccount.findMany({
+      include: {
+        party: true,
+        currency: true
+      }
+    }),
+    prisma.stockBalance.findMany({
+      where: { quantityBase: { gt: 0 } },
+      include: { product: { include: { baseUnit: true } }, warehouse: true }
+    }),
+    prisma.stockLot.findMany({
+      where: {
+        remainingQuantity: { gt: 0 },
+        expiryDate: {
+          gte: new Date(),
+          lte: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000)
+        }
+      },
+      include: { product: true, warehouse: true },
+      orderBy: { expiryDate: "asc" },
+      take: 25
+    }),
+    getCurrentCurrencyRates(prisma)
+  ]);
+
+  const salesTotal = sales.reduce((sum, item) => sum + toNumber(item.baseTotal), 0);
+  const salesPaid = sales.reduce((sum, item) => sum + toNumber(item.basePaidAmount), 0);
+  const salesRemaining = sales.reduce((sum, item) => sum + toNumber(item.baseRemainingAmount), 0);
+  const salesReturnTotal = saleReturns.reduce((sum, item) => sum + toNumber(item.baseSubtotal), 0);
+  const purchasesTotal = purchases.reduce((sum, item) => sum + toNumber(item.baseTotal), 0);
+  const purchasesPaid = purchases.reduce((sum, item) => sum + toNumber(item.basePaidAmount), 0);
+  const purchasesRemaining = purchases.reduce((sum, item) => sum + toNumber(item.baseRemainingAmount), 0);
+  const purchaseReturnTotal = purchaseReturns.reduce((sum, item) => sum + toNumber(item.baseSubtotal), 0);
+  const grossCogs = saleItems.reduce(
+    (sum, item) => sum + toNumber(item.baseTotalCost ?? item.totalCost),
+    0
+  );
+  const returnedCogs = saleReturns
+    .reduce(
+      (sum, item) =>
+        sum +
+        item.items.reduce(
+          (lineSum, line) => lineSum + toNumber(line.baseTotalCost ?? line.totalCost),
+          0
+        ),
+      0
+    );
+  const netCogs = grossCogs - returnedCogs;
+  const incomeTotal = moneyTransactions
+    .filter((item) => item.type === MoneyTransactionType.INCOME)
+    .reduce((sum, item) => sum + toNumber(item.baseAmount), 0);
+  const expenseTotal = moneyTransactions
+    .filter((item) => item.type === MoneyTransactionType.EXPENSE)
+    .reduce((sum, item) => sum + toNumber(item.baseAmount), 0);
+  const netSales = salesTotal - salesReturnTotal;
+  const grossProfit = netSales - netCogs;
+  const netProfit = grossProfit + incomeTotal - expenseTotal;
+
+  const productMap = new Map<string, {
+    id: string;
+    name: string;
+    quantity: number;
+    totalSales: number;
+    cogs: number;
+    profit: number;
+  }>();
+
+  for (const item of saleItems) {
+    const existing = productMap.get(item.productId) || {
+      id: item.productId,
+      name: item.product.name,
+      quantity: 0,
+      totalSales: 0,
+      cogs: 0,
+      profit: 0
+    };
+    existing.quantity += toNumber(item.quantityBase);
+    existing.totalSales += toNumber(item.totalPrice) * toNumber(item.sale.exchangeRate || 1);
+    existing.cogs += toNumber(item.baseTotalCost ?? item.totalCost);
+    existing.profit = existing.totalSales - existing.cogs;
+    productMap.set(item.productId, existing);
+  }
+
+  const partyBalanceRows = partyAccounts.map((account) => {
+    const debit = toNumber(account.debitBalance);
+    const credit = toNumber(account.creditBalance);
+    return {
+      id: account.id,
+      partyId: account.partyId,
+      name: account.party.name,
+      type: account.party.type,
+      currency: account.currency.code,
+      receivable: Math.max(0, debit - credit) * (rates.get(account.currencyId) || 1),
+      payable: Math.max(0, credit - debit) * (rates.get(account.currencyId) || 1)
+    };
+  });
+
+  const receivables = partyBalanceRows
+    .filter((item) => item.type === PartyType.CUSTOMER || item.type === PartyType.BOTH)
+    .reduce((sum, item) => sum + item.receivable, 0);
+  const payables = partyBalanceRows
+    .filter((item) => item.type === PartyType.SUPPLIER || item.type === PartyType.BOTH)
+    .reduce((sum, item) => sum + item.payable, 0);
+
+  const stockByProduct = new Map<string, {
+    id: string;
+    product: string;
+    warehouse: string;
+    quantity: number;
+    minStock: number;
+    unit: string;
+  }>();
+  for (const balance of stockRows) {
+    const key = `${balance.productId}:${balance.warehouseId}`;
+    const existing = stockByProduct.get(key) || {
+      id: key,
+      product: balance.product.name,
+      warehouse: balance.warehouse.name,
+      quantity: 0,
+      minStock: toNumber(balance.product.minStock),
+      unit: balance.product.baseUnit.name
+    };
+    existing.quantity += toNumber(balance.quantityBase);
+    stockByProduct.set(key, existing);
+  }
+
+  return c.json({
+    data: {
+      range: { from, to, start, end },
+      summary: {
+        salesCount: sales.length,
+        salesTotal,
+        salesPaid,
+        salesRemaining,
+        salesReturnTotal,
+        netSales,
+        purchasesCount: purchases.length,
+        purchasesTotal,
+        purchasesPaid,
+        purchasesRemaining,
+        purchaseReturnTotal,
+        netPurchases: purchasesTotal - purchaseReturnTotal,
+        cogs: netCogs,
+        grossProfit,
+        incomeTotal,
+        expenseTotal,
+        netProfit,
+        receivables,
+        payables
+      },
+      topProducts: Array.from(productMap.values()).sort((a, b) => b.totalSales - a.totalSales).slice(0, 25),
+      receivables: partyBalanceRows.filter((item) => item.receivable > 0).sort((a, b) => b.receivable - a.receivable).slice(0, 25),
+      payables: partyBalanceRows.filter((item) => item.payable > 0).sort((a, b) => b.payable - a.payable).slice(0, 25),
+      lowStock: Array.from(stockByProduct.values()).filter((item) => item.minStock > 0 && item.quantity <= item.minStock).sort((a, b) => a.quantity - b.quantity),
+      expiringLots: expiryLots.map((lot) => ({
+        id: lot.id,
+        product: lot.product.name,
+        warehouse: lot.warehouse.name,
+        expiryDate: lot.expiryDate,
+        quantity: toNumber(lot.remainingQuantity)
+      })),
+      recentSales: sales.slice(0, 30).map((sale) => ({
+        id: sale.id,
+        invoiceNo: sale.invoiceNo,
+        date: sale.saleDate,
+        customer: sale.customer?.name || "-",
+        cashier: sale.cashier?.displayName || sale.cashier?.username || "-",
+        total: toNumber(sale.baseTotal),
+        paid: toNumber(sale.basePaidAmount),
+        remaining: toNumber(sale.baseRemainingAmount)
+      })),
+      recentPurchases: purchases.slice(0, 30).map((purchase) => ({
+        id: purchase.id,
+        invoiceNo: purchase.invoiceNo,
+        date: purchase.purchaseDate,
+        supplier: purchase.supplier?.name || "-",
+        total: toNumber(purchase.baseTotal),
+        paid: toNumber(purchase.basePaidAmount),
+        remaining: toNumber(purchase.baseRemainingAmount)
+      })),
+      incomeExpenses: moneyTransactions
+        .filter((item) => item.type === MoneyTransactionType.INCOME || item.type === MoneyTransactionType.EXPENSE)
+        .slice(0, 30)
+        .map((item) => ({
+          id: item.id,
+          date: item.createdAt,
+          type: item.type,
+          category: item.category?.name || "-",
+          account: item.cashRegisterAccount?.cashRegister?.name || item.bankAccount?.name || "-",
+          user: item.createdByUser?.displayName || item.createdByUser?.username || "-",
+          amount: toNumber(item.baseAmount),
+          note: item.note
+        }))
+    }
+  });
+  */
+});

@@ -1,0 +1,88 @@
+name: Build Muhaseb Installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  desktop-windows:
+    name: Desktop Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck API
+        run: npm run typecheck:api
+
+      - name: Typecheck Desktop
+        run: npm --workspace @supermarket/desktop run typecheck
+
+      - name: Build Windows installer
+        run: npm run dist:desktop:win
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muhaseb-Windows-Installer
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+          if-no-files-found: error
+
+  server-docker-bundle:
+    name: Server Docker Bundle
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create server bundle
+        shell: pwsh
+        run: |
+          $bundle = "release-server\Muhaseb-Server-Docker"
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+
+          Copy-Item docker-compose.yml $bundle
+          Copy-Item .dockerignore $bundle
+          Copy-Item .env.docker.example $bundle
+          Copy-Item package.json $bundle
+          Copy-Item package-lock.json $bundle
+
+          New-Item -ItemType Directory -Force "$bundle\apps\api" | Out-Null
+          New-Item -ItemType Directory -Force "$bundle\apps\desktop" | Out-Null
+          New-Item -ItemType Directory -Force "$bundle\apps\mobile-scanner" | Out-Null
+          Copy-Item apps\api\Dockerfile "$bundle\apps\api"
+          Copy-Item apps\api\package.json "$bundle\apps\api"
+          Copy-Item apps\api\tsconfig.json "$bundle\apps\api"
+          Copy-Item apps\api\src "$bundle\apps\api\src" -Recurse
+          Copy-Item apps\api\prisma "$bundle\apps\api\prisma" -Recurse
+          Copy-Item apps\desktop\package.json "$bundle\apps\desktop"
+          Copy-Item apps\mobile-scanner\package.json "$bundle\apps\mobile-scanner"
+
+          Copy-Item packages "$bundle\packages" -Recurse
+          Copy-Item scripts "$bundle\scripts" -Recurse
+          Copy-Item docs\docker-server-setup.md "$bundle\docker-server-setup.md"
+
+          Compress-Archive -Path "$bundle\*" -DestinationPath "release-server\Muhaseb-Server-Docker.zip" -Force
+
+      - name: Upload server Docker bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muhaseb-Server-Docker
+          path: release-server/Muhaseb-Server-Docker.zip
+          if-no-files-found: error

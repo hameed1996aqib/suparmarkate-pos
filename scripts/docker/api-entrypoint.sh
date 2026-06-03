@@ -19,4 +19,4 @@ echo "Seeding Muhaseb baseline data..."
 npm run seed
 
 echo "Starting Muhaseb API..."
-exec node dist/index.js
+exec npm run start

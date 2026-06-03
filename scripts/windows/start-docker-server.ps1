@@ -51,12 +51,24 @@ Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 
 Write-Host ""
 Write-Host "Starting Muhaseb server stack with Docker Compose..."
-docker compose build --pull --no-cache api
-if ($LASTEXITCODE -ne 0) {
-  Write-Host ""
-  Write-Host "Docker image build failed. Recent container state:"
-  docker compose ps
-  exit $LASTEXITCODE
+$imageArchivePath = Join-Path $ProjectDir "muhaseb-api-local.tar"
+if (Test-Path $imageArchivePath) {
+  Write-Host "Loading prebuilt Muhaseb API image..."
+  docker load -i $imageArchivePath
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "Failed to load prebuilt API image."
+    exit $LASTEXITCODE
+  }
+} else {
+  Write-Host "No prebuilt API image found. Building Muhaseb API image locally..."
+  docker compose build --pull --no-cache api
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "Docker image build failed. Recent container state:"
+    docker compose ps
+    exit $LASTEXITCODE
+  }
 }
 
 docker compose up -d api

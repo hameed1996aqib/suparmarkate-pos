@@ -50,33 +50,38 @@ jobs:
 
   server-docker-bundle:
     name: Server Docker Bundle
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build API Docker image
+        run: docker build -t muhaseb-api:local -f apps/api/Dockerfile .
+
       - name: Create server bundle
-        shell: pwsh
+        shell: bash
         run: |
-          $bundle = "release-server\Muhaseb-Server-Docker"
-          New-Item -ItemType Directory -Force $bundle | Out-Null
+          set -euo pipefail
 
-          Copy-Item docker-compose.yml $bundle
-          Copy-Item .dockerignore $bundle
-          Copy-Item .env.docker.example $bundle
+          bundle="release-server/Muhaseb-Server-Docker"
+          mkdir -p "$bundle/apps/api"
 
-          New-Item -ItemType Directory -Force "$bundle\apps\api" | Out-Null
-          Copy-Item apps\api\Dockerfile "$bundle\apps\api"
-          Copy-Item apps\api\package.json "$bundle\apps\api"
-          Copy-Item apps\api\tsconfig.json "$bundle\apps\api"
-          Copy-Item apps\api\src "$bundle\apps\api\src" -Recurse
-          Copy-Item apps\api\prisma "$bundle\apps\api\prisma" -Recurse
+          cp docker-compose.yml "$bundle/"
+          cp .dockerignore "$bundle/"
+          cp .env.docker.example "$bundle/"
+          docker save muhaseb-api:local -o "$bundle/muhaseb-api-local.tar"
 
-          Copy-Item scripts "$bundle\scripts" -Recurse
-          Copy-Item docs\docker-server-setup.md "$bundle\docker-server-setup.md"
+          cp apps/api/Dockerfile "$bundle/apps/api/"
+          cp apps/api/package.json "$bundle/apps/api/"
+          cp apps/api/tsconfig.json "$bundle/apps/api/"
+          cp -r apps/api/src "$bundle/apps/api/src"
+          cp -r apps/api/prisma "$bundle/apps/api/prisma"
 
-          Compress-Archive -Path "$bundle\*" -DestinationPath "release-server\Muhaseb-Server-Docker.zip" -Force
+          cp -r scripts "$bundle/scripts"
+          cp docs/docker-server-setup.md "$bundle/docker-server-setup.md"
+
+          (cd release-server && zip -r Muhaseb-Server-Docker.zip Muhaseb-Server-Docker)
 
       - name: Upload server Docker bundle
         uses: actions/upload-artifact@v4

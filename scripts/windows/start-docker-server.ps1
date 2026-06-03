@@ -23,7 +23,12 @@ if (-not $docker) {
 $composeEnvPath = Join-Path $ProjectDir ".env"
 if (-not (Test-Path $composeEnvPath)) {
   $jwtBytes = New-Object byte[] 48
-  [System.Security.Cryptography.RandomNumberGenerator]::Fill($jwtBytes)
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($jwtBytes)
+  } finally {
+    $rng.Dispose()
+  }
   $jwtSecret = [Convert]::ToBase64String($jwtBytes)
 
   @"
@@ -46,7 +51,23 @@ Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 
 Write-Host ""
 Write-Host "Starting Muhaseb server stack with Docker Compose..."
-docker compose up -d --build api
+docker compose build --pull --no-cache api
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "Docker image build failed. Recent container state:"
+  docker compose ps
+  exit $LASTEXITCODE
+}
+
+docker compose up -d api
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "Docker Compose failed before the API could start. Recent container state:"
+  docker compose ps
+  Write-Host ""
+  Write-Host "Try restarting Docker Desktop. If Docker reports a missing snapshot, remove the local API image/cache and run this script again."
+  exit $LASTEXITCODE
+}
 
 Write-Host ""
 Write-Host "Waiting for Muhaseb API health..."

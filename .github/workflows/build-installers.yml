@@ -65,21 +65,14 @@ jobs:
           Copy-Item docker-compose.yml $bundle
           Copy-Item .dockerignore $bundle
           Copy-Item .env.docker.example $bundle
-          Copy-Item package.json $bundle
-          Copy-Item package-lock.json $bundle
 
           New-Item -ItemType Directory -Force "$bundle\apps\api" | Out-Null
-          New-Item -ItemType Directory -Force "$bundle\apps\desktop" | Out-Null
-          New-Item -ItemType Directory -Force "$bundle\apps\mobile-scanner" | Out-Null
           Copy-Item apps\api\Dockerfile "$bundle\apps\api"
           Copy-Item apps\api\package.json "$bundle\apps\api"
           Copy-Item apps\api\tsconfig.json "$bundle\apps\api"
           Copy-Item apps\api\src "$bundle\apps\api\src" -Recurse
           Copy-Item apps\api\prisma "$bundle\apps\api\prisma" -Recurse
-          Copy-Item apps\desktop\package.json "$bundle\apps\desktop"
-          Copy-Item apps\mobile-scanner\package.json "$bundle\apps\mobile-scanner"
 
-          Copy-Item packages "$bundle\packages" -Recurse
           Copy-Item scripts "$bundle\scripts" -Recurse
           Copy-Item docs\docker-server-setup.md "$bundle\docker-server-setup.md"
 

@@ -61,6 +61,7 @@ import type {
 import type { CustomerOption } from "../types";
 import { money } from "../utils";
 import { ConfirmActionDialog } from "./confirm-action-dialog";
+import { normalizePosQuantity, PosQuantityInput } from "./pos-quantity-input";
 
 type PosCurrentInvoiceCardProps = {
   items: ServerCartItem[];
@@ -383,20 +384,18 @@ export function PosCurrentInvoiceCard({
                               variant="secondary"
                               onClick={() =>
                                 onUpdateItem(item.key, {
-                                  quantity: Math.max(1, item.quantity - 1),
+                                  quantity: normalizePosQuantity(item.quantity - 0.1),
                                 })
                               }
                             >
                               <Minus className="h-3 w-3" />
                             </Button>
-                            <Input
+                            <PosQuantityInput
                               className="h-8 w-11 text-center"
-                              type="number"
-                              min={1}
                               value={item.quantity}
-                              onChange={(event) =>
+                              onCommit={(quantity) =>
                                 onUpdateItem(item.key, {
-                                  quantity: Number(event.target.value),
+                                  quantity,
                                 })
                               }
                             />
@@ -405,7 +404,7 @@ export function PosCurrentInvoiceCard({
                               variant="secondary"
                               onClick={() =>
                                 onUpdateItem(item.key, {
-                                  quantity: item.quantity + 1,
+                                  quantity: normalizePosQuantity(item.quantity + 1),
                                 })
                               }
                             >

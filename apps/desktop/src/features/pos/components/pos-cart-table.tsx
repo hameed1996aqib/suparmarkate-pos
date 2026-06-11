@@ -18,6 +18,7 @@ import {
 import type { Currency, ServerCartItem } from "../types";
 import { money } from "../utils";
 import { ConfirmActionDialog } from "./confirm-action-dialog";
+import { normalizePosQuantity, PosQuantityInput } from "./pos-quantity-input";
 
 type PosCartTableProps = {
   items: ServerCartItem[];
@@ -202,24 +203,22 @@ export function PosCartTable({
                             variant="secondary"
                             onClick={() =>
                               onUpdateItem(item.key, {
-                                quantity: Math.max(1, Number(item.quantity) - 1),
+                                quantity: normalizePosQuantity(Number(item.quantity) - 0.1),
                               })
                             }
                           >
                             <Minus className="h-3 w-3" />
                           </Button>
-                          <Input
+                          <PosQuantityInput
                             className={
                               stockIssue
                                 ? "h-8 w-14 border-destructive text-center"
                                 : "h-8 w-14 text-center"
                             }
-                            type="number"
-                            min={1}
                             value={item.quantity}
-                            onChange={(event) =>
+                            onCommit={(quantity) =>
                               onUpdateItem(item.key, {
-                                quantity: Number(event.target.value),
+                                quantity,
                               })
                             }
                           />
@@ -228,7 +227,7 @@ export function PosCartTable({
                             variant="secondary"
                             onClick={() =>
                               onUpdateItem(item.key, {
-                                quantity: Number(item.quantity) + 1,
+                                quantity: normalizePosQuantity(Number(item.quantity) + 1),
                               })
                             }
                           >

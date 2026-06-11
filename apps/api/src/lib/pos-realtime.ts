@@ -2,6 +2,18 @@ import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./prisma";
 
+const MIN_CART_QUANTITY = 0.0001;
+
+function normalizeCartQuantity(value: number, fallback: number) {
+  const quantity = Number(value);
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return Math.max(MIN_CART_QUANTITY, fallback);
+  }
+
+  return Math.max(MIN_CART_QUANTITY, Math.round(quantity * 10000) / 10000);
+}
+
 type PosClientType = "desktop" | "mobile" | "unknown";
 
 type PosClient = {
@@ -290,7 +302,7 @@ export function updatePosCartItem(input: {
     const quantity =
       input.quantity === undefined
         ? item.quantity
-        : Math.max(1, Number(input.quantity || 1));
+        : normalizeCartQuantity(input.quantity, item.quantity);
 
     const unitPrice =
       input.unitPrice === undefined
@@ -816,7 +828,7 @@ export function startPosWebSocketServer(port = 4001) {
           updatePosCartItemQuantity({
             sessionId,
             key: String(message.key || ""),
-            quantity: Number(message.quantity || 1)
+            quantity: Number(message.quantity ?? 1)
           });
           return;
         }

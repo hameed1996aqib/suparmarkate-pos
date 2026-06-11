@@ -22,6 +22,26 @@ export function detectBarcodeType(text: string) {
   return "code128";
 }
 
+function ean13CheckDigit(first12Digits: string) {
+  const sum = first12Digits
+    .split("")
+    .reduce((total, digit, index) => {
+      return total + Number(digit) * (index % 2 === 0 ? 1 : 3);
+    }, 0);
+
+  return String((10 - (sum % 10)) % 10);
+}
+
+export function generateProductBarcodeCandidate() {
+  const timestamp = Date.now().toString().slice(-8);
+  const random = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, "0");
+  const first12 = `20${timestamp}${random}`.slice(0, 12);
+
+  return `${first12}${ean13CheckDigit(first12)}`;
+}
+
 export function buildBarcodeOptions(input: {
   text: string;
   format?: string | null;

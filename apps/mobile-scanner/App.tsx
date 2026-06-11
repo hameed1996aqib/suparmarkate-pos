@@ -27,9 +27,10 @@ const FONT_REGULAR = "Zain-Regular";
 const FONT_BOLD = "Zain-Bold";
 const FONT_HEAVY = "Zain-ExtraBold";
 
-type Screen = "login" | "connect" | "scanner" | "attendance";
+type Screen = "login" | "connect" | "scanner" | "attendance" | "reports";
 type CameraMode = "connect" | "product" | "attendance" | null;
 type ToastType = "success" | "error" | "info";
+type DashboardPeriod = "today" | "week" | "month" | "fourMonths";
 
 type ToastItem = {
   id: string;
@@ -105,6 +106,29 @@ type EmployeeSummary = {
 };
 
 type AttendanceIntent = "CHECK_IN" | "CHECK_OUT";
+
+type DashboardSummary = {
+  period?: {
+    key: DashboardPeriod;
+    start?: string;
+    end?: string;
+  };
+  currency?: {
+    displayCode?: string | null;
+    baseCode?: string | null;
+  };
+  overview?: {
+    sales?: number;
+    purchases?: number;
+    grossProfit?: number;
+    netProfit?: number;
+    income?: number;
+    expenses?: number;
+    treasury?: number;
+    receivables?: number;
+    payables?: number;
+  };
+};
 
 const T = {
   connectTitle:
@@ -244,6 +268,25 @@ const T = {
   invalidAttendanceQr:
     "QR \u062d\u0627\u0636\u0631\u06cc \u0645\u0639\u062a\u0628\u0631 \u0646\u06cc\u0633\u062a",
   productScanner: "\u0627\u0633\u06a9\u0646 \u0641\u0631\u0648\u0634",
+  reports: "گزارش‌ها",
+  reportsTitle: "خلاصه داشبورد",
+  reportsSub: "۹ کارت مهم مدیریتی با فیلتر دوره زمانی",
+  today: "امروز",
+  week: "هفته",
+  month: "ماه",
+  fourMonths: "۴ ماه اخیر",
+  refresh: "بروزرسانی",
+  loadingReports: "در حال دریافت گزارش‌ها...",
+  reportsError: "گزارش‌ها دریافت نشد",
+  sales: "فروش",
+  purchases: "خرید",
+  grossProfit: "مفاد ناخالص",
+  netProfit: "مفاد خالص",
+  income: "عواید",
+  expenses: "مصارف",
+  treasury: "صندوق و بانک",
+  receivables: "طلب مشتریان",
+  payables: "بدهی فروشندگان",
 };
 
 const COLORS = {
@@ -266,10 +309,63 @@ function trimEndSlash(value: string) {
   return value.replace(/\/+$/, "");
 }
 
-function money(value: number) {
+function money(value: number, code?: string | null) {
   return new Intl.NumberFormat("fa-AF", {
     maximumFractionDigits: 2,
-  }).format(Number(value || 0));
+  }).format(Number(value || 0)) + (code ? ` ${code}` : "");
+}
+
+const DASHBOARD_PERIODS: Array<{ key: DashboardPeriod; label: string }> = [
+  { key: "today", label: T.today },
+  { key: "week", label: T.week },
+  { key: "month", label: T.month },
+  { key: "fourMonths", label: T.fourMonths },
+];
+
+function getDashboardCards(summary: DashboardSummary | null) {
+  const overview = summary?.overview || {};
+
+  return [
+    { key: "sales", label: T.sales, value: overview.sales || 0, tone: "blue" },
+    {
+      key: "purchases",
+      label: T.purchases,
+      value: overview.purchases || 0,
+      tone: "purple",
+    },
+    {
+      key: "grossProfit",
+      label: T.grossProfit,
+      value: overview.grossProfit || 0,
+      tone: "success",
+    },
+    {
+      key: "netProfit",
+      label: T.netProfit,
+      value: overview.netProfit || 0,
+      tone: "success",
+    },
+    { key: "income", label: T.income, value: overview.income || 0, tone: "success" },
+    { key: "expenses", label: T.expenses, value: overview.expenses || 0, tone: "error" },
+    {
+      key: "treasury",
+      label: T.treasury,
+      value: overview.treasury || 0,
+      tone: "blue",
+    },
+    {
+      key: "receivables",
+      label: T.receivables,
+      value: overview.receivables || 0,
+      tone: "warning",
+    },
+    {
+      key: "payables",
+      label: T.payables,
+      value: overview.payables || 0,
+      tone: "error",
+    },
+  ];
 }
 
 function makeId() {
@@ -395,6 +491,11 @@ export default function App() {
   const [authUser, setAuthUser] = useState<EmployeeUser | null>(null);
   const [employeeSummary, setEmployeeSummary] =
     useState<EmployeeSummary | null>(null);
+  const [dashboardPeriod, setDashboardPeriod] =
+    useState<DashboardPeriod>("today");
+  const [dashboardSummary, setDashboardSummary] =
+    useState<DashboardSummary | null>(null);
+  const [isReportsLoading, setIsReportsLoading] = useState(false);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [isAuthBusy, setIsAuthBusy] = useState(false);
@@ -506,6 +607,41 @@ export default function App() {
       }
     },
     [authToken, getApiBaseUrl, showToast],
+  );
+
+  const loadDashboardSummary = useCallback(
+    async (periodValue = dashboardPeriod, tokenValue = authToken) => {
+      const apiBaseUrl = getApiBaseUrl();
+
+      if (!apiBaseUrl || !tokenValue) {
+        return;
+      }
+
+      setIsReportsLoading(true);
+
+      try {
+        const response = await fetch(
+          `${apiBaseUrl}/api/dashboard/summary?period=${periodValue}`,
+          {
+            headers: {
+              Authorization: `Bearer ${tokenValue}`,
+            },
+          },
+        );
+        const json = await response.json();
+
+        if (!response.ok) {
+          throw new Error(json?.message || T.reportsError);
+        }
+
+        setDashboardSummary(json?.data || null);
+      } catch (error: any) {
+        showToast(error?.message || T.reportsError, "error");
+      } finally {
+        setIsReportsLoading(false);
+      }
+    },
+    [authToken, dashboardPeriod, getApiBaseUrl, showToast],
   );
 
   const loginEmployee = useCallback(async () => {
@@ -1094,6 +1230,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (screen === "reports" && authToken) {
+      loadDashboardSummary(dashboardPeriod, authToken);
+    }
+  }, [authToken, dashboardPeriod, loadDashboardSummary, screen]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       const now = Date.now();
 
@@ -1185,6 +1327,14 @@ export default function App() {
       loadEmployeeSummary(authToken);
     }
   }, [authToken, loadEmployeeSummary]);
+
+  const goToReports = useCallback(() => {
+    setScreen("reports");
+    setCameraMode(null);
+    if (authToken) {
+      loadDashboardSummary(dashboardPeriod, authToken);
+    }
+  }, [authToken, dashboardPeriod, loadDashboardSummary]);
 
   if (!fontsLoaded) {
     return (
@@ -1284,6 +1434,13 @@ export default function App() {
 
               <TouchableOpacity
                 style={styles.ghostButton}
+                onPress={goToReports}
+              >
+                <Text style={styles.ghostButtonText}>{T.reports}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ghostButton}
                 onPress={logoutEmployee}
               >
                 <Text style={styles.ghostButtonText}>{T.logout}</Text>
@@ -1361,6 +1518,13 @@ export default function App() {
                 onPress={goToScanner}
               >
                 <Text style={styles.ghostButtonText}>{T.productScanner}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ghostButton}
+                onPress={goToReports}
+              >
+                <Text style={styles.ghostButtonText}>{T.reports}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1541,6 +1705,121 @@ export default function App() {
               ) : null}
             </>
           </ScrollView>
+        ) : screen === "reports" ? (
+          <ScrollView contentContainerStyle={styles.scroll}>
+            <View style={styles.topBar}>
+              <TouchableOpacity
+                style={styles.ghostButton}
+                onPress={goToConnect}
+              >
+                <Text style={styles.ghostButtonText}>{T.connectBack}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ghostButton}
+                onPress={goToScanner}
+              >
+                <Text style={styles.ghostButtonText}>{T.productScanner}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ghostButton}
+                onPress={goToAttendance}
+              >
+                <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.headerCompact}>
+              <Image
+                source={APP_LOGO}
+                style={styles.headerLogoSmall}
+                resizeMode="contain"
+              />
+              <Text style={styles.eyebrow}>MUHASEB REPORTS</Text>
+              <Text style={styles.titleSmall}>{T.reportsTitle}</Text>
+              <Text style={styles.subtitle}>{T.reportsSub}</Text>
+            </View>
+
+            <View style={styles.periodTabs}>
+              {DASHBOARD_PERIODS.map((period) => {
+                const isActive = dashboardPeriod === period.key;
+
+                return (
+                  <TouchableOpacity
+                    key={period.key}
+                    style={[
+                      styles.periodTab,
+                      isActive ? styles.periodTabActive : null,
+                    ]}
+                    onPress={() => setDashboardPeriod(period.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.periodTabText,
+                        isActive ? styles.periodTabTextActive : null,
+                      ]}
+                    >
+                      {period.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.reportHeaderCard}>
+              <View style={styles.rtlFlex}>
+                <Text style={styles.cardTitle}>{T.reportsTitle}</Text>
+                <Text style={styles.cardText}>
+                  {isReportsLoading
+                    ? T.loadingReports
+                    : `${dashboardSummary?.currency?.displayCode || "AFN"} · ${
+                        DASHBOARD_PERIODS.find(
+                          (item) => item.key === dashboardPeriod,
+                        )?.label || T.today
+                      }`}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.smallActionButton}
+                disabled={isReportsLoading}
+                onPress={() => loadDashboardSummary(dashboardPeriod)}
+              >
+                <Text style={styles.smallActionButtonText}>
+                  {T.refresh}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.reportGrid}>
+              {getDashboardCards(dashboardSummary).map((card) => (
+                <View
+                  key={card.key}
+                  style={[
+                    styles.reportMetricCard,
+                    card.tone === "success"
+                      ? styles.reportMetricSuccess
+                      : card.tone === "error"
+                        ? styles.reportMetricError
+                        : card.tone === "warning"
+                          ? styles.reportMetricWarning
+                          : card.tone === "purple"
+                            ? styles.reportMetricPurple
+                            : styles.reportMetricBlue,
+                  ]}
+                >
+                  <Text style={styles.reportMetricLabel}>{card.label}</Text>
+                  <Text style={styles.reportMetricValue}>
+                    {money(
+                      card.value,
+                      dashboardSummary?.currency?.displayCode || "AFN",
+                    )}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </ScrollView>
         ) : (
           <ScrollView contentContainerStyle={styles.scroll}>
             <View style={styles.topBar}>
@@ -1556,6 +1835,13 @@ export default function App() {
                 onPress={goToAttendance}
               >
                 <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.ghostButton}
+                onPress={goToReports}
+              >
+                <Text style={styles.ghostButtonText}>{T.reports}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -2146,6 +2432,8 @@ const styles = StyleSheet.create({
     flexDirection: "row-reverse",
     justifyContent: "space-between",
     alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
     marginBottom: 18,
   },
   ghostButton: {
@@ -2247,6 +2535,113 @@ const styles = StyleSheet.create({
     fontFamily: FONT_HEAVY,
     color: COLORS.text,
     fontSize: 22,
+    fontWeight: "900",
+    textAlign: "right",
+    writingDirection: "rtl",
+  },
+  periodTabs: {
+    flexDirection: "row-reverse",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 14,
+  },
+  periodTab: {
+    flexGrow: 1,
+    minWidth: "45%",
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.stroke,
+    borderRadius: 0,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    alignItems: "center",
+  },
+  periodTabActive: {
+    backgroundColor: COLORS.blue,
+    borderColor: COLORS.blue,
+  },
+  periodTabText: {
+    fontFamily: FONT_HEAVY,
+    color: COLORS.textSoft,
+    fontSize: 13,
+    fontWeight: "900",
+    textAlign: "center",
+    writingDirection: "rtl",
+  },
+  periodTabTextActive: {
+    color: "#fff",
+  },
+  reportHeaderCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 0,
+    borderWidth: 1,
+    borderColor: COLORS.stroke,
+    padding: 16,
+    marginBottom: 14,
+    flexDirection: "row-reverse",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  smallActionButton: {
+    backgroundColor: COLORS.card2,
+    borderWidth: 1,
+    borderColor: COLORS.stroke,
+    borderRadius: 0,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginRight: 12,
+  },
+  smallActionButtonText: {
+    fontFamily: FONT_HEAVY,
+    color: COLORS.cyan,
+    fontSize: 12,
+    fontWeight: "900",
+    textAlign: "center",
+    writingDirection: "rtl",
+  },
+  reportGrid: {
+    flexDirection: "row-reverse",
+    flexWrap: "wrap",
+    marginHorizontal: -5,
+  },
+  reportMetricCard: {
+    width: "50%",
+    minHeight: 118,
+    borderRadius: 0,
+    borderWidth: 1,
+    backgroundColor: COLORS.card,
+    padding: 13,
+    marginBottom: 10,
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    transform: [{ scale: 0.97 }],
+  },
+  reportMetricBlue: {
+    borderColor: COLORS.blue,
+  },
+  reportMetricPurple: {
+    borderColor: COLORS.purple,
+  },
+  reportMetricSuccess: {
+    borderColor: COLORS.success,
+  },
+  reportMetricError: {
+    borderColor: COLORS.error,
+  },
+  reportMetricWarning: {
+    borderColor: COLORS.warning,
+  },
+  reportMetricLabel: {
+    fontFamily: FONT_BOLD,
+    color: COLORS.textSoft,
+    fontSize: 12,
+    textAlign: "right",
+    writingDirection: "rtl",
+  },
+  reportMetricValue: {
+    fontFamily: FONT_HEAVY,
+    color: COLORS.text,
+    fontSize: 17,
     fontWeight: "900",
     textAlign: "right",
     writingDirection: "rtl",

@@ -315,6 +315,58 @@ export function usePosSession() {
     if (payload?.summary) setSummary(payload.summary);
   }
 
+  function applyOptimisticCartItemUpdate(
+    key: string,
+    input: {
+      quantity?: number;
+      unitPrice?: number;
+      discount?: number;
+    },
+  ) {
+    setCart((currentCart) => {
+      if (!currentCart) return currentCart;
+
+      let changed = false;
+      const items = currentCart.items.map((item) => {
+        if (item.key !== key) return item;
+
+        changed = true;
+
+        const quantity =
+          input.quantity === undefined ? item.quantity : Math.max(0.001, Number(input.quantity));
+        const unitPrice =
+          input.unitPrice === undefined ? item.unitPrice : Math.max(0, Number(input.unitPrice));
+        const discount =
+          input.discount === undefined ? item.discount : Math.max(0, Number(input.discount));
+
+        return {
+          ...item,
+          quantity,
+          unitPrice,
+          discount,
+          lineTotal: Math.max(0, quantity * unitPrice - discount),
+        };
+      });
+
+      if (!changed) return currentCart;
+
+      const updatedAt = new Date().toISOString();
+
+      setSummary({
+        sessionId: currentCart.sessionId,
+        itemsCount: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+        total: items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0),
+        updatedAt,
+      });
+
+      return {
+        ...currentCart,
+        items,
+        updatedAt,
+      };
+    });
+  }
+
   function setReceiptWidthMm(value: number) {
     const nextValue = value === 58 ? 58 : 80;
     localStorage.setItem("muhaseb_receipt_width_mm", String(nextValue));
@@ -837,6 +889,8 @@ export function usePosSession() {
       discount?: number;
     }
   ) {
+    applyOptimisticCartItemUpdate(key, input);
+
     if (sendWsMessage({ type: "UPDATE_CART_ITEM", key, ...input })) return;
     if (!apiBaseUrl || !session?.session.id) return;
 

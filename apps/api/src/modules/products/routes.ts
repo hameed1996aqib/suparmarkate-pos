@@ -8,6 +8,7 @@ import { attachAuditUsers, auditCreateData, auditDeleteData, auditUpdateData } f
 import { getAuthUser, writeAudit } from "../../lib/auth";
 import { cacheDeleteByPattern, cacheGetJson, cacheSetJson } from "../../lib/cache";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
+import { generateProductBarcodeCandidate, normalizeBarcodeText } from "../../lib/barcode";
 
 export const productsRoute = new Hono();
 
@@ -40,6 +41,22 @@ const updateProductSchema = createProductSchema.partial().extend({
 });
 
 const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+
+async function generateUniqueProductBarcode() {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const barcode = generateProductBarcodeCandidate();
+    const existing = await prisma.product.findUnique({ where: { barcode } });
+
+    if (!existing) return barcode;
+  }
+
+  throw new Error("Could not generate a unique product barcode");
+}
+
+async function resolveProductBarcode(value: string | null | undefined) {
+  const normalized = normalizeBarcodeText(value || "");
+  return normalized || generateUniqueProductBarcode();
+}
 
 function productImageExtension(mimeType: string, originalName: string) {
   const ext = path.extname(originalName).toLowerCase();
@@ -203,10 +220,12 @@ productsRoute.post("/", async (c) => {
   }
 
   const { units, ...productData } = parsed.data;
+  const barcode = await resolveProductBarcode(productData.barcode);
 
   const item = await prisma.product.create({
     data: {
       ...productData,
+      barcode,
       ...auditCreateData(authUser?.id),
       units: {
         create: units.map((unit) => ({
@@ -253,6 +272,12 @@ productsRoute.patch("/:id", async (c) => {
   }
 
   const { units, ...productData } = parsed.data;
+  const nextProductData = {
+    ...productData,
+    ...(Object.prototype.hasOwnProperty.call(productData, "barcode")
+      ? { barcode: await resolveProductBarcode(productData.barcode) }
+      : {})
+  };
 
   const item = await prisma.$transaction(async (tx) => {
     if (units) {
@@ -264,7 +289,7 @@ productsRoute.patch("/:id", async (c) => {
     return tx.product.update({
       where: { id },
       data: {
-        ...productData,
+        ...nextProductData,
         ...auditUpdateData(authUser?.id),
         ...(units
           ? {

@@ -7883,6 +7883,18 @@ function ProductsPage() {
     }
   };
 
+  const printProductBarcode = (row: DataRow) => {
+    if (!row.id) {
+      toast.error("شناسه محصول پیدا نشد");
+      return;
+    }
+
+    window.open(
+      `${API_BASE_URL}/api/barcodes/products/${row.id}/label?layout=roll&copies=1`,
+      "_blank",
+    );
+  };
+
   const baseProductUnit = productUnitLines.find(
     (line) => line.unitId === form.baseUnitId,
   );
@@ -7965,6 +7977,8 @@ function ProductsPage() {
               pagination={productsPagination}
               onPageChange={(page) => void loadProductsData(page)}
               onEdit={openEdit}
+              onSecondary={printProductBarcode}
+              secondaryLabel="چاپ بارکود"
               onDelete={deleteProduct}
             />
           )}
@@ -7999,7 +8013,7 @@ function ProductsPage() {
                 }
               />
               <TextField
-                label="بارکود"
+                label="بارکود (اختیاری)"
                 value={form.barcode}
                 onChange={(value) =>
                   setForm((current) => ({ ...current, barcode: value }))

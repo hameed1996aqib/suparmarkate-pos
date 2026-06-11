@@ -182,11 +182,14 @@ export async function authMiddleware(c: Context, next: Next) {
   const isPublicPosSessionAsset =
     c.req.method === "GET" &&
     /^\/api\/pos\/sessions\/[^/]+\/(qr\.svg|connect|test)$/.test(path);
+  const isPublicBarcodeAsset =
+    c.req.method === "GET" && path.startsWith("/api/barcodes/");
 
   if (
     c.req.method === "OPTIONS" ||
     publicPaths.includes(path) ||
     isPublicPosSessionAsset ||
+    isPublicBarcodeAsset ||
     path.startsWith("/uploads/") ||
     path.startsWith("/api/receipts/") ||
     path.startsWith("/api/pos-receipts/")

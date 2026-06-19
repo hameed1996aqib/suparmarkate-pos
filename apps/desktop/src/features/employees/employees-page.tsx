@@ -22,6 +22,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Combobox } from "@/components/ui/combobox";
 import { ConfirmDropdownItem } from "@/components/ui/confirm-action";
 import { DatePicker } from "@/components/ui/date-picker";
+import { ManualDateInput } from "@/components/ui/manual-date-input";
 import {
   Dialog,
   DialogContent,
@@ -1100,7 +1101,7 @@ export function EmployeesPage() {
             </label>
             <label className="grid gap-1.5 text-sm">
               <span className="text-muted-foreground">تاریخ</span>
-              <DatePicker
+              <ManualDateInput
                 value={attendanceForm.date}
                 onChange={(value) => setAttendanceForm((current) => ({ ...current, date: value }))}
               />
@@ -1306,7 +1307,7 @@ function EmployeeDialog({
             <Field label="وظیفه" value={form.jobTitle} onChange={(value) => onChange("jobTitle", value)} />
             <label className="grid gap-1.5 text-sm">
               <span className="text-muted-foreground">تاریخ استخدام</span>
-              <DatePicker value={form.hireDate} onChange={(value) => onChange("hireDate", value)} />
+              <ManualDateInput value={form.hireDate} onChange={(value) => onChange("hireDate", value)} />
             </label>
             <Field label="آدرس" value={form.address} onChange={(value) => onChange("address", value)} full />
           </div>

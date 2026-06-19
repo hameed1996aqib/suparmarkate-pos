@@ -8,6 +8,8 @@ import React, {
 import {
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -221,6 +223,14 @@ const T = {
   serverAddressHint: "http://SERVER-IP:4000",
   serverDetected:
     "\u0633\u0631\u0648\u0631 \u0634\u0646\u0627\u0633\u0627\u06cc\u06cc \u0634\u062f",
+  serverSettings: "تنظیم سرور",
+  serverSettingsTitle: "آدرس سرور فروشگاه",
+  serverSettingsSub:
+    "آدرس API سرور داخل فروشگاه را وارد کنید. مثال: http://192.168.1.10:4000",
+  save: "ذخیره",
+  cancel: "انصراف",
+  serverSaved: "آدرس سرور ذخیره شد",
+  invalidServerAddress: "آدرس سرور معتبر نیست",
   username: "\u0646\u0627\u0645 \u06a9\u0627\u0631\u0628\u0631\u06cc",
   password: "\u0631\u0645\u0632 \u0639\u0628\u0648\u0631",
   login: "\u0648\u0631\u0648\u062f",
@@ -321,6 +331,10 @@ const DASHBOARD_PERIODS: Array<{ key: DashboardPeriod; label: string }> = [
   { key: "month", label: T.month },
   { key: "fourMonths", label: T.fourMonths },
 ];
+
+function isAdminUser(user: EmployeeUser | null) {
+  return String(user?.role || "").toLowerCase() === "admin";
+}
 
 function getDashboardCards(summary: DashboardSummary | null) {
   const overview = summary?.overview || {};
@@ -483,6 +497,9 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [serverApiBaseUrl, setServerApiBaseUrl] =
     useState(DEFAULT_API_BASE_URL);
+  const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
+  const [serverSettingsValue, setServerSettingsValue] =
+    useState(DEFAULT_API_BASE_URL);
   const [pendingAttendanceToken, setPendingAttendanceToken] = useState("");
   const [attendanceIntent, setAttendanceIntent] =
     useState<AttendanceIntent>("CHECK_IN");
@@ -532,7 +549,10 @@ export default function App() {
       if (!mounted) return;
 
       if (savedToken) setAuthToken(savedToken);
-      if (savedApiBaseUrl) setServerApiBaseUrl(savedApiBaseUrl);
+      if (savedApiBaseUrl) {
+        setServerApiBaseUrl(savedApiBaseUrl);
+        setServerSettingsValue(savedApiBaseUrl);
+      }
       if (savedDeviceId) {
         setDeviceId(savedDeviceId);
       } else {
@@ -580,6 +600,40 @@ export default function App() {
     const value = fromConnection || fromInput;
     return value ? trimEndSlash(value) : null;
   }, [connection?.apiBaseUrl, serverApiBaseUrl]);
+
+  const openServerSettings = useCallback(() => {
+    setServerSettingsValue(serverApiBaseUrl || "");
+    setServerSettingsOpen(true);
+  }, [serverApiBaseUrl]);
+
+  const saveServerSettings = useCallback(async () => {
+    const rawValue = serverSettingsValue.trim();
+
+    if (!rawValue) {
+      showToast(T.invalidServerAddress, "error");
+      return;
+    }
+
+    const withProtocol = /^https?:\/\//i.test(rawValue)
+      ? rawValue
+      : `http://${rawValue}`;
+    const nextValue = trimEndSlash(withProtocol);
+
+    try {
+      const url = new URL(nextValue);
+
+      if (!url.hostname || !url.port) {
+        throw new Error(T.invalidServerAddress);
+      }
+
+      setServerApiBaseUrl(nextValue);
+      await writeStoredValue(API_BASE_URL_KEY, nextValue);
+      setServerSettingsOpen(false);
+      showToast(T.serverSaved, "success");
+    } catch (error: any) {
+      showToast(error?.message || T.invalidServerAddress, "error");
+    }
+  }, [serverSettingsValue, showToast]);
 
   const loadEmployeeSummary = useCallback(
     async (tokenValue = authToken) => {
@@ -678,8 +732,9 @@ export default function App() {
 
       const nextToken = String(json?.data?.token || "");
       const nextUser = json?.data?.user as EmployeeUser | undefined;
+      const nextIsAdmin = isAdminUser(nextUser || null);
 
-      if (!nextToken || !nextUser?.employee) {
+      if (!nextToken || !nextUser || (!nextIsAdmin && !nextUser.employee)) {
         throw new Error(T.needEmployeeLogin);
       }
 
@@ -690,8 +745,11 @@ export default function App() {
       await writeStoredValue(AUTH_TOKEN_KEY, nextToken);
       await writeStoredValue(AUTH_USER_KEY, JSON.stringify(nextUser));
       showToast(T.loginOk, "success");
-      await loadEmployeeSummary(nextToken);
-      if (pendingAttendanceToken) {
+      if (nextUser.employee) {
+        await loadEmployeeSummary(nextToken);
+      }
+
+      if (pendingAttendanceToken && nextUser.employee) {
         await submitAttendanceQrRef.current?.(
           pendingAttendanceToken,
           nextToken,
@@ -699,7 +757,7 @@ export default function App() {
         setPendingAttendanceToken("");
         setScreen("attendance");
       } else {
-        setScreen("connect");
+        setScreen(nextIsAdmin ? "reports" : "connect");
       }
     } catch (error: any) {
       showToast(error?.message || T.loginFail, "error");
@@ -1219,11 +1277,16 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (authToken && (connection?.apiBaseUrl || serverApiBaseUrl.trim())) {
+    if (
+      authToken &&
+      authUser?.employee &&
+      (connection?.apiBaseUrl || serverApiBaseUrl.trim())
+    ) {
       loadEmployeeSummary(authToken);
     }
   }, [
     authToken,
+    authUser?.employee,
     connection?.apiBaseUrl,
     loadEmployeeSummary,
     serverApiBaseUrl,
@@ -1268,6 +1331,7 @@ export default function App() {
   const hasCheckedOutToday = Boolean(employeeSummary?.todayRecord?.checkOutAt);
   const canStartWork = !hasCheckedInToday;
   const canEndWork = hasCheckedInToday && !hasCheckedOutToday;
+  const canViewReports = isAdminUser(authUser);
 
   const recentItems = useMemo(() => cart.slice(0, 6), [cart]);
 
@@ -1329,12 +1393,17 @@ export default function App() {
   }, [authToken, loadEmployeeSummary]);
 
   const goToReports = useCallback(() => {
+    if (!isAdminUser(authUser)) {
+      showToast(T.reportsError, "error");
+      return;
+    }
+
     setScreen("reports");
     setCameraMode(null);
     if (authToken) {
       loadDashboardSummary(dashboardPeriod, authToken);
     }
-  }, [authToken, dashboardPeriod, loadDashboardSummary]);
+  }, [authToken, authUser, dashboardPeriod, loadDashboardSummary, showToast]);
 
   if (!fontsLoaded) {
     return (
@@ -1349,9 +1418,17 @@ export default function App() {
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-      <View style={styles.root}>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+      >
         {screen === "login" ? (
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
             <View style={styles.header}>
               <Image
                 source={APP_LOGO}
@@ -1403,6 +1480,13 @@ export default function App() {
               />
 
               <TouchableOpacity
+                style={styles.outlineButton}
+                onPress={openServerSettings}
+              >
+                <Text style={styles.ghostButtonText}>{T.serverSettings}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={styles.primaryButton}
                 disabled={isAuthBusy}
                 onPress={loginEmployee}
@@ -1423,20 +1507,35 @@ export default function App() {
             </View>
           </ScrollView>
         ) : screen === "connect" ? (
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
             <View style={styles.topBar}>
-              <TouchableOpacity
-                style={styles.ghostButton}
-                onPress={goToAttendance}
-              >
-                <Text style={styles.ghostButtonText}>{T.attendance}</Text>
-              </TouchableOpacity>
+              {authUser?.employee ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToAttendance}
+                >
+                  <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {canViewReports ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToReports}
+                >
+                  <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                </TouchableOpacity>
+              ) : null}
 
               <TouchableOpacity
                 style={styles.ghostButton}
-                onPress={goToReports}
+                onPress={openServerSettings}
               >
-                <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                <Text style={styles.ghostButtonText}>{T.serverSettings}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1480,12 +1579,14 @@ export default function App() {
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.outlineButton}
-                onPress={goToAttendance}
-              >
-                <Text style={styles.ghostButtonText}>{T.attendance}</Text>
-              </TouchableOpacity>
+              {authUser?.employee ? (
+                <TouchableOpacity
+                  style={styles.outlineButton}
+                  onPress={goToAttendance}
+                >
+                  <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+                </TouchableOpacity>
+              ) : null}
 
               <View style={styles.statusCard}>
                 <Text style={styles.statusLabel}>{T.status}</Text>
@@ -1511,7 +1612,11 @@ export default function App() {
             ) : null}
           </ScrollView>
         ) : screen === "attendance" ? (
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
             <View style={styles.topBar}>
               <TouchableOpacity
                 style={styles.ghostButton}
@@ -1520,11 +1625,20 @@ export default function App() {
                 <Text style={styles.ghostButtonText}>{T.productScanner}</Text>
               </TouchableOpacity>
 
+              {canViewReports ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToReports}
+                >
+                  <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                </TouchableOpacity>
+              ) : null}
+
               <TouchableOpacity
                 style={styles.ghostButton}
-                onPress={goToReports}
+                onPress={openServerSettings}
               >
-                <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                <Text style={styles.ghostButtonText}>{T.serverSettings}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1705,8 +1819,12 @@ export default function App() {
               ) : null}
             </>
           </ScrollView>
-        ) : screen === "reports" ? (
-          <ScrollView contentContainerStyle={styles.scroll}>
+        ) : screen === "reports" && canViewReports ? (
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
             <View style={styles.topBar}>
               <TouchableOpacity
                 style={styles.ghostButton}
@@ -1722,11 +1840,20 @@ export default function App() {
                 <Text style={styles.ghostButtonText}>{T.productScanner}</Text>
               </TouchableOpacity>
 
+              {authUser?.employee ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToAttendance}
+                >
+                  <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+                </TouchableOpacity>
+              ) : null}
+
               <TouchableOpacity
                 style={styles.ghostButton}
-                onPress={goToAttendance}
+                onPress={openServerSettings}
               >
-                <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+                <Text style={styles.ghostButtonText}>{T.serverSettings}</Text>
               </TouchableOpacity>
             </View>
 
@@ -1821,7 +1948,11 @@ export default function App() {
             </View>
           </ScrollView>
         ) : (
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
             <View style={styles.topBar}>
               <TouchableOpacity
                 style={styles.ghostButton}
@@ -1830,18 +1961,29 @@ export default function App() {
                 <Text style={styles.ghostButtonText}>{T.connectBack}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.ghostButton}
-                onPress={goToAttendance}
-              >
-                <Text style={styles.ghostButtonText}>{T.attendance}</Text>
-              </TouchableOpacity>
+              {authUser?.employee ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToAttendance}
+                >
+                  <Text style={styles.ghostButtonText}>{T.attendance}</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {canViewReports ? (
+                <TouchableOpacity
+                  style={styles.ghostButton}
+                  onPress={goToReports}
+                >
+                  <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                </TouchableOpacity>
+              ) : null}
 
               <TouchableOpacity
                 style={styles.ghostButton}
-                onPress={goToReports}
+                onPress={openServerSettings}
               >
-                <Text style={styles.ghostButtonText}>{T.reports}</Text>
+                <Text style={styles.ghostButtonText}>{T.serverSettings}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1995,6 +2137,54 @@ export default function App() {
           </ScrollView>
         )}
 
+        <Modal
+          animationType="fade"
+          transparent
+          visible={serverSettingsOpen}
+          onRequestClose={() => setServerSettingsOpen(false)}
+        >
+          <KeyboardAvoidingView
+            style={styles.modalAvoider}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+          >
+            <View style={styles.modalBackdrop}>
+            <View style={styles.serverModal}>
+              <Text style={styles.cardTitle}>{T.serverSettingsTitle}</Text>
+              <Text style={styles.cardText}>{T.serverSettingsSub}</Text>
+
+              <TextInput
+                value={serverSettingsValue}
+                onChangeText={setServerSettingsValue}
+                placeholder={T.serverAddressHint}
+                placeholderTextColor={COLORS.textSoft}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={styles.input}
+                textAlign="left"
+              />
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.secondaryButton}
+                  onPress={() => setServerSettingsOpen(false)}
+                >
+                  <Text style={styles.buttonText}>{T.cancel}</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.primaryButtonCompact}
+                  onPress={saveServerSettings}
+                >
+                  <Text style={styles.primaryButtonText}>{T.save}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
         <View style={styles.toastWrap}>
           {toasts.map((toast) => (
             <View
@@ -2012,7 +2202,7 @@ export default function App() {
             </View>
           ))}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -2181,6 +2371,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
+  },
+  primaryButtonCompact: {
+    flex: 1,
+    backgroundColor: COLORS.blue,
+    borderRadius: 0,
+    paddingVertical: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 7,
   },
   primaryButtonText: {
     fontFamily: FONT_HEAVY,
@@ -2477,6 +2676,29 @@ const styles = StyleSheet.create({
   controlsRow: {
     flexDirection: "row-reverse",
     marginBottom: 18,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.68)",
+    padding: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalAvoider: {
+    flex: 1,
+  },
+  serverModal: {
+    width: "100%",
+    backgroundColor: COLORS.card,
+    borderRadius: 0,
+    borderWidth: 1,
+    borderColor: COLORS.stroke,
+    padding: 18,
+  },
+  modalActions: {
+    flexDirection: "row-reverse",
+    gap: 10,
+    marginTop: 4,
   },
   cartCard: {
     backgroundColor: COLORS.card,

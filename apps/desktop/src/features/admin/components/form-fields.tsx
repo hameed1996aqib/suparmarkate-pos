@@ -1,6 +1,6 @@
 import { Combobox } from "@/components/ui/combobox";
-import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
+import { ManualDateInput } from "@/components/ui/manual-date-input";
 import type { ReactNode } from "react";
 
 export type LookupItem = {
@@ -56,7 +56,7 @@ export function TextField({
           className="min-h-24 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
         />
       ) : type === "date" ? (
-        <DatePicker value={value} onChange={onChange} />
+        <ManualDateInput value={value} onChange={onChange} />
       ) : (
         <Input
           type={type}

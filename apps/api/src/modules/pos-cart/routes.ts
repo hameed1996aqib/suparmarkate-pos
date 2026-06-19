@@ -3,11 +3,23 @@ import { Hono } from "hono";
 export const posCartRoute = new Hono();
 const posWebSocketPort = process.env.POS_WS_PORT || "4001";
 
+function getConfiguredPublicBaseUrl() {
+  const configured = process.env.PUBLIC_API_BASE_URL || process.env.LAN_API_BASE_URL;
+  if (!configured) return null;
+
+  try {
+    return new URL(configured);
+  } catch {
+    return null;
+  }
+}
+
 function getUrls(c: any, sessionId: string) {
   const url = new URL(c.req.url);
-  const apiBaseUrl = `${url.protocol}//${url.host}`;
-  const hostname = url.hostname;
-  const wsProtocol = url.protocol === "https:" ? "wss" : "ws";
+  const publicUrl = getConfiguredPublicBaseUrl() || url;
+  const apiBaseUrl = `${publicUrl.protocol}//${publicUrl.host}`;
+  const hostname = publicUrl.hostname;
+  const wsProtocol = publicUrl.protocol === "https:" ? "wss" : "ws";
 
   return {
     apiBaseUrl,

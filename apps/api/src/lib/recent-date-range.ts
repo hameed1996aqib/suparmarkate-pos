@@ -1,12 +1,11 @@
 import type { Context } from "hono";
+import { parseKabulDateInput } from "./kabul-date";
 
 function parseDate(value: string | undefined, endOfDay = false) {
   if (!value) return null;
-  const date = new Date(value);
+  const date = parseKabulDateInput(value, endOfDay);
+  if (!date || date === "INVALID_DATE") return null;
   if (Number.isNaN(date.getTime())) return null;
-  if (endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    date.setHours(23, 59, 59, 999);
-  }
   return date;
 }
 

@@ -8,6 +8,7 @@ import { createPostedJournal, createReversalJournal, treasuryAccountCode } from 
 import { getRequestPosDevice } from "../../lib/pos-device";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
+import { parseKabulDateInput } from "../../lib/kabul-date";
 import {
   MoneyDirection,
   MoneyTransactionType,
@@ -67,9 +68,9 @@ const cancelSaleSchema = z.object({
 function parseDate(value: string | null | undefined) {
   if (!value) return null;
 
-  const date = new Date(value);
+  const date = parseKabulDateInput(value);
 
-  if (Number.isNaN(date.getTime())) {
+  if (!date || date === "INVALID_DATE" || Number.isNaN(date.getTime())) {
     return "INVALID_DATE";
   }
 

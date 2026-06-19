@@ -58,6 +58,8 @@ type PartyForm = {
   address: string;
   creditLimit: number;
   paymentTermsDays: number;
+  openingBalanceAmount: number;
+  openingBalanceCurrencyId: string;
   note: string;
   isActive: boolean;
 };
@@ -77,6 +79,8 @@ const emptyPartyForm: PartyForm = {
   address: "",
   creditLimit: 0,
   paymentTermsDays: 0,
+  openingBalanceAmount: 0,
+  openingBalanceCurrencyId: "",
   note: "",
   isActive: true,
 };
@@ -113,6 +117,8 @@ function partyToForm(party: any): PartyForm {
     address: party.address || "",
     creditLimit: Number(party.creditLimit || 0),
     paymentTermsDays: Number(party.paymentTermsDays || 0),
+    openingBalanceAmount: 0,
+    openingBalanceCurrencyId: "",
     note: party.note || "",
     isActive: party.isActive !== false,
   };
@@ -151,6 +157,7 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
   const [form, setForm] = useState<PartyForm>(emptyPartyForm);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [currencies, setCurrencies] = useState<any[]>([]);
   const initialTransactionRange = recentDateRange();
   const [transactionFrom, setTransactionFrom] = useState(initialTransactionRange.from);
   const [transactionTo, setTransactionTo] = useState(initialTransactionRange.to);
@@ -211,8 +218,28 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
     }
   };
 
+  const loadCurrencies = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/currencies`);
+      const json = await res.json().catch(() => null);
+      const items = Array.isArray(json?.data) ? json.data : [];
+      setCurrencies(items);
+      setForm((current) => ({
+        ...current,
+        openingBalanceCurrencyId:
+          current.openingBalanceCurrencyId ||
+          items.find((item: any) => item.isBase)?.id ||
+          items[0]?.id ||
+          "",
+      }));
+    } catch {
+      setCurrencies([]);
+    }
+  };
+
   useEffect(() => {
     void loadParties(1);
+    void loadCurrencies();
   }, [kind]);
 
   useEffect(() => {
@@ -234,7 +261,13 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
   }, [query, rows]);
 
   const openCreate = () => {
-    setForm(emptyPartyForm);
+    setForm({
+      ...emptyPartyForm,
+      openingBalanceCurrencyId:
+        currencies.find((item: any) => item.isBase)?.id ||
+        currencies[0]?.id ||
+        "",
+    });
     setAccounts([]);
     setTransactions([]);
     setDialogOpen(true);
@@ -285,6 +318,11 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
     }
 
     try {
+      if (!form.id && form.openingBalanceAmount > 0 && !form.openingBalanceCurrencyId) {
+        toast.error("برای بیلانس اولیه، کرنسی را انتخاب کنید");
+        return;
+      }
+
       const res = await fetch(
         `${API_BASE_URL}/api/parties${form.id ? `/${form.id}` : ""}`,
         {
@@ -306,6 +344,10 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
             address: form.address || null,
             creditLimit: form.creditLimit,
             paymentTermsDays: form.paymentTermsDays,
+            openingBalanceAmount: form.id ? 0 : form.openingBalanceAmount,
+            openingBalanceCurrencyId: form.id
+              ? null
+              : form.openingBalanceCurrencyId || null,
             note: form.note || null,
             isActive: form.isActive,
           }),
@@ -453,6 +495,40 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
               <TextField label="شهر" value={form.city} onChange={(value) => setForm((current) => ({ ...current, city: value }))} />
               <NumberField label="سقف اعتبار" value={form.creditLimit} onChange={(value) => setForm((current) => ({ ...current, creditLimit: value }))} />
               <NumberField label="مهلت پرداخت / روز" value={form.paymentTermsDays} onChange={(value) => setForm((current) => ({ ...current, paymentTermsDays: value }))} />
+              {!form.id && (
+                <>
+                  <NumberField
+                    label={isCustomer ? "بیلانس اولیه طلب" : "بیلانس اولیه بدهی"}
+                    value={form.openingBalanceAmount}
+                    onChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        openingBalanceAmount: value,
+                      }))
+                    }
+                  />
+                  <label className="grid gap-1.5 text-sm">
+                    <span className="text-muted-foreground">کرنسی بیلانس اولیه</span>
+                    <select
+                      value={form.openingBalanceCurrencyId}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          openingBalanceCurrencyId: event.target.value,
+                        }))
+                      }
+                      className="h-9 border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      <option value="">انتخاب کرنسی</option>
+                      {currencies.map((currency) => (
+                        <option key={currency.id} value={currency.id}>
+                          {currency.code || currency.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              )}
               <label className="grid gap-1.5 text-sm">
                 <span className="text-muted-foreground">وضعیت</span>
                 <button

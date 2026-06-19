@@ -33,6 +33,8 @@ const createPartySchema = z.object({
   address: z.string().trim().max(300).optional().nullable(),
   creditLimit: z.coerce.number().nonnegative().optional(),
   paymentTermsDays: z.coerce.number().int().nonnegative().optional(),
+  openingBalanceAmount: z.coerce.number().nonnegative().optional().default(0),
+  openingBalanceCurrencyId: z.string().trim().optional().nullable(),
   note: z.string().trim().max(500).optional().nullable(),
   isActive: z.boolean().optional()
 });
@@ -256,11 +258,64 @@ partiesRoute.post("/", async (c) => {
     return c.json(zodError(parsed.error), 400);
   }
 
-  const item = await prisma.party.create({
-    data: {
-      ...parsed.data,
-      ...auditCreateData(authUser?.id)
+  const {
+    openingBalanceAmount,
+    openingBalanceCurrencyId,
+    ...partyData
+  } = parsed.data;
+
+  if (Number(openingBalanceAmount || 0) > 0 && !openingBalanceCurrencyId) {
+    return c.json({ message: "Opening balance currency is required" }, 400);
+  }
+
+  const item = await prisma.$transaction(async (tx) => {
+    const party = await tx.party.create({
+      data: {
+        ...partyData,
+        ...auditCreateData(authUser?.id)
+      }
+    });
+
+    if (Number(openingBalanceAmount || 0) > 0 && openingBalanceCurrencyId) {
+      const side =
+        party.type === PartyType.SUPPLIER
+          ? PartyAccountSide.CREDIT
+          : PartyAccountSide.DEBIT;
+
+      await tx.partyAccount.upsert({
+        where: {
+          partyId_currencyId: {
+            partyId: party.id,
+            currencyId: openingBalanceCurrencyId
+          }
+        },
+        create: {
+          partyId: party.id,
+          currencyId: openingBalanceCurrencyId,
+          debitBalance: side === PartyAccountSide.DEBIT ? openingBalanceAmount : 0,
+          creditBalance: side === PartyAccountSide.CREDIT ? openingBalanceAmount : 0
+        },
+        update:
+          side === PartyAccountSide.DEBIT
+            ? { debitBalance: { increment: openingBalanceAmount } }
+            : { creditBalance: { increment: openingBalanceAmount } }
+      });
+
+      await tx.partyTransaction.create({
+        data: {
+          partyId: party.id,
+          currencyId: openingBalanceCurrencyId,
+          type: PartyTransactionType.OPENING_BALANCE,
+          side,
+          amount: openingBalanceAmount,
+          referenceType: "OPENING_BALANCE",
+          referenceId: party.id,
+          note: "Initial balance"
+        }
+      });
     }
+
+    return party;
   });
 
   await writeAudit(c, {
@@ -283,10 +338,16 @@ partiesRoute.patch("/:id", async (c) => {
     return c.json(zodError(parsed.error), 400);
   }
 
+  const {
+    openingBalanceAmount: _openingBalanceAmount,
+    openingBalanceCurrencyId: _openingBalanceCurrencyId,
+    ...partyUpdateData
+  } = parsed.data;
+
   const item = await prisma.party.update({
     where: { id },
     data: {
-      ...parsed.data,
+      ...partyUpdateData,
       ...auditUpdateData(authUser?.id)
     }
   });

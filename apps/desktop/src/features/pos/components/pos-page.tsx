@@ -119,6 +119,9 @@ export function PosPage() {
             categories={pos.productCategories}
             activeCategoryId={pos.productCategoryId}
             isLoading={pos.isLoadingProducts}
+            isLoadingMore={pos.isLoadingMoreProducts}
+            hasMore={pos.productPagination.hasMore}
+            totalProducts={pos.productPagination.total}
             warehouseName={pos.warehouse?.name}
             currencyCode={pos.currency?.code}
             currencyRate={pos.currency?.isBase ? 1 : Number(pos.currency?.latestRate || 1)}
@@ -126,6 +129,7 @@ export function PosPage() {
             isWsConnected={pos.isWsConnected}
             onSearchChange={pos.setProductSearchTerm}
             onCategoryChange={pos.setProductCategoryId}
+            onLoadMore={pos.loadMoreProducts}
             onAddProduct={pos.addProductByBarcode}
             onScanBarcode={pos.addProductByBarcode}
           />

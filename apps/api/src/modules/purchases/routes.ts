@@ -8,6 +8,8 @@ import { createPostedJournal, createReversalJournal, treasuryAccountCode } from 
 import { getRequestPosDevice } from "../../lib/pos-device";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
+import { parseKabulDateInput } from "../../lib/kabul-date";
+import { cacheDeleteByPattern } from "../../lib/cache";
 import {
   MoneyDirection,
   MoneyTransactionType,
@@ -29,6 +31,8 @@ const purchaseItemSchema = z.object({
   unitId: z.string().min(1),
   quantity: z.coerce.number().positive(),
   unitCost: z.coerce.number().nonnegative(),
+  updateSalePrice: z.boolean().optional().default(false),
+  salePrice: z.coerce.number().nonnegative().optional().nullable(),
   expiryDate: z.string().trim().optional().nullable()
 });
 
@@ -59,9 +63,9 @@ const cancelPurchaseSchema = z.object({
 function parseDate(value: string | null | undefined) {
   if (!value) return null;
 
-  const date = new Date(value);
+  const date = parseKabulDateInput(value);
 
-  if (Number.isNaN(date.getTime())) {
+  if (!date || date === "INVALID_DATE" || Number.isNaN(date.getTime())) {
     return "INVALID_DATE";
   }
 
@@ -685,7 +689,12 @@ purchasesRoute.post("/", async (c) => {
     quantityBase: number;
     unitCost: number;
     unitCostBase: number;
+    grossTotalCost: number;
+    allocatedDiscount: number;
     totalCost: number;
+    baseUnitId: string;
+    updateSalePrice: boolean;
+    salePrice: number | null;
     expiryDate: Date | null;
   }> = [];
 
@@ -743,7 +752,7 @@ purchasesRoute.post("/", async (c) => {
 
     const quantityBase = rawItem.quantity * conversionRate;
     const unitCostBase = conversionRate > 0 ? rawItem.unitCost / conversionRate : rawItem.unitCost;
-    const totalCost = rawItem.quantity * rawItem.unitCost;
+    const grossTotalCost = rawItem.quantity * rawItem.unitCost;
 
     preparedItems.push({
       productId: rawItem.productId,
@@ -754,12 +763,17 @@ purchasesRoute.post("/", async (c) => {
       quantityBase,
       unitCost: rawItem.unitCost,
       unitCostBase,
-      totalCost,
+      grossTotalCost,
+      allocatedDiscount: 0,
+      totalCost: grossTotalCost,
+      baseUnitId: product.baseUnitId,
+      updateSalePrice: Boolean(rawItem.updateSalePrice),
+      salePrice: rawItem.salePrice ?? null,
       expiryDate
     });
   }
 
-  const subtotal = preparedItems.reduce((sum, item) => sum + item.totalCost, 0);
+  const subtotal = preparedItems.reduce((sum, item) => sum + item.grossTotalCost, 0);
   const total = subtotal - parsed.data.discount;
 
   if (total < 0) {
@@ -769,6 +783,22 @@ purchasesRoute.post("/", async (c) => {
   if (parsed.data.paidAmount > total) {
     return c.json({ message: "Paid amount cannot be greater than total" }, 400);
   }
+
+  let remainingDiscount = parsed.data.discount;
+  preparedItems.forEach((item, index) => {
+    const allocatedDiscount =
+      index === preparedItems.length - 1
+        ? remainingDiscount
+        : subtotal > 0
+          ? Number(((item.grossTotalCost / subtotal) * parsed.data.discount).toFixed(4))
+          : 0;
+    const netTotalCost = Math.max(0, item.grossTotalCost - allocatedDiscount);
+    item.allocatedDiscount = allocatedDiscount;
+    item.totalCost = netTotalCost;
+    item.unitCost = item.quantity > 0 ? netTotalCost / item.quantity : item.unitCost;
+    item.unitCostBase = item.quantityBase > 0 ? netTotalCost / item.quantityBase : item.unitCostBase;
+    remainingDiscount = Number((remainingDiscount - allocatedDiscount).toFixed(4));
+  });
 
   const remainingAmount = total - parsed.data.paidAmount;
 
@@ -936,6 +966,67 @@ purchasesRoute.post("/", async (c) => {
       });
 
       createdItems.push(purchaseItem);
+
+      if (preparedItem.updateSalePrice && preparedItem.salePrice !== null) {
+        const salePriceInBaseCurrency =
+          preparedItem.salePrice * currencySnapshot.exchangeRate;
+        const baseUnitSalePrice =
+          preparedItem.conversionRate > 0
+            ? salePriceInBaseCurrency / preparedItem.conversionRate
+            : salePriceInBaseCurrency;
+        const purchasePriceInBaseCurrency =
+          preparedItem.unitCost * currencySnapshot.exchangeRate;
+        const baseUnitPurchasePrice =
+          preparedItem.unitCostBase * currencySnapshot.exchangeRate;
+
+        await tx.productUnit.upsert({
+          where: {
+            productId_unitId: {
+              productId: preparedItem.productId,
+              unitId: preparedItem.unitId
+            }
+          },
+          create: {
+            productId: preparedItem.productId,
+            unitId: preparedItem.unitId,
+            conversionRate: preparedItem.conversionRate,
+            salePrice: salePriceInBaseCurrency,
+            purchasePrice: purchasePriceInBaseCurrency,
+            isDefaultPurchase: false,
+            isDefaultSale: false
+          },
+          update: {
+            conversionRate: preparedItem.conversionRate,
+            salePrice: salePriceInBaseCurrency,
+            purchasePrice: purchasePriceInBaseCurrency
+          }
+        });
+
+        if (preparedItem.baseUnitId && preparedItem.baseUnitId !== preparedItem.unitId) {
+          await tx.productUnit.upsert({
+            where: {
+              productId_unitId: {
+                productId: preparedItem.productId,
+                unitId: preparedItem.baseUnitId
+              }
+            },
+            create: {
+              productId: preparedItem.productId,
+              unitId: preparedItem.baseUnitId,
+              conversionRate: 1,
+              salePrice: baseUnitSalePrice,
+              purchasePrice: baseUnitPurchasePrice,
+              isDefaultPurchase: false,
+              isDefaultSale: false
+            },
+            update: {
+              conversionRate: 1,
+              salePrice: baseUnitSalePrice,
+              purchasePrice: baseUnitPurchasePrice
+            }
+          });
+        }
+      }
     }
 
     let moneyTransaction = null;
@@ -1110,6 +1201,10 @@ purchasesRoute.post("/", async (c) => {
       invoiceNo: parsed.data.invoiceNo || null
     }
   });
+
+  if (preparedItems.some((item) => item.updateSalePrice)) {
+    await cacheDeleteByPattern("pos:products:*");
+  }
 
   return c.json({ data: result }, 201);
 });

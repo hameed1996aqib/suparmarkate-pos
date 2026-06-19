@@ -164,7 +164,7 @@
   }
 
   html {
-    scrollbar-color: color-mix(in oklab, var(--primary) 65%, transparent)
+    scrollbar-color: color-mix(in oklab, var(--primary) 15%, transparent)
       color-mix(in oklab, var(--card) 90%, black);
     scrollbar-width: thin;
   }

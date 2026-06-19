@@ -74,6 +74,8 @@ export type ProductSearchItem = {
   imageUrl?: string | null;
   isActive?: boolean;
   hasExpiry?: boolean;
+  minStock?: string | number | null;
+  totalStock?: string | number | null;
   categoryId?: string | null;
   category?: {
     id: string;
@@ -136,6 +138,20 @@ export type PosDefaults = {
   warehouse: Warehouse | null;
   cashAccountId: string;
   bankAccountId: string;
+};
+
+export type PosProductSearchResponse = {
+  data: ProductSearchItem[];
+  pagination: {
+    offset: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+    nextOffset: number;
+  };
+  facets?: {
+    categories?: Array<{ id: string; name: string; count: number }>;
+  };
 };
 
 export type CartPayload = {

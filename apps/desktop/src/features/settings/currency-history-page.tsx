@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Combobox } from "@/components/ui/combobox";
 import { ConfirmButton } from "@/components/ui/confirm-action";
 import { DatePicker } from "@/components/ui/date-picker";
+import { ManualDateInput } from "@/components/ui/manual-date-input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -380,7 +381,7 @@ export function CurrencyHistoryPage() {
               </label>
               <label className="grid gap-1.5 md:col-span-2">
                 <span className="text-sm text-muted-foreground">تاریخ مؤثر</span>
-                <DatePicker
+                <ManualDateInput
                   value={form.effectiveAt}
                   onChange={(value) => setForm((current) => ({ ...current, effectiveAt: value }))}
                 />

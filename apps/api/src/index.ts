@@ -62,6 +62,54 @@ const corsOrigins = (process.env.CORS_ORIGINS || "")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function prismaErrorCode(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error)) return "";
+  return String((error as { code?: unknown }).code || "");
+}
+
+function publicErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return "Internal server error";
+}
+
+function publicErrorStatus(error: unknown) {
+  const code = prismaErrorCode(error);
+
+  if (code === "P2002") return 409;
+  if (code === "P2003") return 409;
+  if (code === "P2025") return 404;
+
+  if (error instanceof Error && error.message.trim()) return 400;
+
+  return 500;
+}
+
+function publicPrismaMessage(error: unknown) {
+  const code = prismaErrorCode(error);
+  const target =
+    error && typeof error === "object" && "meta" in error
+      ? (error as { meta?: { target?: unknown } }).meta?.target
+      : null;
+  const targetText = Array.isArray(target) ? target.join(", ") : String(target || "");
+
+  if (code === "P2002") {
+    if (targetText.includes("barcode")) {
+      return "این بارکود قبلاً برای محصول دیگری ثبت شده است.";
+    }
+    return "این معلومات قبلاً در سیستم ثبت شده است و تکراری قابل ثبت نیست.";
+  }
+
+  if (code === "P2003") {
+    return "این رکورد به معلومات دیگر سیستم وابسته است و این عملیات قابل انجام نیست.";
+  }
+
+  if (code === "P2025") {
+    return "رکورد مورد نظر پیدا نشد.";
+  }
+
+  return "";
+}
+
 app.use(
   "*",
   cors({
@@ -167,16 +215,28 @@ app.notFound((c) => {
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) {
-    return error.getResponse();
+    const response = error.getResponse();
+    const status = response.status || error.status || 500;
+    return c.json(
+      {
+        message: error.message || response.statusText || "درخواست انجام نشد"
+      },
+      status as 400
+    );
   }
 
   console.error(error);
 
+  const prismaMessage = publicPrismaMessage(error);
+  const status = publicErrorStatus(error);
+
   return c.json(
     {
-      message: "Internal server error"
+      message:
+        prismaMessage ||
+        (status < 500 ? publicErrorMessage(error) : "Internal server error")
     },
-    500
+    status as 400
   );
 });
 

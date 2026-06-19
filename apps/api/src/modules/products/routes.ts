@@ -58,6 +58,26 @@ async function resolveProductBarcode(value: string | null | undefined) {
   return normalized || generateUniqueProductBarcode();
 }
 
+function duplicateBarcodeMessage(barcode: string) {
+  return `بارکود ${barcode} قبلاً برای محصول دیگری ثبت شده است. لطفاً بارکود دیگر وارد کنید یا فیلد بارکود را خالی بگذارید تا سیستم بارکود جدید بسازد.`;
+}
+
+function isUniqueConstraintError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  return (
+    "code" in error &&
+    (error as { code?: string }).code === "P2002"
+  );
+}
+
+async function ensureBarcodeIsAvailable(barcode: string, excludeProductId?: string) {
+  const existing = await prisma.product.findUnique({ where: { barcode } });
+
+  if (existing && existing.id !== excludeProductId) {
+    throw new Error(duplicateBarcodeMessage(barcode));
+  }
+}
+
 function productImageExtension(mimeType: string, originalName: string) {
   const ext = path.extname(originalName).toLowerCase();
   if ([".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)) return ext;
@@ -144,45 +164,107 @@ productsRoute.get("/pos-search", async (c) => {
   const search = (c.req.query("search") || "").trim();
   const categoryId = (c.req.query("categoryId") || "").trim();
   const requestedLimit = Number.parseInt(c.req.query("limit") || "60", 10);
+  const requestedOffset = Number.parseInt(c.req.query("offset") || "0", 10);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 60, 1), 100);
-  const cacheKey = `pos:products:v1:${categoryId || "all"}:${limit}:${search.toLowerCase()}`;
-  const cached = await cacheGetJson<unknown[]>(cacheKey);
+  const offset = Math.max(Number.isFinite(requestedOffset) ? requestedOffset : 0, 0);
+  const cacheKey = `pos:products:v2:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}`;
+  const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
 
   if (cached) {
-    return c.json({ data: cached, cache: "hit" });
+    return c.json({ ...cached, cache: "hit" });
   }
 
-  const items = await prisma.product.findMany({
-    where: {
-      deletedAt: null,
-      isActive: true,
-      ...(categoryId ? { categoryId } : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
-              { barcode: { contains: search, mode: "insensitive" as const } },
-              { sku: { contains: search, mode: "insensitive" as const } }
-            ]
-          }
-        : {})
-    },
-    include: {
-      category: true,
-      baseUnit: true,
-      defaultWarehouse: true,
-      units: {
-        include: {
-          unit: true
-        }
+  const searchWhere = search
+    ? {
+        OR: [
+          { name: { contains: search, mode: "insensitive" as const } },
+          { barcode: { contains: search, mode: "insensitive" as const } },
+          { sku: { contains: search, mode: "insensitive" as const } }
+        ]
       }
-    },
-    orderBy: [{ name: "asc" }, { createdAt: "desc" }],
-    take: limit
-  });
+    : {};
+  const where = {
+    deletedAt: null,
+    isActive: true,
+    ...(categoryId ? { categoryId } : {}),
+    ...searchWhere
+  };
+  const facetWhere = {
+    deletedAt: null,
+    isActive: true,
+    ...searchWhere
+  };
 
-  await cacheSetJson(cacheKey, items, 45);
-  return c.json({ data: items, cache: "miss" });
+  const [items, total, categoryRows] = await Promise.all([
+    prisma.product.findMany({
+      where,
+      include: {
+        category: true,
+        baseUnit: true,
+        defaultWarehouse: true,
+        units: {
+          include: {
+            unit: true
+          }
+        }
+      },
+      orderBy: [{ name: "asc" }, { createdAt: "desc" }],
+      skip: offset,
+      take: limit
+    }),
+    prisma.product.count({ where }),
+    prisma.product.groupBy({
+      by: ["categoryId"],
+      where: facetWhere,
+      _count: { _all: true }
+    })
+  ]);
+  const productIds = items.map((item) => item.id);
+  const stockRows = productIds.length
+    ? await prisma.stockBalance.groupBy({
+        by: ["productId"],
+        where: { productId: { in: productIds } },
+        _sum: { quantityBase: true }
+      })
+    : [];
+  const stockByProductId = new Map(
+    stockRows.map((row) => [row.productId, Number(row._sum.quantityBase || 0)])
+  );
+  const categoryIds = categoryRows.map((row) => row.categoryId).filter((id): id is string => Boolean(id));
+  const categories = categoryIds.length
+    ? await prisma.productCategory.findMany({
+        where: { id: { in: categoryIds }, deletedAt: null, isActive: true },
+        select: { id: true, name: true }
+      })
+    : [];
+  const categoryNameById = new Map(categories.map((item) => [item.id, item.name]));
+  const facets = categoryRows
+    .filter((row) => row.categoryId && categoryNameById.has(row.categoryId))
+    .map((row) => ({
+      id: row.categoryId as string,
+      name: categoryNameById.get(row.categoryId as string) || "",
+      count: row._count._all
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const payload = {
+    data: items.map((item) => ({
+      ...item,
+      totalStock: stockByProductId.get(item.id) || 0
+    })),
+    pagination: {
+      offset,
+      limit,
+      total,
+      hasMore: offset + items.length < total,
+      nextOffset: offset + items.length
+    },
+    facets: {
+      categories: facets
+    }
+  };
+
+  await cacheSetJson(cacheKey, payload, 10);
+  return c.json({ ...payload, cache: "miss" });
 });
 
 productsRoute.get("/:id", async (c) => {
@@ -221,34 +303,43 @@ productsRoute.post("/", async (c) => {
 
   const { units, ...productData } = parsed.data;
   const barcode = await resolveProductBarcode(productData.barcode);
+  await ensureBarcodeIsAvailable(barcode);
 
-  const item = await prisma.product.create({
-    data: {
-      ...productData,
-      barcode,
-      ...auditCreateData(authUser?.id),
-      units: {
-        create: units.map((unit) => ({
-          unitId: unit.unitId,
-          conversionRate: unit.conversionRate,
-          purchasePrice: unit.purchasePrice ?? null,
-          salePrice: unit.salePrice ?? null,
-          isDefaultPurchase: unit.isDefaultPurchase ?? false,
-          isDefaultSale: unit.isDefaultSale ?? false
-        }))
-      }
-    },
-    include: {
-      category: true,
-      baseUnit: true,
-      defaultWarehouse: true,
-      units: {
-        include: {
-          unit: true
+  let item;
+  try {
+    item = await prisma.product.create({
+      data: {
+        ...productData,
+        barcode,
+        ...auditCreateData(authUser?.id),
+        units: {
+          create: units.map((unit) => ({
+            unitId: unit.unitId,
+            conversionRate: unit.conversionRate,
+            purchasePrice: unit.purchasePrice ?? null,
+            salePrice: unit.salePrice ?? null,
+            isDefaultPurchase: unit.isDefaultPurchase ?? false,
+            isDefaultSale: unit.isDefaultSale ?? false
+          }))
+        }
+      },
+      include: {
+        category: true,
+        baseUnit: true,
+        defaultWarehouse: true,
+        units: {
+          include: {
+            unit: true
+          }
         }
       }
+    });
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return c.json({ message: duplicateBarcodeMessage(barcode) }, 409);
     }
-  });
+    throw error;
+  }
 
   await writeAudit(c, {
     action: "PRODUCT_CREATED",
@@ -256,7 +347,7 @@ productsRoute.post("/", async (c) => {
     entityId: item.id,
     metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
   });
-  await cacheDeleteByPattern("pos:products:v1:*");
+  await cacheDeleteByPattern("pos:products:*");
 
   return c.json({ data: item }, 201);
 });
@@ -279,45 +370,60 @@ productsRoute.patch("/:id", async (c) => {
       : {})
   };
 
-  const item = await prisma.$transaction(async (tx) => {
-    if (units) {
-      await tx.productUnit.deleteMany({
-        where: { productId: id }
-      });
-    }
+  if (nextProductData.barcode) {
+    await ensureBarcodeIsAvailable(nextProductData.barcode, id);
+  }
 
-    return tx.product.update({
-      where: { id },
-      data: {
-        ...nextProductData,
-        ...auditUpdateData(authUser?.id),
-        ...(units
-          ? {
-              units: {
-                create: units.map((unit) => ({
-                  unitId: unit.unitId,
-                  conversionRate: unit.conversionRate,
-                  purchasePrice: unit.purchasePrice ?? null,
-                  salePrice: unit.salePrice ?? null,
-                  isDefaultPurchase: unit.isDefaultPurchase ?? false,
-                  isDefaultSale: unit.isDefaultSale ?? false
-                }))
+  let item;
+  try {
+    item = await prisma.$transaction(async (tx) => {
+      if (units) {
+        await tx.productUnit.deleteMany({
+          where: { productId: id }
+        });
+      }
+
+      return tx.product.update({
+        where: { id },
+        data: {
+          ...nextProductData,
+          ...auditUpdateData(authUser?.id),
+          ...(units
+            ? {
+                units: {
+                  create: units.map((unit) => ({
+                    unitId: unit.unitId,
+                    conversionRate: unit.conversionRate,
+                    purchasePrice: unit.purchasePrice ?? null,
+                    salePrice: unit.salePrice ?? null,
+                    isDefaultPurchase: unit.isDefaultPurchase ?? false,
+                    isDefaultSale: unit.isDefaultSale ?? false
+                  }))
+                }
               }
+            : {})
+        },
+        include: {
+          category: true,
+          baseUnit: true,
+          defaultWarehouse: true,
+          units: {
+            include: {
+              unit: true
             }
-          : {})
-      },
-      include: {
-        category: true,
-        baseUnit: true,
-        defaultWarehouse: true,
-        units: {
-          include: {
-            unit: true
           }
         }
-      }
+      });
     });
-  });
+  } catch (error) {
+    if (isUniqueConstraintError(error) && nextProductData.barcode) {
+      return c.json(
+        { message: duplicateBarcodeMessage(nextProductData.barcode) },
+        409
+      );
+    }
+    throw error;
+  }
 
   await writeAudit(c, {
     action: "PRODUCT_UPDATED",
@@ -325,7 +431,7 @@ productsRoute.patch("/:id", async (c) => {
     entityId: item.id,
     metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
   });
-  await cacheDeleteByPattern("pos:products:v1:*");
+  await cacheDeleteByPattern("pos:products:*");
 
   return c.json({ data: item });
 });
@@ -389,7 +495,7 @@ productsRoute.post("/:id/image", async (c) => {
     entityId: id,
     metadata: { imageUrl }
   });
-  await cacheDeleteByPattern("pos:products:v1:*");
+  await cacheDeleteByPattern("pos:products:*");
 
   return c.json({ data: updated });
 });
@@ -450,7 +556,7 @@ productsRoute.delete("/:id", async (c) => {
     entityId: item.id,
     metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
   });
-  await cacheDeleteByPattern("pos:products:v1:*");
+  await cacheDeleteByPattern("pos:products:*");
 
   return c.json({ message: "Product deactivated", data: item });
 });

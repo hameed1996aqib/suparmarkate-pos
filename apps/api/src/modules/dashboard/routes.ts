@@ -3,6 +3,7 @@ import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
 import { getCurrentCurrencyRates } from "../../lib/currency-rates";
+import { kabulDateString, parseKabulDateInput } from "../../lib/kabul-date";
 
 export const dashboardRoute = new Hono();
 
@@ -11,9 +12,8 @@ type DashboardPeriod = "today" | "week" | "month" | "fourMonths";
 const number = (value: unknown) => Number(value ?? 0);
 
 function startOfDay(date = new Date()) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
+  const parsed = parseKabulDateInput(kabulDateString(date));
+  return parsed && parsed !== "INVALID_DATE" ? parsed : new Date(date);
 }
 
 function periodRange(period: DashboardPeriod) {
@@ -31,9 +31,9 @@ function parsePeriod(value?: string): DashboardPeriod {
 
 function bucketKey(date: Date, period: DashboardPeriod) {
   if (period === "fourMonths") {
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    return kabulDateString(date).slice(0, 7);
   }
-  return date.toISOString().slice(0, 10);
+  return kabulDateString(date);
 }
 
 function rangeBuckets(start: Date, end: Date, period: DashboardPeriod) {
@@ -45,8 +45,8 @@ function rangeBuckets(start: Date, end: Date, period: DashboardPeriod) {
       rows.push({
         key,
         label: period === "fourMonths"
-          ? cursor.toLocaleDateString("fa-AF", { month: "short" })
-          : cursor.toLocaleDateString("fa-AF", { month: "short", day: "numeric" }),
+          ? cursor.toLocaleDateString("fa-AF", { timeZone: "Asia/Kabul", month: "short" })
+          : cursor.toLocaleDateString("fa-AF", { timeZone: "Asia/Kabul", month: "short", day: "numeric" }),
         sales: 0,
         purchases: 0
       });
@@ -59,8 +59,8 @@ function rangeBuckets(start: Date, end: Date, period: DashboardPeriod) {
 function dateBucket(period: DashboardPeriod, column: string) {
   return Prisma.raw(
     period === "fourMonths"
-      ? `TO_CHAR(${column}, 'YYYY-MM')`
-      : `TO_CHAR(${column}, 'YYYY-MM-DD')`
+      ? `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM')`
+      : `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM-DD')`
   );
 }
 
@@ -88,15 +88,15 @@ dashboardRoute.get("/summary", async (c) => {
   const purchaseCurrencyFilter = currencyId ? Prisma.sql`AND p."currencyId" = ${currencyId}` : Prisma.empty;
   const saleReturnCurrencyFilter = currencyId ? Prisma.sql`AND sr."currencyId" = ${currencyId}` : Prisma.empty;
   const purchaseReturnCurrencyFilter = currencyId ? Prisma.sql`AND pr."currencyId" = ${currencyId}` : Prisma.empty;
-  const totalColumn = Prisma.raw(currencyId ? `"total"` : `"baseTotal"`);
-  const paidColumn = Prisma.raw(currencyId ? `"paidAmount"` : `"basePaidAmount"`);
-  const remainingColumn = Prisma.raw(currencyId ? `"remainingAmount"` : `"baseRemainingAmount"`);
-  const subtotalColumn = Prisma.raw(currencyId ? `"subtotal"` : `"baseSubtotal"`);
+  const totalColumn = Prisma.raw(currencyId ? `"total"` : `COALESCE(NULLIF("baseTotal", 0), "total" * COALESCE("exchangeRate", 1))`);
+  const paidColumn = Prisma.raw(currencyId ? `"paidAmount"` : `COALESCE(NULLIF("basePaidAmount", 0), "paidAmount" * COALESCE("exchangeRate", 1))`);
+  const remainingColumn = Prisma.raw(currencyId ? `"remainingAmount"` : `COALESCE(NULLIF("baseRemainingAmount", 0), "remainingAmount" * COALESCE("exchangeRate", 1))`);
+  const subtotalColumn = Prisma.raw(currencyId ? `"subtotal"` : `COALESCE(NULLIF("baseSubtotal", 0), "subtotal" * COALESCE("exchangeRate", 1))`);
   const moneyColumn = Prisma.raw(currencyId ? `"amount"` : `"baseAmount"`);
-  const saleTotal = Prisma.raw(currencyId ? `s."total"` : `s."baseTotal"`);
-  const purchaseTotal = Prisma.raw(currencyId ? `p."total"` : `p."baseTotal"`);
-  const saleReturnTotal = Prisma.raw(currencyId ? `sr."subtotal"` : `sr."baseSubtotal"`);
-  const purchaseReturnTotal = Prisma.raw(currencyId ? `pr."subtotal"` : `pr."baseSubtotal"`);
+  const saleTotal = Prisma.raw(currencyId ? `s."total"` : `COALESCE(NULLIF(s."baseTotal", 0), s."total" * COALESCE(s."exchangeRate", 1))`);
+  const purchaseTotal = Prisma.raw(currencyId ? `p."total"` : `COALESCE(NULLIF(p."baseTotal", 0), p."total" * COALESCE(p."exchangeRate", 1))`);
+  const saleReturnTotal = Prisma.raw(currencyId ? `sr."subtotal"` : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`);
+  const purchaseReturnTotal = Prisma.raw(currencyId ? `pr."subtotal"` : `COALESCE(NULLIF(pr."baseSubtotal", 0), pr."subtotal" * COALESCE(pr."exchangeRate", 1))`);
   const saleItemValue = Prisma.raw(currencyId ? `si."totalPrice"` : `si."totalPrice" * s."exchangeRate"`);
   const saleReturnItemValue = Prisma.raw(currencyId ? `sri."totalPrice"` : `sri."totalPrice" * sr."exchangeRate"`);
   const bucketSale = dateBucket(period, `s."saleDate"`);

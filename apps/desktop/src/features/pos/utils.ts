@@ -1,4 +1,5 @@
 import type { Currency } from "./types";
+import { getApiBaseUrl as getConfiguredApiBaseUrl } from "@/lib/api-config";
 
 export function money(value: number, currency?: Currency | null) {
   const label = currency?.symbol || currency?.code || "";
@@ -9,5 +10,5 @@ export function money(value: number, currency?: Currency | null) {
 }
 
 export function getApiBaseUrl() {
-  return window.electronAPI?.getLanApiBaseUrl(4000) || "http://localhost:4000";
+  return getConfiguredApiBaseUrl();
 }

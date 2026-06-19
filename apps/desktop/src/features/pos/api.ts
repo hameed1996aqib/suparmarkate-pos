@@ -6,6 +6,7 @@ import type {
   CustomerOption,
   HeldCart,
   PosDefaults,
+  PosProductSearchResponse,
   PosSessionResponse,
   ProductSearchItem,
   Warehouse,
@@ -183,18 +184,31 @@ export async function scanPosBarcode(input: {
   });
 }
 
-export async function loadProducts(baseUrl: string, search = "") {
+export async function loadProducts(
+  baseUrl: string,
+  input: {
+    search?: string;
+    categoryId?: string;
+    offset?: number;
+    limit?: number;
+  } = {},
+) {
   const params = new URLSearchParams({
-    limit: "60",
+    limit: String(input.limit || 60),
+    offset: String(input.offset || 0),
   });
 
-  if (search.trim()) {
-    params.set("search", search.trim());
+  if (input.search?.trim()) {
+    params.set("search", input.search.trim());
   }
 
-  return fetchJson<{
-    data: ProductSearchItem[];
-  }>(`${baseUrl}/api/products/pos-search?${params.toString()}`);
+  if (input.categoryId && input.categoryId !== "all") {
+    params.set("categoryId", input.categoryId);
+  }
+
+  return fetchJson<PosProductSearchResponse>(
+    `${baseUrl}/api/products/pos-search?${params.toString()}`,
+  );
 }
 
 function normalizeCustomer(item: any, source?: string): CustomerOption | null {
@@ -252,10 +266,7 @@ export async function loadCustomers(baseUrl: string) {
       const customers = rawItems
         .map((item: any) => normalizeCustomer(item, url))
         .filter(Boolean)
-        .filter(
-          (item: CustomerOption) =>
-            item.isActive !== false && Number(item.accountsCount || 0) > 0,
-        );
+        .filter((item: CustomerOption) => item.isActive !== false);
 
       if (customers.length) {
         return {

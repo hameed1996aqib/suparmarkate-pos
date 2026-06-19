@@ -12,6 +12,19 @@ type DatePickerProps = {
   className?: string;
 };
 
+function formatAfghanDate(value: string, placeholder: string) {
+  if (!value) return placeholder;
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return placeholder;
+
+  return new Intl.DateTimeFormat("fa-AF", {
+    calendar: "persian",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+}
+
 export function DatePicker({
   value,
   onChange,
@@ -19,13 +32,7 @@ export function DatePicker({
   className,
 }: DatePickerProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const formatted = value
-    ? new Intl.DateTimeFormat("fa-AF", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      }).format(new Date(value))
-    : placeholder;
+  const formatted = formatAfghanDate(value, placeholder);
 
   return (
     <div className={cn("relative", className)}>

@@ -20,6 +20,21 @@ if (-not $docker) {
   throw "Docker was not found. Install Docker Desktop first, start it, then run this command again."
 }
 
+$lanIp = (
+  Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.IPAddress -notlike "127.*" -and
+      $_.IPAddress -notlike "169.254.*" -and
+      $_.PrefixOrigin -ne "WellKnown"
+    } |
+    Sort-Object InterfaceMetric |
+    Select-Object -First 1 -ExpandProperty IPAddress
+)
+if (-not $lanIp) {
+  $lanIp = "127.0.0.1"
+}
+$lanApiBaseUrl = "http://$lanIp`:$ApiPort"
+
 $composeEnvPath = Join-Path $ProjectDir ".env"
 if (-not (Test-Path $composeEnvPath)) {
   $jwtBytes = New-Object byte[] 48
@@ -34,6 +49,8 @@ if (-not (Test-Path $composeEnvPath)) {
   @"
 JWT_SECRET=$jwtSecret
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+LAN_API_BASE_URL=$lanApiBaseUrl
+PUBLIC_API_BASE_URL=$lanApiBaseUrl
 SEED_ADMIN_USERNAME=admin
 SEED_ADMIN_PASSWORD=change-me-now
 BACKUP_RETENTION_COUNT=7
@@ -41,7 +58,17 @@ BACKUP_SCHEDULE_ENABLED=true
 "@ | Set-Content -Path $composeEnvPath -Encoding UTF8
 
   Write-Host "Created Docker environment file: $composeEnvPath"
+} else {
+  $composeEnvContent = Get-Content $composeEnvPath -Raw
+  if ($composeEnvContent -notmatch "(?m)^LAN_API_BASE_URL=") {
+    Add-Content -Path $composeEnvPath -Value "LAN_API_BASE_URL=$lanApiBaseUrl"
+  }
+  if ($composeEnvContent -notmatch "(?m)^PUBLIC_API_BASE_URL=") {
+    Add-Content -Path $composeEnvPath -Value "PUBLIC_API_BASE_URL=$lanApiBaseUrl"
+  }
 }
+
+Write-Host "Muhaseb LAN API URL: $lanApiBaseUrl"
 
 Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 & (Join-Path $PSScriptRoot "configure-firewall.ps1") `

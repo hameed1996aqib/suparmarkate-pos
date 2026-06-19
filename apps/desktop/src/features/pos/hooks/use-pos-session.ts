@@ -64,9 +64,20 @@ export function usePosSession() {
   const [paymentMethod, setPaymentMethodState] = useState<"CASH" | "CARD" | "SPLIT">("CASH");
 
   const [products, setProducts] = useState<ProductSearchItem[]>([]);
+  const [productCategories, setProductCategories] = useState<
+    Array<{ id: string; name: string; count: number }>
+  >([]);
+  const [productPagination, setProductPagination] = useState({
+    offset: 0,
+    limit: 60,
+    total: 0,
+    hasMore: false,
+    nextOffset: 0,
+  });
   const [productSearchTerm, setProductSearchTerm] = useState("");
   const [productCategoryId, setProductCategoryId] = useState("all");
   const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+  const [isLoadingMoreProducts, setIsLoadingMoreProducts] = useState(false);
 
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [customerSearchTerm, setCustomerSearchTerm] = useState("");
@@ -142,51 +153,6 @@ export function usePosSession() {
   const changeAmount = useMemo(() => {
     return Math.max(0, effectivePaidAmount - payableTotal);
   }, [payableTotal, effectivePaidAmount]);
-
-  const filteredProducts = useMemo(() => {
-    const query = productSearchTerm.trim().toLowerCase();
-    const activeProducts = products.filter((item) => item.isActive !== false);
-    const categoryProducts =
-      productCategoryId === "all"
-        ? activeProducts
-        : activeProducts.filter(
-            (item) => (item.categoryId || item.category?.id || "") === productCategoryId,
-          );
-
-    if (!query) return categoryProducts.slice(0, 8);
-
-    return categoryProducts
-      .filter((item) => {
-        return (
-          item.name?.toLowerCase().includes(query) ||
-          item.barcode?.toLowerCase().includes(query) ||
-          item.sku?.toLowerCase().includes(query)
-        );
-      })
-      .slice(0, 8);
-  }, [products, productCategoryId, productSearchTerm]);
-
-  const productCategories = useMemo(() => {
-    const map = new Map<string, { id: string; name: string; count: number }>();
-
-    for (const product of products) {
-      if (product.isActive === false) continue;
-
-      const id = product.categoryId || product.category?.id;
-      const name = product.category?.name;
-
-      if (!id || !name) continue;
-
-      const current = map.get(id);
-      map.set(id, {
-        id,
-        name,
-        count: (current?.count || 0) + 1,
-      });
-    }
-
-    return Array.from(map.values()).sort((a, b) => b.count - a.count);
-  }, [products]);
 
   const filteredCustomers = useMemo(() => {
     const query = customerSearchTerm.trim().toLowerCase();
@@ -307,7 +273,34 @@ export function usePosSession() {
   }
 
   function getEffectiveApiBaseUrl() {
-    return apiBaseUrlOverride.trim() || getApiBaseUrl();
+    const configuredBaseUrl = getApiBaseUrl();
+    const override = apiBaseUrlOverride.trim();
+    if (!override) return configuredBaseUrl;
+
+    try {
+      const overrideUrl = new URL(override);
+      const configuredUrl = new URL(configuredBaseUrl);
+      const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+
+      if (
+        localHosts.has(overrideUrl.hostname) &&
+        !localHosts.has(configuredUrl.hostname)
+      ) {
+        return configuredBaseUrl;
+      }
+    } catch {
+      return configuredBaseUrl;
+    }
+
+    return override;
+  }
+
+  function buildPosWebSocketUrl(baseUrl: string, sessionId: string) {
+    const api = new URL(baseUrl);
+    const protocol = api.protocol === "https:" ? "wss:" : "ws:";
+    const port = import.meta.env.VITE_POS_WS_PORT || "4001";
+
+    return `${protocol}//${api.hostname}:${port}?sessionId=${encodeURIComponent(sessionId)}&clientType=desktop`;
   }
 
   function applyServerCart(payload?: Partial<CartPayload> | null) {
@@ -609,12 +602,45 @@ export function usePosSession() {
   async function loadProductList(baseUrl: string, search = productSearchTerm) {
     try {
       setIsLoadingProducts(true);
-      const res = await loadProducts(baseUrl, search);
+      const res = await loadProducts(baseUrl, {
+        search,
+        categoryId: productCategoryId,
+        offset: 0,
+        limit: 60,
+      });
       setProducts(res.data || []);
+      setProductPagination(res.pagination);
+      setProductCategories(res.facets?.categories || []);
     } catch (error: any) {
       toast.error(error?.message || "لیست محصولات دریافت نشد");
     } finally {
       setIsLoadingProducts(false);
+    }
+  }
+
+  async function loadMoreProducts() {
+    const baseUrl = apiBaseUrl || getEffectiveApiBaseUrl();
+
+    if (!baseUrl || isLoadingProducts || isLoadingMoreProducts || !productPagination.hasMore) {
+      return;
+    }
+
+    try {
+      setIsLoadingMoreProducts(true);
+      const res = await loadProducts(baseUrl, {
+        search: productSearchTerm,
+        categoryId: productCategoryId,
+        offset: productPagination.nextOffset,
+        limit: 60,
+      });
+
+      setProducts((current) => [...current, ...(res.data || [])]);
+      setProductPagination(res.pagination);
+      setProductCategories(res.facets?.categories || []);
+    } catch (error: any) {
+      toast.error(error?.message || "لیست محصولات دریافت نشد");
+    } finally {
+      setIsLoadingMoreProducts(false);
     }
   }
 
@@ -815,7 +841,10 @@ export function usePosSession() {
       await loadProductList(baseUrl);
       await loadCustomerList(baseUrl);
 
-      connectWebSocket(sessionRes.data.connection.desktopWebSocketUrl);
+      connectWebSocket(
+        buildPosWebSocketUrl(baseUrl, sessionRes.data.session.id) ||
+          sessionRes.data.connection.desktopWebSocketUrl,
+      );
       setStatus("QR را با اپ موبایل اسکن کنید");
     } catch (error: any) {
       setStatus(error?.message || "خطا در آماده‌سازی POS");
@@ -1273,7 +1302,7 @@ export function usePosSession() {
     return () => window.clearTimeout(timer);
     // loadProductList intentionally stays local to keep the POS hook compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBaseUrl, productSearchTerm]);
+  }, [apiBaseUrl, productCategoryId, productSearchTerm]);
 
   return {
     apiBaseUrl,
@@ -1297,10 +1326,13 @@ export function usePosSession() {
     productCategoryId,
     setProductCategoryId,
     productCategories,
-    filteredProducts,
+    filteredProducts: products,
+    productPagination,
     isLoadingProducts,
+    isLoadingMoreProducts,
     addProductByBarcode,
     loadProductList,
+    loadMoreProducts,
 
     customers,
     customerSearchTerm,

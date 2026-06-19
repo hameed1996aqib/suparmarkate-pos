@@ -4,6 +4,7 @@ import { getCurrentCurrencyRates } from "../../lib/currency-rates";
 import { MoneyDirection, MoneyTransactionType, PartyType } from "../../generated/prisma/enums";
 import { Prisma } from "../../generated/prisma/client";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
+import { kabulDateRange, kabulDayRange } from "../../lib/kabul-date";
 
 export const reportsRoute = new Hono();
 
@@ -11,39 +12,24 @@ function toNumber(value: unknown) {
   return Number(value ?? 0);
 }
 
-function parseReportDate(value?: string) {
-  const source = value && /^\d{4}-\d{2}-\d{2}$/.test(value)
-    ? value
-    : new Date().toISOString().slice(0, 10);
-  const start = new Date(`${source}T00:00:00.000`);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+function baseMoney(row: Record<string, unknown>, baseKey: string, amountKey: string) {
+  const base = toNumber(row[baseKey]);
+  if (base !== 0) return base;
+  return toNumber(row[amountKey]) * toNumber(row.exchangeRate || 1);
+}
 
-  return { source, start, end };
+function parseReportDate(value?: string) {
+  return kabulDayRange(value);
 }
 
 function parseReportRange(from?: string, to?: string) {
-  const today = new Date().toISOString().slice(0, 10);
-  const fromSource = from && /^\d{4}-\d{2}-\d{2}$/.test(from) ? from : today;
-  const toSource = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? to : fromSource;
-  const start = new Date(`${fromSource}T00:00:00.000`);
-  const end = new Date(`${toSource}T00:00:00.000`);
-  end.setDate(end.getDate() + 1);
-
-  return {
-    from: fromSource,
-    to: toSource,
-    start,
-    end
-  };
+  return kabulDateRange(from, to);
 }
 
 function parseEmployeePerformanceRange(period?: string, date?: string) {
-  const source = date && /^\d{4}-\d{2}-\d{2}$/.test(date)
-    ? date
-    : new Date().toISOString().slice(0, 10);
-  const end = new Date(`${source}T00:00:00.000`);
-  end.setDate(end.getDate() + 1);
+  const day = kabulDayRange(date);
+  const source = day.source;
+  const end = new Date(day.end.getTime() + 1);
   const start = new Date(end);
 
   if (period === "week") {
@@ -152,9 +138,9 @@ reportsRoute.get("/daily-cashier", async (c) => {
 
     for (const row of rows) {
       row.saleCount += 1;
-      row.totalSales += toNumber(sale.baseTotal);
-      row.paidSales += toNumber(sale.basePaidAmount);
-      row.remainingSales += toNumber(sale.baseRemainingAmount);
+      row.totalSales += baseMoney(sale as Record<string, unknown>, "baseTotal", "total");
+      row.paidSales += baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount");
+      row.remainingSales += baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount");
     }
   }
 
@@ -182,10 +168,10 @@ reportsRoute.get("/daily-cashier", async (c) => {
     }
   }
 
-  const totalSales = sales.reduce((sum, sale) => sum + toNumber(sale.baseTotal), 0);
-  const paidSales = sales.reduce((sum, sale) => sum + toNumber(sale.basePaidAmount), 0);
+  const totalSales = sales.reduce((sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "baseTotal", "total"), 0);
+  const paidSales = sales.reduce((sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount"), 0);
   const remainingSales = sales.reduce(
-    (sum, sale) => sum + toNumber(sale.baseRemainingAmount),
+    (sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount"),
     0
   );
   const moneyIn = moneyTransactions
@@ -328,9 +314,9 @@ reportsRoute.get("/employee-performance", async (c) => {
       position: employee?.position ?? null
     });
     row.saleCount += 1;
-    row.totalSales += toNumber(sale.baseTotal);
-    row.paidSales += toNumber(sale.basePaidAmount);
-    row.remainingSales += toNumber(sale.baseRemainingAmount);
+    row.totalSales += baseMoney(sale as Record<string, unknown>, "baseTotal", "total");
+    row.paidSales += baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount");
+    row.remainingSales += baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount");
   }
 
   for (const transaction of moneyTransactions) {
@@ -407,20 +393,24 @@ reportsRoute.get("/management", async (c) => {
     expiryLots, recentSales, recentPurchases, incomeExpenses
   ] = await Promise.all([
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT COUNT(*)::int count, COALESCE(SUM("baseTotal"), 0) total,
-        COALESCE(SUM("basePaidAmount"), 0) paid, COALESCE(SUM("baseRemainingAmount"), 0) remaining
+      SELECT COUNT(*)::int count,
+        COALESCE(SUM(COALESCE(NULLIF("baseTotal", 0), "total" * COALESCE("exchangeRate", 1))), 0) total,
+        COALESCE(SUM(COALESCE(NULLIF("basePaidAmount", 0), "paidAmount" * COALESCE("exchangeRate", 1))), 0) paid,
+        COALESCE(SUM(COALESCE(NULLIF("baseRemainingAmount", 0), "remainingAmount" * COALESCE("exchangeRate", 1))), 0) remaining
       FROM "Sale" WHERE "saleDate" >= ${start} AND "saleDate" < ${end} AND "status" <> 'CANCELLED'
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT COUNT(*)::int count, COALESCE(SUM("baseTotal"), 0) total,
-        COALESCE(SUM("basePaidAmount"), 0) paid, COALESCE(SUM("baseRemainingAmount"), 0) remaining
+      SELECT COUNT(*)::int count,
+        COALESCE(SUM(COALESCE(NULLIF("baseTotal", 0), "total" * COALESCE("exchangeRate", 1))), 0) total,
+        COALESCE(SUM(COALESCE(NULLIF("basePaidAmount", 0), "paidAmount" * COALESCE("exchangeRate", 1))), 0) paid,
+        COALESCE(SUM(COALESCE(NULLIF("baseRemainingAmount", 0), "remainingAmount" * COALESCE("exchangeRate", 1))), 0) remaining
       FROM "Purchase" WHERE "purchaseDate" >= ${start} AND "purchaseDate" < ${end} AND "status" <> 'CANCELLED'
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT
-        COALESCE((SELECT SUM("baseSubtotal") FROM "SaleReturn"
+        COALESCE((SELECT SUM(COALESCE(NULLIF("baseSubtotal", 0), "subtotal" * COALESCE("exchangeRate", 1))) FROM "SaleReturn"
           WHERE "createdAt" >= ${start} AND "createdAt" < ${end} AND "cancelledAt" IS NULL), 0) "saleTotal",
-        COALESCE((SELECT SUM("baseSubtotal") FROM "PurchaseReturn"
+        COALESCE((SELECT SUM(COALESCE(NULLIF("baseSubtotal", 0), "subtotal" * COALESCE("exchangeRate", 1))) FROM "PurchaseReturn"
           WHERE "createdAt" >= ${start} AND "createdAt" < ${end} AND "cancelledAt" IS NULL), 0) "purchaseTotal"
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
@@ -578,10 +568,14 @@ reportsRoute.get("/management", async (c) => {
       expiryDate: lot.expiryDate, quantity: toNumber(lot.remainingQuantity) })),
     recentSales: recentSales.map((sale) => ({ id: sale.id, invoiceNo: sale.invoiceNo, date: sale.saleDate,
       customer: sale.customer?.name || "-", cashier: sale.cashier?.displayName || sale.cashier?.username || "-",
-      total: toNumber(sale.baseTotal), paid: toNumber(sale.basePaidAmount), remaining: toNumber(sale.baseRemainingAmount) })),
+      total: baseMoney(sale as Record<string, unknown>, "baseTotal", "total"),
+      paid: baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount"),
+      remaining: baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount") })),
     recentPurchases: recentPurchases.map((purchase) => ({ id: purchase.id, invoiceNo: purchase.invoiceNo, date: purchase.purchaseDate,
-      supplier: purchase.supplier?.name || "-", total: toNumber(purchase.baseTotal), paid: toNumber(purchase.basePaidAmount),
-      remaining: toNumber(purchase.baseRemainingAmount) })),
+      supplier: purchase.supplier?.name || "-",
+      total: baseMoney(purchase as Record<string, unknown>, "baseTotal", "total"),
+      paid: baseMoney(purchase as Record<string, unknown>, "basePaidAmount", "paidAmount"),
+      remaining: baseMoney(purchase as Record<string, unknown>, "baseRemainingAmount", "remainingAmount") })),
     incomeExpenses: incomeExpenses.filter((item) => !cancelledIncomeExpenseIds.has(item.id)).map((item) => ({ id: item.id, date: item.createdAt, type: item.type,
       category: item.category?.name || "-", account: item.cashRegisterAccount?.cashRegister?.name || item.bankAccount?.name || "-",
       user: item.createdByUser?.displayName || item.createdByUser?.username || "-", amount: toNumber(item.baseAmount), note: item.note }))
@@ -669,14 +663,14 @@ reportsRoute.get("/management-legacy", async (c) => {
     getCurrentCurrencyRates(prisma)
   ]);
 
-  const salesTotal = sales.reduce((sum, item) => sum + toNumber(item.baseTotal), 0);
-  const salesPaid = sales.reduce((sum, item) => sum + toNumber(item.basePaidAmount), 0);
-  const salesRemaining = sales.reduce((sum, item) => sum + toNumber(item.baseRemainingAmount), 0);
-  const salesReturnTotal = saleReturns.reduce((sum, item) => sum + toNumber(item.baseSubtotal), 0);
-  const purchasesTotal = purchases.reduce((sum, item) => sum + toNumber(item.baseTotal), 0);
-  const purchasesPaid = purchases.reduce((sum, item) => sum + toNumber(item.basePaidAmount), 0);
-  const purchasesRemaining = purchases.reduce((sum, item) => sum + toNumber(item.baseRemainingAmount), 0);
-  const purchaseReturnTotal = purchaseReturns.reduce((sum, item) => sum + toNumber(item.baseSubtotal), 0);
+  const salesTotal = sales.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseTotal", "total"), 0);
+  const salesPaid = sales.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "basePaidAmount", "paidAmount"), 0);
+  const salesRemaining = sales.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseRemainingAmount", "remainingAmount"), 0);
+  const salesReturnTotal = saleReturns.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseSubtotal", "subtotal"), 0);
+  const purchasesTotal = purchases.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseTotal", "total"), 0);
+  const purchasesPaid = purchases.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "basePaidAmount", "paidAmount"), 0);
+  const purchasesRemaining = purchases.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseRemainingAmount", "remainingAmount"), 0);
+  const purchaseReturnTotal = purchaseReturns.reduce((sum, item) => sum + baseMoney(item as Record<string, unknown>, "baseSubtotal", "subtotal"), 0);
   const grossCogs = saleItems.reduce(
     (sum, item) => sum + toNumber(item.baseTotalCost ?? item.totalCost),
     0
@@ -811,18 +805,18 @@ reportsRoute.get("/management-legacy", async (c) => {
         date: sale.saleDate,
         customer: sale.customer?.name || "-",
         cashier: sale.cashier?.displayName || sale.cashier?.username || "-",
-        total: toNumber(sale.baseTotal),
-        paid: toNumber(sale.basePaidAmount),
-        remaining: toNumber(sale.baseRemainingAmount)
+        total: baseMoney(sale as Record<string, unknown>, "baseTotal", "total"),
+        paid: baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount"),
+        remaining: baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount")
       })),
       recentPurchases: purchases.slice(0, 30).map((purchase) => ({
         id: purchase.id,
         invoiceNo: purchase.invoiceNo,
         date: purchase.purchaseDate,
         supplier: purchase.supplier?.name || "-",
-        total: toNumber(purchase.baseTotal),
-        paid: toNumber(purchase.basePaidAmount),
-        remaining: toNumber(purchase.baseRemainingAmount)
+        total: baseMoney(purchase as Record<string, unknown>, "baseTotal", "total"),
+        paid: baseMoney(purchase as Record<string, unknown>, "basePaidAmount", "paidAmount"),
+        remaining: baseMoney(purchase as Record<string, unknown>, "baseRemainingAmount", "remainingAmount")
       })),
       incomeExpenses: moneyTransactions
         .filter((item) => item.type === MoneyTransactionType.INCOME || item.type === MoneyTransactionType.EXPENSE)

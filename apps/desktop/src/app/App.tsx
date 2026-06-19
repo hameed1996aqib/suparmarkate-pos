@@ -25,6 +25,7 @@ import {
   Building2,
   Calculator,
   CalendarDays,
+  Copy,
   CreditCard,
   DatabaseBackup,
   Eye,
@@ -74,8 +75,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
-import { ConfirmButton, ConfirmDropdownItem } from "@/components/ui/confirm-action";
+import {
+  ConfirmButton,
+  ConfirmDropdownItem,
+} from "@/components/ui/confirm-action";
 import { DatePicker } from "@/components/ui/date-picker";
+import { ManualDateInput } from "@/components/ui/manual-date-input";
 import {
   Dialog,
   DialogContent,
@@ -389,6 +394,7 @@ type InventoryActionForm = {
   warehouseId: string;
   toWarehouseId: string;
   lotId: string;
+  unitId: string;
   quantity: number;
   unitCost: number;
   currencyId: string;
@@ -427,6 +433,8 @@ type PurchaseLineForm = {
   unitId: string;
   quantity: number;
   unitCost: number;
+  updateSalePrice: boolean;
+  salePrice: number;
   expiryDate: string;
 };
 
@@ -458,6 +466,14 @@ type InvoiceItemRow = {
   quantity: number;
   unitAmount: number;
   discount?: number;
+  generalDiscount?: number;
+  netTotal?: number;
+  baseQuantity?: number;
+  baseUnit?: string;
+  baseUnitAmount?: number;
+  salePrice?: number;
+  baseSalePrice?: number;
+  salePriceUpdate?: boolean;
   expiryDate?: string;
   total: number;
 };
@@ -555,7 +571,12 @@ const navItems = [
   { to: "/inventory", label: "موجودی و گدام", icon: Boxes, group: "عملیات" },
   { to: "/products", label: "اجناس", icon: Package, group: "دیتا" },
   { to: "/settings", label: "دیتای پایه", icon: Settings, group: "دیتا" },
-  { to: "/currency-history", label: "تاریخچه کرنسی", icon: Banknote, group: "دیتا" },
+  {
+    to: "/currency-history",
+    label: "تاریخچه کرنسی",
+    icon: Banknote,
+    group: "دیتا",
+  },
   { to: "/customers", label: "مشتریان", icon: UsersRound, group: "اشخاص" },
   { to: "/suppliers", label: "فروشندگان", icon: Building2, group: "اشخاص" },
   { to: "/employees", label: "کارمندان", icon: UserRound, group: "کارمندان" },
@@ -576,7 +597,12 @@ const navItems = [
   { to: "/reports", label: "گزارشات", icon: FileBarChart, group: "مالی" },
   { to: "/users", label: "کاربران", icon: ShieldCheck, group: "سیستم" },
   { to: "/backup", label: "بکاپ", icon: DatabaseBackup, group: "سیستم" },
-  { to: "/system-health", label: "سلامت سیستم", icon: HeartPulse, group: "سیستم" },
+  {
+    to: "/system-health",
+    label: "سلامت سیستم",
+    icon: HeartPulse,
+    group: "سیستم",
+  },
 ];
 
 const money = (value: number | string, currencyCode = "AFN") =>
@@ -597,7 +623,9 @@ function convertCurrencyAmount(
   fromCurrency?: LookupItem | null,
   toCurrency?: LookupItem | null,
 ) {
-  return (Number(value || 0) * currencyRate(fromCurrency)) / currencyRate(toCurrency);
+  return (
+    (Number(value || 0) * currencyRate(fromCurrency)) / currencyRate(toCurrency)
+  );
 }
 
 function formatDateTime(value: unknown) {
@@ -746,7 +774,9 @@ function App() {
             <Route
               path="/dashboard"
               element={
-                <Suspense fallback={<PageLoading label="در حال محاسبه داشبورد..." />}>
+                <Suspense
+                  fallback={<PageLoading label="در حال محاسبه داشبورد..." />}
+                >
                   <DashboardPageRoute />
                 </Suspense>
               }
@@ -797,7 +827,9 @@ function App() {
               path="/currency-history"
               element={
                 <Suspense
-                  fallback={<PageLoading label="در حال خواندن تاریخچه کرنسی..." />}
+                  fallback={
+                    <PageLoading label="در حال خواندن تاریخچه کرنسی..." />
+                  }
                 >
                   <CurrencyHistoryPageRoute />
                 </Suspense>
@@ -943,7 +975,9 @@ function LoginPage({
       setServerUrl(normalized);
       toast.success("سرور شناسایی شد");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "اتصال به سرور برقرار نشد");
+      toast.error(
+        error instanceof Error ? error.message : "اتصال به سرور برقرار نشد",
+      );
     } finally {
       setIsTestingServer(false);
     }
@@ -957,7 +991,9 @@ function LoginPage({
       toast.success("آدرس سرور ذخیره شد");
       window.setTimeout(() => window.location.reload(), 400);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ذخیره آدرس سرور ناکام شد");
+      toast.error(
+        error instanceof Error ? error.message : "ذخیره آدرس سرور ناکام شد",
+      );
       setIsTestingServer(false);
     }
   };
@@ -1061,7 +1097,8 @@ function LoginPage({
           <DialogHeader>
             <DialogTitle>اتصال به سرور فروشگاه</DialogTitle>
             <DialogDescription>
-              IP کمپیوتر سرور را یک‌بار وارد کنید. این مقدار روی همین دستگاه ذخیره می‌شود و بعد از نصب نیز قابل تغییر است.
+              IP کمپیوتر سرور را یک‌بار وارد کنید. این مقدار روی همین دستگاه
+              ذخیره می‌شود و بعد از نصب نیز قابل تغییر است.
             </DialogDescription>
           </DialogHeader>
           <label className="grid gap-1.5 text-sm">
@@ -1074,14 +1111,28 @@ function LoginPage({
             />
           </label>
           <div className="border border-border bg-background/50 p-3 text-xs text-muted-foreground">
-            نمونه: <span dir="ltr" className="font-mono">http://192.168.1.10:4000</span>
+            نمونه:{" "}
+            <span dir="ltr" className="font-mono">
+              http://192.168.1.10:4000
+            </span>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={testServer} disabled={isTestingServer}>
-              <RefreshCcw className={isTestingServer ? "size-4 animate-spin" : "size-4"} />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={testServer}
+              disabled={isTestingServer}
+            >
+              <RefreshCcw
+                className={isTestingServer ? "size-4 animate-spin" : "size-4"}
+              />
               تست اتصال
             </Button>
-            <Button type="button" onClick={saveServer} disabled={isTestingServer}>
+            <Button
+              type="button"
+              onClick={saveServer}
+              disabled={isTestingServer}
+            >
               ذخیره و ورود
             </Button>
           </DialogFooter>
@@ -1479,7 +1530,7 @@ function AdminShell({
               Number(healthJson?.data?.counts?.total || 0),
           );
         }
-      })
+      });
     };
 
     loadAlertCount();
@@ -2098,6 +2149,7 @@ function DenseTable({
   onEdit,
   onSecondary,
   onDelete,
+  extraActions,
   editLabel = "ویرایش",
   secondaryLabel = "عملیات",
   deleteLabel = "حذف / ابطال",
@@ -2112,12 +2164,23 @@ function DenseTable({
   onEdit?: (row: DataRow) => void;
   onSecondary?: (row: DataRow) => void;
   onDelete?: (row: DataRow) => void;
+  extraActions?: Array<{
+    label: string;
+    onClick: (row: DataRow) => void;
+    icon?: ReactNode;
+    isVisible?: (row: DataRow) => boolean;
+  }>;
   editLabel?: string;
   secondaryLabel?: string;
   deleteLabel?: string;
   deleteTitle?: string;
   deleteDescription?: string;
-  pagination?: { page: number; limit: number; total: number; totalPages: number };
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
   onPageChange?: (page: number) => void;
 }) {
   const pageSize = 10;
@@ -2194,7 +2257,9 @@ function DenseTable({
               <TableHead key={column.key}>{column.label}</TableHead>
             ))}
             {hasAuditMeta && <TableHead>ثبت / ویرایش</TableHead>}
-            {hasActions && <TableHead className="w-16 text-center">عملیات</TableHead>}
+            {hasActions && (
+              <TableHead className="w-16 text-center">عملیات</TableHead>
+            )}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -2273,7 +2338,9 @@ function DenseTable({
                         <DropdownMenuLabel>عملیات</DropdownMenuLabel>
                         <DropdownMenuItem
                           onClick={() =>
-                            onDetails ? onDetails(row) : setInternalDetailsRow(row)
+                            onDetails
+                              ? onDetails(row)
+                              : setInternalDetailsRow(row)
                           }
                         >
                           <Eye className="size-4" />
@@ -2291,6 +2358,17 @@ function DenseTable({
                             <span>{secondaryLabel}</span>
                           </DropdownMenuItem>
                         )}
+                        {extraActions
+                          ?.filter((action) => action.isVisible?.(row) ?? true)
+                          .map((action) => (
+                            <DropdownMenuItem
+                              key={action.label}
+                              onClick={() => action.onClick(row)}
+                            >
+                              {action.icon || <FileText className="size-4" />}
+                              <span>{action.label}</span>
+                            </DropdownMenuItem>
+                          ))}
                         {onDelete && canDeleteRow(row) && (
                           <ConfirmDropdownItem
                             title={deleteTitle}
@@ -2447,6 +2525,10 @@ const detailLabelMap: Record<string, string> = {
   posDevice: "دستگاه",
   referenceType: "نوع مرجع",
   sourceType: "نوع منبع",
+  cancellationReason: "دلیل ابطال",
+  cancelReason: "دلیل ابطال",
+  reason: "دلیل",
+  metadata: "جزئیات سیستمی",
 };
 
 function detailLabel(key: string) {
@@ -2466,6 +2548,39 @@ function shouldHideDetailKey(key: string) {
     key.endsWith("Id") ||
     key.endsWith("Ids")
   );
+}
+
+function extractCancellationReason(record: any): string {
+  if (!record || typeof record !== "object") return "";
+
+  const raw =
+    record.__raw && typeof record.__raw === "object" ? record.__raw : record;
+  const candidates = [
+    record.cancellationReason,
+    record.cancelReason,
+    record.cancellationNote,
+    record.metadata?.reason,
+    record.metadata?.cancelReason,
+    raw.cancellationReason,
+    raw.cancelReason,
+    raw.cancellationNote,
+    raw.metadata?.reason,
+    raw.metadata?.cancelReason,
+  ];
+  const direct = candidates.find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+
+  if (direct) return String(direct).trim();
+
+  const note = String(raw.note || record.note || "");
+  const cancelledMatch = note.match(/Cancelled:\s*(.+)$/i);
+  if (cancelledMatch?.[1]) return cancelledMatch[1].trim();
+
+  const localMatch = note.match(/(?:ابطال|لغو)[:：]\s*(.+)$/);
+  if (localMatch?.[1]) return localMatch[1].trim();
+
+  return "";
 }
 
 function detailRelationValue(key: string, value: any): string {
@@ -2552,6 +2667,7 @@ function RecordDetailsDialog({
     return true;
   });
   const itemRows = Array.isArray(raw.items) ? raw.items : [];
+  const cancellationReason = extractCancellationReason(record || raw);
   const attachmentEntityType = attachmentTypeFor(title, raw);
   const attachmentEntityId =
     typeof raw.id === "string" || typeof raw.id === "number"
@@ -2570,6 +2686,15 @@ function RecordDetailsDialog({
         </DialogHeader>
 
         <div className="max-h-[72vh] space-y-4 overflow-y-auto pe-1">
+          {cancellationReason ? (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-destructive">
+              <p className="text-xs">دلیل ابطال</p>
+              <strong className="mt-1 block text-sm">
+                {cancellationReason}
+              </strong>
+            </div>
+          ) : null}
+
           {auditRows.length > 0 && (
             <div className="grid gap-3 rounded-xl border border-border bg-muted/20 p-3 md:grid-cols-2 xl:grid-cols-3">
               {auditRows.map(([label, value]) => (
@@ -3043,7 +3168,15 @@ function makePurchaseLine(
     warehouseId: warehouses[0]?.id || "",
     unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
     quantity: 1,
-    unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), currency),
+    unitCost: basePriceInCurrency(
+      Number(purchaseUnit?.purchasePrice || 0),
+      currency,
+    ),
+    updateSalePrice: false,
+    salePrice: basePriceInCurrency(
+      Number(purchaseUnit?.salePrice || 0),
+      currency,
+    ),
     expiryDate: "",
   };
 }
@@ -3065,6 +3198,8 @@ const emptyPurchaseLineDraft: PurchaseLineForm = {
   unitId: "",
   quantity: 1,
   unitCost: 0,
+  updateSalePrice: false,
+  salePrice: 0,
   expiryDate: "",
 };
 
@@ -3081,6 +3216,26 @@ function productHasExpiry(products: any[], id: string) {
   return Boolean(products.find((product) => product.id === id)?.hasExpiry);
 }
 
+function productUnitInfo(products: any[], productId: string, unitId: string) {
+  const product = products.find((item) => item.id === productId);
+  const productUnit = product?.units?.find(
+    (unit: any) => unit.unitId === unitId,
+  );
+
+  return {
+    product,
+    productUnit,
+    conversionRate:
+      productUnit?.conversionRate !== undefined
+        ? Number(productUnit.conversionRate || 1)
+        : product?.baseUnitId === unitId
+          ? 1
+          : 1,
+    baseUnitName:
+      product?.baseUnit?.shortName || product?.baseUnit?.name || "واحد پایه",
+  };
+}
+
 function invoiceLineTotal(quantity: number, unitAmount: number, discount = 0) {
   return Math.max(0, quantity * unitAmount - discount);
 }
@@ -3088,7 +3243,12 @@ function invoiceLineTotal(quantity: number, unitAmount: number, discount = 0) {
 function SalesPage() {
   const initialSalesRange = recentDateRange();
   const [sales, setSales] = useState<DataRow[]>([]);
-  const [salesSummary, setSalesSummary] = useState({ count: 0, total: 0, paid: 0, remaining: 0 });
+  const [salesSummary, setSalesSummary] = useState({
+    count: 0,
+    total: 0,
+    paid: 0,
+    remaining: 0,
+  });
   const [salesPagination, setSalesPagination] = useState<any>(null);
   const [saleReturns, setSaleReturns] = useState<DataRow[]>([]);
   const [saleReturnsPagination, setSaleReturnsPagination] = useState<any>(null);
@@ -3146,8 +3306,12 @@ function SalesPage() {
         cashRes,
         bankRes,
       ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/sales?page=${page}&limit=20&${dateRangeQuery(from, to)}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/sale-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/sales?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
+        ).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/sale-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`,
+        ).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
           res.json(),
         ),
@@ -3163,7 +3327,9 @@ function SalesPage() {
           ? salesRes.data.map((item: unknown) => normalizeRow(item, "فروشات"))
           : [],
       );
-      setSalesSummary(salesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 });
+      setSalesSummary(
+        salesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 },
+      );
       setSalesPagination(salesRes?.pagination || null);
       setSaleReturns(
         Array.isArray(saleReturnsRes?.data)
@@ -3352,13 +3518,18 @@ function SalesPage() {
       productId,
       warehouseId: product?.defaultWarehouseId || warehouses[0]?.id || "",
       unitId: saleUnit?.unitId || product?.baseUnitId || "",
-      unitPrice: basePriceInCurrency(Number(saleUnit?.salePrice || 0), selectedCurrency),
+      unitPrice: basePriceInCurrency(
+        Number(saleUnit?.salePrice || 0),
+        selectedCurrency,
+      ),
     });
   };
 
   const openSaleItemDialog = (line?: SaleLineForm) => {
     setEditingSaleLineId(line?.id || null);
-    setSaleLineDraft(line || makeSaleLine(products, warehouses, selectedCurrency));
+    setSaleLineDraft(
+      line || makeSaleLine(products, warehouses, selectedCurrency),
+    );
     setSaleItemDialogOpen(true);
   };
 
@@ -3373,7 +3544,10 @@ function SalesPage() {
       productId,
       warehouseId: product?.defaultWarehouseId || warehouses[0]?.id || "",
       unitId: saleUnit?.unitId || product?.baseUnitId || "",
-      unitPrice: basePriceInCurrency(Number(saleUnit?.salePrice || 0), selectedCurrency),
+      unitPrice: basePriceInCurrency(
+        Number(saleUnit?.salePrice || 0),
+        selectedCurrency,
+      ),
     }));
   };
 
@@ -3400,16 +3574,38 @@ function SalesPage() {
     setSaleItemDialogOpen(false);
   };
 
-  const saleItemRows: InvoiceItemRow[] = saleLines.map((line) => ({
-    id: line.id,
-    product: productLabel(products, line.productId),
-    warehouse: lookupLabel(warehouses, line.warehouseId),
-    unit: lookupLabel(saleUnitOptions(line.productId), line.unitId),
-    quantity: line.quantity,
-    unitAmount: line.unitPrice,
-    discount: line.discount,
-    total: invoiceLineTotal(line.quantity, line.unitPrice, line.discount),
-  }));
+  let remainingSaleDiscount = form.discount;
+  const saleItemRows: InvoiceItemRow[] = saleLines.map((line, index) => {
+    const lineNetBeforeGeneral = invoiceLineTotal(
+      line.quantity,
+      line.unitPrice,
+      line.discount,
+    );
+    const generalDiscount =
+      index === saleLines.length - 1
+        ? remainingSaleDiscount
+        : subtotal > 0
+          ? Number(
+              ((lineNetBeforeGeneral / subtotal) * form.discount).toFixed(4),
+            )
+          : 0;
+    remainingSaleDiscount = Number(
+      (remainingSaleDiscount - generalDiscount).toFixed(4),
+    );
+
+    return {
+      id: line.id,
+      product: productLabel(products, line.productId),
+      warehouse: lookupLabel(warehouses, line.warehouseId),
+      unit: lookupLabel(saleUnitOptions(line.productId), line.unitId),
+      quantity: line.quantity,
+      unitAmount: line.unitPrice,
+      discount: line.discount,
+      generalDiscount,
+      netTotal: Math.max(0, lineNetBeforeGeneral - generalDiscount),
+      total: lineNetBeforeGeneral,
+    };
+  });
 
   const submitSale = async () => {
     if (!form.currencyId || saleLines.length === 0) {
@@ -3607,24 +3803,45 @@ function SalesPage() {
     }
   };
 
+  const printSaleReceipt = async (row: DataRow) => {
+    const url = `${API_BASE_URL}/api/pos-receipts/sales/${row.id}/html?width=80`;
+    try {
+      if (window.electronAPI?.printReceipt) {
+        await window.electronAPI.printReceipt(url, { widthMm: 80 });
+        toast.success("رسید برای چاپ آماده شد");
+        return;
+      }
+      window.open(url, "_blank");
+    } catch {
+      window.open(url, "_blank");
+      toast.error("چاپ مستقیم ناکام شد؛ رسید در مرورگر باز شد");
+    }
+  };
+
   const submitSaleReturnCancel = async () => {
     if (!cancelSaleReturn || !cancelSaleReturnReason.trim()) {
       toast.error("دلیل ابطال ضروری است");
       return;
     }
     try {
-      const res = await fetch(`${API_BASE_URL}/api/sale-returns/${cancelSaleReturn.id}/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: cancelSaleReturnReason }),
-      });
+      const res = await fetch(
+        `${API_BASE_URL}/api/sale-returns/${cancelSaleReturn.id}/cancel`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: cancelSaleReturnReason }),
+        },
+      );
       const json = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(json?.message || "ابطال برگشت فروش ناکام شد");
+      if (!res.ok)
+        throw new Error(json?.message || "ابطال برگشت فروش ناکام شد");
       toast.success("برگشت فروش با سند معکوس باطل شد");
       setCancelSaleReturn(null);
       await loadSalesData();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ابطال برگشت فروش ناکام شد");
+      toast.error(
+        error instanceof Error ? error.message : "ابطال برگشت فروش ناکام شد",
+      );
     }
   };
 
@@ -3700,8 +3917,12 @@ function SalesPage() {
       return;
     }
 
-    if (refundAmount > 0 && !paymentAccount) {
-      toast.error("برای برگشت پول، حساب صندوق یا بانک را انتخاب کنید");
+    const effectiveRefundAmount = returnSale.customerId
+      ? refundAmount
+      : saleReturnSubtotal;
+
+    if (effectiveRefundAmount > 0 && !paymentAccount) {
+      toast.error("برای برگشت نقدی، حساب صندوق یا بانک را انتخاب کنید");
       return;
     }
 
@@ -3713,7 +3934,7 @@ function SalesPage() {
           saleId: returnSale.id,
           refundAccountType: paymentAccount?.type || null,
           refundAccountId: paymentAccount?.id || null,
-          refundAmount,
+          refundAmount: effectiveRefundAmount,
           note: returnNote || null,
           items: selectedItems.map((line) => ({
             saleItemId: line.itemId,
@@ -3818,6 +4039,13 @@ function SalesPage() {
               onSecondary={openSalePayment}
               onDelete={openSaleCancel}
               secondaryLabel="پرداخت"
+              extraActions={[
+                {
+                  label: "چاپ دوباره رسید",
+                  icon: <FileText className="size-4" />,
+                  onClick: printSaleReceipt,
+                },
+              ]}
             />
           )}
         </CardContent>
@@ -3828,7 +4056,9 @@ function SalesPage() {
         rows={saleReturns}
         onRefresh={() => void loadSalesData()}
         pagination={saleReturnsPagination}
-        onPageChange={(page) => void loadSalesData(salesPagination?.page || 1, page)}
+        onPageChange={(page) =>
+          void loadSalesData(salesPagination?.page || 1, page)
+        }
         onDetails={setDetailsSaleReturn}
         onCancel={(row) => {
           setCancelSaleReturn(row);
@@ -4062,15 +4292,39 @@ function SalesPage() {
       />
       <RecordDetailsDialog
         open={Boolean(detailsSaleReturn)}
-        onOpenChange={(open) => { if (!open) setDetailsSaleReturn(null); }}
+        onOpenChange={(open) => {
+          if (!open) setDetailsSaleReturn(null);
+        }}
         title="جزئیات برگشت فروش"
         record={detailsSaleReturn}
       />
-      <Dialog open={Boolean(cancelSaleReturn)} onOpenChange={(open) => { if (!open) setCancelSaleReturn(null); }}>
+      <Dialog
+        open={Boolean(cancelSaleReturn)}
+        onOpenChange={(open) => {
+          if (!open) setCancelSaleReturn(null);
+        }}
+      >
         <DialogContent dir="rtl" className="max-w-2xl">
-          <DialogHeader><DialogTitle>ابطال برگشت فروش</DialogTitle><DialogDescription>موجودی، صندوق یا بانک، حساب مشتری و ژورنال با سند معکوس اصلاح می‌شود.</DialogDescription></DialogHeader>
-          <TextField label="دلیل ابطال" value={cancelSaleReturnReason} onChange={setCancelSaleReturnReason} />
-          <DialogFooter><Button variant="outline" onClick={() => setCancelSaleReturn(null)}>لغو</Button><Button variant="destructive" onClick={submitSaleReturnCancel}>ابطال برگشت</Button></DialogFooter>
+          <DialogHeader>
+            <DialogTitle>ابطال برگشت فروش</DialogTitle>
+            <DialogDescription>
+              موجودی، صندوق یا بانک، حساب مشتری و ژورنال با سند معکوس اصلاح
+              می‌شود.
+            </DialogDescription>
+          </DialogHeader>
+          <TextField
+            label="دلیل ابطال"
+            value={cancelSaleReturnReason}
+            onChange={setCancelSaleReturnReason}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelSaleReturn(null)}>
+              لغو
+            </Button>
+            <Button variant="destructive" onClick={submitSaleReturnCancel}>
+              ابطال برگشت
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -4393,10 +4647,16 @@ function SalesPage() {
 function PurchasesPage() {
   const initialPurchasesRange = recentDateRange();
   const [purchases, setPurchases] = useState<DataRow[]>([]);
-  const [purchasesSummary, setPurchasesSummary] = useState({ count: 0, total: 0, paid: 0, remaining: 0 });
+  const [purchasesSummary, setPurchasesSummary] = useState({
+    count: 0,
+    total: 0,
+    paid: 0,
+    remaining: 0,
+  });
   const [purchasesPagination, setPurchasesPagination] = useState<any>(null);
   const [purchaseReturns, setPurchaseReturns] = useState<DataRow[]>([]);
-  const [purchaseReturnsPagination, setPurchaseReturnsPagination] = useState<any>(null);
+  const [purchaseReturnsPagination, setPurchaseReturnsPagination] =
+    useState<any>(null);
   const [suppliers, setSuppliers] = useState<LookupItem[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
@@ -4426,9 +4686,14 @@ function PurchasesPage() {
   const [detailsPurchase, setDetailsPurchase] = useState<any | null>(null);
   const [cancelPurchase, setCancelPurchase] = useState<any | null>(null);
   const [cancelPurchaseReason, setCancelPurchaseReason] = useState("");
-  const [detailsPurchaseReturn, setDetailsPurchaseReturn] = useState<any | null>(null);
-  const [cancelPurchaseReturn, setCancelPurchaseReturn] = useState<any | null>(null);
-  const [cancelPurchaseReturnReason, setCancelPurchaseReturnReason] = useState("");
+  const [detailsPurchaseReturn, setDetailsPurchaseReturn] = useState<
+    any | null
+  >(null);
+  const [cancelPurchaseReturn, setCancelPurchaseReturn] = useState<any | null>(
+    null,
+  );
+  const [cancelPurchaseReturnReason, setCancelPurchaseReturnReason] =
+    useState("");
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentPurchase, setPaymentPurchase] = useState<any | null>(null);
   const [invoicePaymentAmount, setInvoicePaymentAmount] = useState(0);
@@ -4452,8 +4717,12 @@ function PurchasesPage() {
         cashRes,
         bankRes,
       ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/purchases?page=${page}&limit=20&${dateRangeQuery(from, to)}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/purchase-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/purchases?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
+        ).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/purchase-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`,
+        ).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) =>
           res.json(),
         ),
@@ -4471,7 +4740,9 @@ function PurchasesPage() {
             )
           : [],
       );
-      setPurchasesSummary(purchasesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 });
+      setPurchasesSummary(
+        purchasesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 },
+      );
       setPurchasesPagination(purchasesRes?.pagination || null);
       setPurchaseReturns(
         Array.isArray(purchaseReturnsRes?.data)
@@ -4586,7 +4857,16 @@ function PurchasesPage() {
   const purchaseUnitCost = (productId: string, unitId: string) => {
     const product = products.find((item) => item.id === productId);
     const unit = product?.units?.find((item: any) => item.unitId === unitId);
-    return basePriceInCurrency(Number(unit?.purchasePrice || 0), selectedCurrency);
+    return basePriceInCurrency(
+      Number(unit?.purchasePrice || 0),
+      selectedCurrency,
+    );
+  };
+
+  const purchaseSalePrice = (productId: string, unitId: string) => {
+    const product = products.find((item) => item.id === productId);
+    const unit = product?.units?.find((item: any) => item.unitId === unitId);
+    return basePriceInCurrency(Number(unit?.salePrice || 0), selectedCurrency);
   };
 
   const changePurchaseCurrency = (currencyId: string) => {
@@ -4605,11 +4885,13 @@ function PurchasesPage() {
       current.map((line) => ({
         ...line,
         unitCost: convert(line.unitCost),
+        salePrice: convert(line.salePrice),
       })),
     );
     setPurchaseLineDraft((current) => ({
       ...current,
       unitCost: convert(current.unitCost),
+      salePrice: convert(current.salePrice),
     }));
   };
 
@@ -4627,6 +4909,7 @@ function PurchasesPage() {
           patch.unitCost === undefined
         ) {
           next.unitCost = purchaseUnitCost(next.productId, patch.unitId);
+          next.salePrice = purchaseSalePrice(next.productId, patch.unitId);
         }
         return next;
       }),
@@ -4642,13 +4925,22 @@ function PurchasesPage() {
     updatePurchaseLine(lineId, {
       productId,
       unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
-      unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), selectedCurrency),
+      unitCost: basePriceInCurrency(
+        Number(purchaseUnit?.purchasePrice || 0),
+        selectedCurrency,
+      ),
+      salePrice: basePriceInCurrency(
+        Number(purchaseUnit?.salePrice || 0),
+        selectedCurrency,
+      ),
     });
   };
 
   const openPurchaseItemDialog = (line?: PurchaseLineForm) => {
     setEditingPurchaseLineId(line?.id || null);
-    setPurchaseLineDraft(line || makePurchaseLine(products, warehouses, selectedCurrency));
+    setPurchaseLineDraft(
+      line || makePurchaseLine(products, warehouses, selectedCurrency),
+    );
     setPurchaseItemDialogOpen(true);
   };
 
@@ -4662,7 +4954,15 @@ function PurchasesPage() {
       ...current,
       productId,
       unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
-      unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), selectedCurrency),
+      unitCost: basePriceInCurrency(
+        Number(purchaseUnit?.purchasePrice || 0),
+        selectedCurrency,
+      ),
+      salePrice: basePriceInCurrency(
+        Number(purchaseUnit?.salePrice || 0),
+        selectedCurrency,
+      ),
+      updateSalePrice: false,
       expiryDate: product?.hasExpiry ? current.expiryDate : "",
     }));
   };
@@ -4717,16 +5017,78 @@ function PurchasesPage() {
     );
   };
 
-  const purchaseItemRows: InvoiceItemRow[] = purchaseLines.map((line) => ({
-    id: line.id,
-    product: productLabel(products, line.productId),
-    warehouse: lookupLabel(warehouses, line.warehouseId),
-    unit: lookupLabel(productUnitOptions(line.productId), line.unitId),
-    quantity: line.quantity,
-    unitAmount: line.unitCost,
-    expiryDate: line.expiryDate || "-",
-    total: invoiceLineTotal(line.quantity, line.unitCost),
-  }));
+  let remainingPurchaseDiscount = form.discount;
+  const purchaseItemRows: InvoiceItemRow[] = purchaseLines.map(
+    (line, index) => {
+      const grossTotal = invoiceLineTotal(line.quantity, line.unitCost);
+      const generalDiscount =
+        index === purchaseLines.length - 1
+          ? remainingPurchaseDiscount
+          : subtotal > 0
+            ? Number(((grossTotal / subtotal) * form.discount).toFixed(4))
+            : 0;
+      remainingPurchaseDiscount = Number(
+        (remainingPurchaseDiscount - generalDiscount).toFixed(4),
+      );
+      const unitInfo = productUnitInfo(products, line.productId, line.unitId);
+
+      return {
+        id: line.id,
+        product: productLabel(products, line.productId),
+        warehouse: lookupLabel(warehouses, line.warehouseId),
+        unit: lookupLabel(productUnitOptions(line.productId), line.unitId),
+        quantity: line.quantity,
+        unitAmount: line.unitCost,
+        generalDiscount,
+        netTotal: Math.max(0, grossTotal - generalDiscount),
+        baseQuantity: line.quantity * unitInfo.conversionRate,
+        baseUnit: unitInfo.baseUnitName,
+        baseUnitAmount:
+          line.quantity * unitInfo.conversionRate > 0
+            ? Math.max(0, grossTotal - generalDiscount) /
+              (line.quantity * unitInfo.conversionRate)
+            : 0,
+        salePrice: line.salePrice,
+        baseSalePrice:
+          unitInfo.conversionRate > 0
+            ? line.salePrice / unitInfo.conversionRate
+            : line.salePrice,
+        salePriceUpdate: line.updateSalePrice,
+        expiryDate: line.expiryDate || "-",
+        total: grossTotal,
+      };
+    },
+  );
+  const purchaseDraftUnitInfo = productUnitInfo(
+    products,
+    purchaseLineDraft.productId,
+    purchaseLineDraft.unitId,
+  );
+  const purchaseDraftBaseQuantity =
+    purchaseLineDraft.quantity * purchaseDraftUnitInfo.conversionRate;
+  const purchaseDraftGrossTotal = invoiceLineTotal(
+    purchaseLineDraft.quantity,
+    purchaseLineDraft.unitCost,
+  );
+  const purchaseDraftSubtotal = subtotal + purchaseDraftGrossTotal;
+  const purchaseDraftGeneralDiscount =
+    purchaseDraftSubtotal > 0
+      ? Number(
+          (
+            (purchaseDraftGrossTotal / purchaseDraftSubtotal) *
+            form.discount
+          ).toFixed(4),
+        )
+      : 0;
+  const purchaseDraftBaseUnitCost =
+    purchaseDraftUnitInfo.conversionRate > 0
+      ? purchaseLineDraft.unitCost / purchaseDraftUnitInfo.conversionRate
+      : purchaseLineDraft.unitCost;
+  const purchaseDraftNetBaseUnitCost =
+    purchaseDraftBaseQuantity > 0
+      ? Math.max(0, purchaseDraftGrossTotal - purchaseDraftGeneralDiscount) /
+        purchaseDraftBaseQuantity
+      : 0;
 
   const submitPurchase = async () => {
     if (!form.currencyId || purchaseLines.length === 0) {
@@ -4783,6 +5145,8 @@ function PurchasesPage() {
             unitId: line.unitId,
             quantity: line.quantity,
             unitCost: line.unitCost,
+            updateSalePrice: line.updateSalePrice,
+            salePrice: line.updateSalePrice ? line.salePrice : null,
             expiryDate: productHasExpiry(products, line.productId)
               ? line.expiryDate || null
               : null,
@@ -4934,18 +5298,24 @@ function PurchasesPage() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE_URL}/api/purchase-returns/${cancelPurchaseReturn.id}/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: cancelPurchaseReturnReason }),
-      });
+      const res = await fetch(
+        `${API_BASE_URL}/api/purchase-returns/${cancelPurchaseReturn.id}/cancel`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: cancelPurchaseReturnReason }),
+        },
+      );
       const json = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(json?.message || "ابطال برگشت خرید ناکام شد");
+      if (!res.ok)
+        throw new Error(json?.message || "ابطال برگشت خرید ناکام شد");
       toast.success("برگشت خرید با سند معکوس باطل شد");
       setCancelPurchaseReturn(null);
       await loadPurchasesData();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ابطال برگشت خرید ناکام شد");
+      toast.error(
+        error instanceof Error ? error.message : "ابطال برگشت خرید ناکام شد",
+      );
     }
   };
 
@@ -5020,7 +5390,11 @@ function PurchasesPage() {
       return;
     }
 
-    if (receivedAmount > 0 && !paymentAccount) {
+    const effectiveReceivedAmount = returnPurchase.supplierId
+      ? receivedAmount
+      : purchaseReturnSubtotal;
+
+    if (effectiveReceivedAmount > 0 && !paymentAccount) {
       toast.error("برای دریافت پول، حساب صندوق یا بانک را انتخاب کنید");
       return;
     }
@@ -5033,7 +5407,7 @@ function PurchasesPage() {
           purchaseId: returnPurchase.id,
           receiveAccountType: paymentAccount?.type || null,
           receiveAccountId: paymentAccount?.id || null,
-          receivedAmount,
+          receivedAmount: effectiveReceivedAmount,
           note: returnNote || null,
           items: selectedItems.map((line) => ({
             purchaseItemId: line.itemId,
@@ -5106,7 +5480,10 @@ function PurchasesPage() {
                 className="w-72 ps-9"
               />
             </div>
-            <Button variant="outline" onClick={() => void loadPurchasesData(1, 1)}>
+            <Button
+              variant="outline"
+              onClick={() => void loadPurchasesData(1, 1)}
+            >
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
@@ -5150,7 +5527,9 @@ function PurchasesPage() {
         rows={purchaseReturns}
         onRefresh={() => void loadPurchasesData()}
         pagination={purchaseReturnsPagination}
-        onPageChange={(page) => void loadPurchasesData(purchasesPagination?.page || 1, page)}
+        onPageChange={(page) =>
+          void loadPurchasesData(purchasesPagination?.page || 1, page)
+        }
         onDetails={setDetailsPurchaseReturn}
         onCancel={(row) => {
           setCancelPurchaseReturn(row);
@@ -5159,7 +5538,7 @@ function PurchasesPage() {
       />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent dir="rtl" className="max-w-[min(96vw,1280px)]">
+        <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>ثبت خرید جدید</DialogTitle>
             <DialogDescription>
@@ -5394,15 +5773,42 @@ function PurchasesPage() {
       />
       <RecordDetailsDialog
         open={Boolean(detailsPurchaseReturn)}
-        onOpenChange={(open) => { if (!open) setDetailsPurchaseReturn(null); }}
+        onOpenChange={(open) => {
+          if (!open) setDetailsPurchaseReturn(null);
+        }}
         title="جزئیات برگشت خرید"
         record={detailsPurchaseReturn}
       />
-      <Dialog open={Boolean(cancelPurchaseReturn)} onOpenChange={(open) => { if (!open) setCancelPurchaseReturn(null); }}>
+      <Dialog
+        open={Boolean(cancelPurchaseReturn)}
+        onOpenChange={(open) => {
+          if (!open) setCancelPurchaseReturn(null);
+        }}
+      >
         <DialogContent dir="rtl" className="max-w-2xl">
-          <DialogHeader><DialogTitle>ابطال برگشت خرید</DialogTitle><DialogDescription>موجودی، صندوق یا بانک، حساب فروشنده و ژورنال با سند معکوس اصلاح می‌شود.</DialogDescription></DialogHeader>
-          <TextField label="دلیل ابطال" value={cancelPurchaseReturnReason} onChange={setCancelPurchaseReturnReason} />
-          <DialogFooter><Button variant="outline" onClick={() => setCancelPurchaseReturn(null)}>لغو</Button><Button variant="destructive" onClick={submitPurchaseReturnCancel}>ابطال برگشت</Button></DialogFooter>
+          <DialogHeader>
+            <DialogTitle>ابطال برگشت خرید</DialogTitle>
+            <DialogDescription>
+              موجودی، صندوق یا بانک، حساب فروشنده و ژورنال با سند معکوس اصلاح
+              می‌شود.
+            </DialogDescription>
+          </DialogHeader>
+          <TextField
+            label="دلیل ابطال"
+            value={cancelPurchaseReturnReason}
+            onChange={setCancelPurchaseReturnReason}
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setCancelPurchaseReturn(null)}
+            >
+              لغو
+            </Button>
+            <Button variant="destructive" onClick={submitPurchaseReturnCancel}>
+              ابطال برگشت
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -5448,6 +5854,7 @@ function PurchasesPage() {
                   ...current,
                   unitId: value,
                   unitCost: purchaseUnitCost(current.productId, value),
+                  salePrice: purchaseSalePrice(current.productId, value),
                 }))
               }
             />
@@ -5471,6 +5878,45 @@ function PurchasesPage() {
                 }))
               }
             />
+            <NumberField
+              label="قیمت فروش همین واحد"
+              value={purchaseLineDraft.salePrice}
+              onChange={(value) =>
+                setPurchaseLineDraft((current) => ({
+                  ...current,
+                  salePrice: value,
+                  updateSalePrice: true,
+                }))
+              }
+            />
+            <label className="grid gap-1.5 text-sm">
+              <span className="text-muted-foreground">آپدیت قیمت فروش</span>
+              <button
+                type="button"
+                className="flex h-9 items-center justify-between border border-border bg-background px-3 text-start"
+                onClick={() =>
+                  setPurchaseLineDraft((current) => ({
+                    ...current,
+                    updateSalePrice: !current.updateSalePrice,
+                  }))
+                }
+              >
+                <span>
+                  {purchaseLineDraft.updateSalePrice
+                    ? "قیمت محصول آپدیت می‌شود"
+                    : "فقط برای این خرید"}
+                </span>
+                <Badge
+                  className={
+                    purchaseLineDraft.updateSalePrice
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                      : "bg-muted text-muted-foreground"
+                  }
+                >
+                  {purchaseLineDraft.updateSalePrice ? "فعال" : "غیرفعال"}
+                </Badge>
+              </button>
+            </label>
             {productHasExpiry(products, purchaseLineDraft.productId) ? (
               <TextField
                 label="تاریخ انقضا"
@@ -5487,16 +5933,64 @@ function PurchasesPage() {
           </div>
 
           <div className="rounded-xl border border-border bg-muted/30 p-4">
-            <p className="text-xs text-muted-foreground">جمع قلم</p>
-            <strong>
-              {money(
-                invoiceLineTotal(
-                  purchaseLineDraft.quantity,
-                  purchaseLineDraft.unitCost,
-                ),
-                selectedCurrency?.code,
-              )}
-            </strong>
+            <div className="grid gap-3 md:grid-cols-4">
+              <div>
+                <p className="text-xs text-muted-foreground">جمع قلم</p>
+                <strong>
+                  {money(
+                    invoiceLineTotal(
+                      purchaseLineDraft.quantity,
+                      purchaseLineDraft.unitCost,
+                    ),
+                    selectedCurrency?.code,
+                  )}
+                </strong>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">مقدار واحد پایه</p>
+                <strong>
+                  {new Intl.NumberFormat("en-US").format(
+                    purchaseDraftBaseQuantity,
+                  )}{" "}
+                  {purchaseDraftUnitInfo.baseUnitName}
+                </strong>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  قیمت خرید واحد پایه
+                </p>
+                <strong>
+                  {money(purchaseDraftBaseUnitCost, selectedCurrency?.code)}
+                </strong>
+                {purchaseDraftGeneralDiscount > 0 ? (
+                  <div className="text-[11px] text-muted-foreground">
+                    بعد تخفیف:{" "}
+                    {money(
+                      purchaseDraftNetBaseUnitCost,
+                      selectedCurrency?.code,
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">
+                  قیمت فروش پیشنهادی
+                </p>
+                <strong>
+                  {money(purchaseLineDraft.salePrice, selectedCurrency?.code)}
+                </strong>
+                <div className="text-[11px] text-muted-foreground">
+                  واحد پایه:{" "}
+                  {money(
+                    purchaseDraftUnitInfo.conversionRate > 0
+                      ? purchaseLineDraft.salePrice /
+                          purchaseDraftUnitInfo.conversionRate
+                      : purchaseLineDraft.salePrice,
+                    selectedCurrency?.code,
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
           <DialogFooter>
@@ -5649,6 +6143,7 @@ function PurchasesPage() {
               label="باقی فاکتور"
               value={Number(paymentPurchase?.remainingAmount || 0)}
               onChange={() => undefined}
+              disabled
             />
             <NumberField
               label="مبلغ پرداخت"
@@ -5849,14 +6344,13 @@ function normalizeMoneyTransaction(
     item.type === "SUPPLIER_PAYMENT" ||
     item.referenceType === "SUPPLIER_PAYMENT" ||
     item.referenceType === "SUPPLIER_PAYMENT_CANCEL";
-  const partyBalance =
-    isCustomerPartyTransaction
-      ? Number(partyAccount?.debitBalance || 0) -
-        Number(partyAccount?.creditBalance || 0)
-      : isSupplierPartyTransaction
-        ? Number(partyAccount?.creditBalance || 0) -
-          Number(partyAccount?.debitBalance || 0)
-        : null;
+  const partyBalance = isCustomerPartyTransaction
+    ? Number(partyAccount?.debitBalance || 0) -
+      Number(partyAccount?.creditBalance || 0)
+    : isSupplierPartyTransaction
+      ? Number(partyAccount?.creditBalance || 0) -
+        Number(partyAccount?.debitBalance || 0)
+      : null;
 
   return {
     id: item.id,
@@ -5871,12 +6365,11 @@ function normalizeMoneyTransaction(
       : "-",
     account: `${accountType} / ${accountName}`,
     party: party?.name || "-",
-    partyType:
-      isCustomerPartyTransaction
-        ? "مشتری"
-        : isSupplierPartyTransaction
-          ? "فروشنده"
-          : "-",
+    partyType: isCustomerPartyTransaction
+      ? "مشتری"
+      : isSupplierPartyTransaction
+        ? "فروشنده"
+        : "-",
     partyBalance:
       partyBalance === null ? "-" : money(Math.max(0, partyBalance)),
     type: item.type || "-",
@@ -5894,7 +6387,8 @@ function normalizeMoneyTransaction(
 function CashBankPage() {
   const initialTreasuryRange = recentDateRange();
   const [transactions, setTransactions] = useState<DataRow[]>([]);
-  const [transactionsPagination, setTransactionsPagination] = useState<any>(null);
+  const [transactionsPagination, setTransactionsPagination] =
+    useState<any>(null);
   const [paymentAccounts, setPaymentAccounts] = useState<
     PaymentAccountOption[]
   >([]);
@@ -5940,7 +6434,9 @@ function CashBankPage() {
       ] = await Promise.all([
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/money-transfers?page=${page}&limit=20&${dateRangeQuery(from, to)}`).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/money-transfers?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
+        ).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
           res.json(),
         ),
@@ -6205,7 +6701,9 @@ function CashBankPage() {
         const cancelJson = await cancelRes.json().catch(() => null);
 
         if (!cancelRes.ok) {
-          throw new Error(cancelJson?.message || "ابطال نسخه قبلی سند ناکام شد");
+          throw new Error(
+            cancelJson?.message || "ابطال نسخه قبلی سند ناکام شد",
+          );
         }
 
         setPartyEditing((current) =>
@@ -6236,8 +6734,8 @@ function CashBankPage() {
         partyEditing
           ? "سند قبلی ابطال و نسخه اصلاح‌شده ثبت شد"
           : action === "CUSTOMER_RECEIPT"
-          ? "دریافت از مشتری ثبت شد"
-          : "پرداخت به فروشنده ثبت شد",
+            ? "دریافت از مشتری ثبت شد"
+            : "پرداخت به فروشنده ثبت شد",
       );
       setTransactionsPagination(transfersRes?.pagination || null);
       const receiptId = json?.data?.partyTransaction?.id;
@@ -6366,15 +6864,15 @@ function CashBankPage() {
         return;
       } catch (error) {
         toast.error(
-          error instanceof Error
-            ? error.message
-            : "خواندن جزئیات سند ناکام شد",
+          error instanceof Error ? error.message : "خواندن جزئیات سند ناکام شد",
         );
         return;
       }
     }
 
-    toast.info("برای اصلاح انتقال، سند فعلی را ابطال و انتقال درست را دوباره ثبت کنید.");
+    toast.info(
+      "برای اصلاح انتقال، سند فعلی را ابطال و انتقال درست را دوباره ثبت کنید.",
+    );
     openCashBankCancel(row);
   };
 
@@ -6755,10 +7253,10 @@ function CashBankPage() {
               {partyEditing
                 ? "ویرایش دریافت / پرداخت"
                 : action === "CUSTOMER_RECEIPT"
-                ? "دریافت از مشتری"
-                : action === "SUPPLIER_PAYMENT"
-                  ? "پرداخت به فروشنده"
-                  : "انتقال صندوق/بانک"}
+                  ? "دریافت از مشتری"
+                  : action === "SUPPLIER_PAYMENT"
+                    ? "پرداخت به فروشنده"
+                    : "انتقال صندوق/بانک"}
             </DialogTitle>
             <DialogDescription>
               عملیات خزانه بعد از ثبت، مانده صندوق/بانک و حساب طرف معامله را
@@ -7560,7 +8058,11 @@ function ReportsPage() {
 
 function ProductsPage() {
   const [products, setProducts] = useState<DataRow[]>([]);
-  const [productsSummary, setProductsSummary] = useState({ total: 0, active: 0, barcodeCount: 0 });
+  const [productsSummary, setProductsSummary] = useState({
+    total: 0,
+    active: 0,
+    barcodeCount: 0,
+  });
   const [productsPagination, setProductsPagination] = useState<any>(null);
   const [categories, setCategories] = useState<LookupItem[]>([]);
   const [units, setUnits] = useState<LookupItem[]>([]);
@@ -7581,7 +8083,9 @@ function ProductsPage() {
     try {
       const [productRes, categoryRes, unitRes, warehouseRes, currencyRes] =
         await Promise.all([
-          fetch(`${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}`).then((res) => res.json()),
+          fetch(
+            `${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}`,
+          ).then((res) => res.json()),
           fetch(`${API_BASE_URL}/api/product-categories`).then((res) =>
             res.json(),
           ),
@@ -7595,7 +8099,9 @@ function ProductsPage() {
         : [];
 
       setProducts(loadedProducts);
-      setProductsSummary(productRes?.summary || { total: 0, active: 0, barcodeCount: 0 });
+      setProductsSummary(
+        productRes?.summary || { total: 0, active: 0, barcodeCount: 0 },
+      );
       setProductsPagination(productRes?.pagination || null);
       setCategories(Array.isArray(categoryRes?.data) ? categoryRes.data : []);
       setUnits(Array.isArray(unitRes?.data) ? unitRes.data : []);
@@ -7618,18 +8124,7 @@ function ProductsPage() {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const filteredProducts = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return products;
-
-    return products.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [products, query]);
+  const filteredProducts = products;
 
   const openCreate = () => {
     const baseCurrency =
@@ -7656,7 +8151,10 @@ function ProductsPage() {
     setDialogOpen(true);
   };
 
-  const openEdit = async (row: DataRow) => {
+  const openProductFormFromRecord = async (
+    row: DataRow,
+    mode: "edit" | "duplicate",
+  ) => {
     try {
       const json = await fetch(`${API_BASE_URL}/api/products/${row.id}`).then(
         (res) => res.json(),
@@ -7670,10 +8168,13 @@ function ProductsPage() {
         product?.units?.[0];
 
       setForm({
-        id: product.id,
-        name: product.name || "",
+        id: mode === "edit" ? product.id : "",
+        name:
+          mode === "duplicate"
+            ? `${product.name || ""} - کاپی`
+            : product.name || "",
         sku: product.sku || "",
-        barcode: product.barcode || "",
+        barcode: mode === "duplicate" ? "" : product.barcode || "",
         description: product.description || "",
         imageUrl: product.imageUrl || "",
         categoryId: product.categoryId || "",
@@ -7720,6 +8221,14 @@ function ProductsPage() {
     } catch {
       toast.error("خواندن جزئیات محصول ناکام شد");
     }
+  };
+
+  const openEdit = (row: DataRow) => {
+    void openProductFormFromRecord(row, "edit");
+  };
+
+  const openDuplicate = (row: DataRow) => {
+    void openProductFormFromRecord(row, "duplicate");
   };
 
   const saveProduct = async () => {
@@ -7801,6 +8310,7 @@ function ProductsPage() {
       );
       const productJson = await productRes.json().catch(() => null);
 
+      console.log("productRes", productRes, productJson);
       if (!productRes.ok) {
         throw new Error(productJson?.message || "ثبت محصول ناکام شد");
       }
@@ -7835,7 +8345,7 @@ function ProductsPage() {
               productId,
               warehouseId: form.defaultWarehouseId,
               quantity: form.openingQuantity,
-              unitCost: form.openingUnitCost,
+              unitCost: basePurchasePrice,
               currencyId: form.openingCurrencyId,
               expiryDate: form.hasExpiry
                 ? form.openingExpiryDate || null
@@ -7898,6 +8408,34 @@ function ProductsPage() {
   const baseProductUnit = productUnitLines.find(
     (line) => line.unitId === form.baseUnitId,
   );
+  const basePurchasePrice = baseProductUnit?.purchasePrice || 0;
+  const syncPricesFromBaseUnit = (
+    lines: ProductUnitForm[],
+    patch: Partial<Pick<ProductUnitForm, "purchasePrice" | "salePrice">>,
+  ) => {
+    const currentBase = lines.find((line) => line.unitId === form.baseUnitId);
+    const basePurchasePrice =
+      patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
+    const baseSalePrice = patch.salePrice ?? currentBase?.salePrice ?? 0;
+
+    return lines.map((line) => {
+      const conversionRate =
+        line.unitId === form.baseUnitId ? 1 : line.conversionRate;
+
+      return {
+        ...line,
+        conversionRate,
+        purchasePrice:
+          patch.purchasePrice !== undefined || line.unitId !== form.baseUnitId
+            ? Number((basePurchasePrice * conversionRate).toFixed(4))
+            : line.purchasePrice,
+        salePrice:
+          patch.salePrice !== undefined || line.unitId !== form.baseUnitId
+            ? Number((baseSalePrice * conversionRate).toFixed(4))
+            : line.salePrice,
+      };
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -7979,6 +8517,13 @@ function ProductsPage() {
               onEdit={openEdit}
               onSecondary={printProductBarcode}
               secondaryLabel="چاپ بارکود"
+              extraActions={[
+                {
+                  label: "دوپلیکیت",
+                  icon: <Copy className="size-4" />,
+                  onClick: openDuplicate,
+                },
+              ]}
               onDelete={deleteProduct}
             />
           )}
@@ -8036,11 +8581,32 @@ function ProductsPage() {
                   setForm((current) => ({ ...current, baseUnitId: value }));
                   setProductUnitLines((current) => {
                     if (current.some((line) => line.unitId === value)) {
-                      return current.map((line) =>
+                      const nextLines = current.map((line) =>
                         line.unitId === value
                           ? { ...line, conversionRate: 1 }
                           : line,
                       );
+                      const nextBase = nextLines.find(
+                        (line) => line.unitId === value,
+                      );
+                      const basePurchasePrice = nextBase?.purchasePrice || 0;
+                      const baseSalePrice = nextBase?.salePrice || 0;
+
+                      return nextLines.map((line) => ({
+                        ...line,
+                        purchasePrice: Number(
+                          (
+                            basePurchasePrice *
+                            (line.unitId === value ? 1 : line.conversionRate)
+                          ).toFixed(4),
+                        ),
+                        salePrice: Number(
+                          (
+                            baseSalePrice *
+                            (line.unitId === value ? 1 : line.conversionRate)
+                          ).toFixed(4),
+                        ),
+                      }));
                     }
 
                     return [
@@ -8234,17 +8800,20 @@ function ProductsPage() {
                       options={units}
                       onChange={(value) =>
                         setProductUnitLines((current) =>
-                          current.map((item) =>
-                            item.id === line.id
-                              ? {
-                                  ...item,
-                                  unitId: value,
-                                  conversionRate:
-                                    value === form.baseUnitId
-                                      ? 1
-                                      : item.conversionRate,
-                                }
-                              : item,
+                          syncPricesFromBaseUnit(
+                            current.map((item) =>
+                              item.id === line.id
+                                ? {
+                                    ...item,
+                                    unitId: value,
+                                    conversionRate:
+                                      value === form.baseUnitId
+                                        ? 1
+                                        : item.conversionRate,
+                                  }
+                                : item,
+                            ),
+                            {},
                           ),
                         )
                       }
@@ -8258,14 +8827,19 @@ function ProductsPage() {
                       }
                       onChange={(value) =>
                         setProductUnitLines((current) =>
-                          current.map((item) =>
-                            item.id === line.id
-                              ? {
-                                  ...item,
-                                  conversionRate:
-                                    line.unitId === form.baseUnitId ? 1 : value,
-                                }
-                              : item,
+                          syncPricesFromBaseUnit(
+                            current.map((item) =>
+                              item.id === line.id
+                                ? {
+                                    ...item,
+                                    conversionRate:
+                                      line.unitId === form.baseUnitId
+                                        ? 1
+                                        : value,
+                                  }
+                                : item,
+                            ),
+                            {},
                           ),
                         )
                       }
@@ -8275,11 +8849,15 @@ function ProductsPage() {
                       value={line.purchasePrice}
                       onChange={(value) =>
                         setProductUnitLines((current) =>
-                          current.map((item) =>
-                            item.id === line.id
-                              ? { ...item, purchasePrice: value }
-                              : item,
-                          ),
+                          line.unitId === form.baseUnitId
+                            ? syncPricesFromBaseUnit(current, {
+                                purchasePrice: value,
+                              })
+                            : current.map((item) =>
+                                item.id === line.id
+                                  ? { ...item, purchasePrice: value }
+                                  : item,
+                              ),
                         )
                       }
                     />
@@ -8288,11 +8866,15 @@ function ProductsPage() {
                       value={line.salePrice}
                       onChange={(value) =>
                         setProductUnitLines((current) =>
-                          current.map((item) =>
-                            item.id === line.id
-                              ? { ...item, salePrice: value }
-                              : item,
-                          ),
+                          line.unitId === form.baseUnitId
+                            ? syncPricesFromBaseUnit(current, {
+                                salePrice: value,
+                              })
+                            : current.map((item) =>
+                                item.id === line.id
+                                  ? { ...item, salePrice: value }
+                                  : item,
+                              ),
                         )
                       }
                     />
@@ -8371,13 +8953,9 @@ function ProductsPage() {
                   />
                   <NumberField
                     label="قیمت تمام‌شده واحد"
-                    value={form.openingUnitCost}
-                    onChange={(value) =>
-                      setForm((current) => ({
-                        ...current,
-                        openingUnitCost: value,
-                      }))
-                    }
+                    value={basePurchasePrice}
+                    onChange={() => undefined}
+                    disabled
                   />
                   <LookupSelect
                     label="کرنسی"
@@ -8407,6 +8985,10 @@ function ProductsPage() {
                     />
                   ) : null}
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  قیمت تمام‌شده موجودی اولیه از قیمت خرید واحد پایه محصول گرفته
+                  می‌شود.
+                </p>
               </div>
             )}
           </div>
@@ -8429,6 +9011,7 @@ const emptyInventoryActionForm: InventoryActionForm = {
   warehouseId: "",
   toWarehouseId: "",
   lotId: "",
+  unitId: "",
   quantity: 0,
   unitCost: 0,
   currencyId: "",
@@ -8505,7 +9088,12 @@ function InventoryMovementSection({
   to: string;
   onFromChange: (value: string) => void;
   onToChange: (value: string) => void;
-  pagination?: { page: number; limit: number; total: number; totalPages: number };
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
   onPageChange?: (page: number) => void;
 }) {
   const filteredRows = filterDataRows(rows, query);
@@ -8567,9 +9155,15 @@ function InventoryPage() {
   const [movementFrom, setMovementFrom] = useState(initialMovementRange.from);
   const [movementTo, setMovementTo] = useState(initialMovementRange.to);
   const [movementPages, setMovementPages] = useState({
-    opening: 1, increase: 1, decrease: 1, damage: 1, transfer: 1,
+    opening: 1,
+    increase: 1,
+    decrease: 1,
+    damage: 1,
+    transfer: 1,
   });
-  const [movementPagination, setMovementPagination] = useState<Record<string, any>>({});
+  const [movementPagination, setMovementPagination] = useState<
+    Record<string, any>
+  >({});
   const [lotOptions, setLotOptions] = useState<LookupItem[]>([]);
   const [products, setProducts] = useState<LookupItem[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
@@ -8664,9 +9258,9 @@ function InventoryPage() {
         fetch(
           `${API_BASE_URL}/api/inventory/movements?type=DAMAGE&limit=20&page=${pages.damage}&${dateRangeQuery(movementFrom, movementTo)}`,
         ).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/inventory/transfer-reports?limit=20&page=${pages.transfer}&${dateRangeQuery(movementFrom, movementTo)}`).then(
-          (res) => res.json(),
-        ),
+        fetch(
+          `${API_BASE_URL}/api/inventory/transfer-reports?limit=20&page=${pages.transfer}&${dateRangeQuery(movementFrom, movementTo)}`,
+        ).then((res) => res.json()),
       ]);
 
       setStockRows(
@@ -8759,14 +9353,23 @@ function InventoryPage() {
     void loadInventoryData();
   }, []);
 
-  const changeMovementPage = (key: keyof typeof movementPages, page: number) => {
+  const changeMovementPage = (
+    key: keyof typeof movementPages,
+    page: number,
+  ) => {
     const next = { ...movementPages, [key]: page };
     setMovementPages(next);
     void loadInventoryData(next);
   };
 
   const refreshInventoryFromFirstPage = () => {
-    const firstPages = { opening: 1, increase: 1, decrease: 1, damage: 1, transfer: 1 };
+    const firstPages = {
+      opening: 1,
+      increase: 1,
+      decrease: 1,
+      damage: 1,
+      transfer: 1,
+    };
     setMovementPages(firstPages);
     void loadInventoryData(firstPages);
   };
@@ -8876,16 +9479,55 @@ function InventoryPage() {
     }
   };
 
+  const inventoryUnitOptions = (productId: string): LookupItem[] => {
+    const product: any = products.find((item) => item.id === productId);
+    const optionMap = new Map<string, LookupItem>();
+
+    if (product?.baseUnitId) {
+      optionMap.set(product.baseUnitId, {
+        id: product.baseUnitId,
+        name:
+          product.baseUnit?.shortName || product.baseUnit?.name || "واحد پایه",
+      });
+    }
+
+    (product?.units || []).forEach((item: any) => {
+      if (!item.unitId) return;
+      optionMap.set(item.unitId, {
+        id: item.unitId,
+        name: `${item.unit?.shortName || item.unit?.name || "واحد"}${
+          Number(item.conversionRate || 1) !== 1
+            ? ` (${Number(item.conversionRate || 1)} ${product?.baseUnit?.shortName || product?.baseUnit?.name || "پایه"})`
+            : ""
+        }`,
+      });
+    });
+
+    return Array.from(optionMap.values());
+  };
+
+  const defaultInventoryUnitId = (productId: string) => {
+    const product: any = products.find((item) => item.id === productId);
+    return (
+      product?.units?.find((unit: any) => unit.isDefaultPurchase)?.unitId ||
+      product?.baseUnitId ||
+      product?.units?.[0]?.unitId ||
+      ""
+    );
+  };
+
   const openAction = (type: InventoryActionForm["type"]) => {
     const baseCurrency =
       currencies.find((item) => item.isBase) || currencies[0];
+    const firstProductId = products[0]?.id || "";
     setForm({
       ...emptyInventoryActionForm,
       type,
-      productId: products[0]?.id || "",
+      productId: firstProductId,
       warehouseId: warehouses[0]?.id || "",
       toWarehouseId: warehouses[1]?.id || "",
       lotId: "",
+      unitId: defaultInventoryUnitId(firstProductId),
       currencyId: baseCurrency?.id || "",
     });
     setLotOptions([]);
@@ -8926,6 +9568,7 @@ function InventoryPage() {
               productId: form.productId,
               warehouseId: form.warehouseId,
               lotId: form.lotId || null,
+              unitId: form.unitId || null,
               type: form.type,
               quantity: form.quantity,
               unitCost: form.unitCost || null,
@@ -9093,8 +9736,12 @@ function InventoryPage() {
             onRefresh={refreshInventoryFromFirstPage}
             onEdit={openOpeningEdit}
             onCancel={openInventoryCancel}
-            from={movementFrom} to={movementTo} onFromChange={setMovementFrom} onToChange={setMovementTo}
-            pagination={movementPagination.opening} onPageChange={(page) => changeMovementPage("opening", page)}
+            from={movementFrom}
+            to={movementTo}
+            onFromChange={setMovementFrom}
+            onToChange={setMovementTo}
+            pagination={movementPagination.opening}
+            onPageChange={(page) => changeMovementPage("opening", page)}
           />
         </TabsContent>
 
@@ -9109,8 +9756,12 @@ function InventoryPage() {
             onCreate={() => openAction("ADJUSTMENT_IN")}
             createLabel="افزایش جدید"
             onCancel={openInventoryCancel}
-            from={movementFrom} to={movementTo} onFromChange={setMovementFrom} onToChange={setMovementTo}
-            pagination={movementPagination.increase} onPageChange={(page) => changeMovementPage("increase", page)}
+            from={movementFrom}
+            to={movementTo}
+            onFromChange={setMovementFrom}
+            onToChange={setMovementTo}
+            pagination={movementPagination.increase}
+            onPageChange={(page) => changeMovementPage("increase", page)}
           />
         </TabsContent>
 
@@ -9125,8 +9776,12 @@ function InventoryPage() {
             onCreate={() => openAction("ADJUSTMENT_OUT")}
             createLabel="کاهش جدید"
             onCancel={openInventoryCancel}
-            from={movementFrom} to={movementTo} onFromChange={setMovementFrom} onToChange={setMovementTo}
-            pagination={movementPagination.decrease} onPageChange={(page) => changeMovementPage("decrease", page)}
+            from={movementFrom}
+            to={movementTo}
+            onFromChange={setMovementFrom}
+            onToChange={setMovementTo}
+            pagination={movementPagination.decrease}
+            onPageChange={(page) => changeMovementPage("decrease", page)}
           />
         </TabsContent>
 
@@ -9141,8 +9796,12 @@ function InventoryPage() {
             onCreate={() => openAction("DAMAGE")}
             createLabel="ضایعات جدید"
             onCancel={openInventoryCancel}
-            from={movementFrom} to={movementTo} onFromChange={setMovementFrom} onToChange={setMovementTo}
-            pagination={movementPagination.damage} onPageChange={(page) => changeMovementPage("damage", page)}
+            from={movementFrom}
+            to={movementTo}
+            onFromChange={setMovementFrom}
+            onToChange={setMovementTo}
+            pagination={movementPagination.damage}
+            onPageChange={(page) => changeMovementPage("damage", page)}
           />
         </TabsContent>
 
@@ -9158,8 +9817,12 @@ function InventoryPage() {
             createLabel="انتقال جدید"
             columns={inventoryTransferColumns}
             onCancel={openInventoryCancel}
-            from={movementFrom} to={movementTo} onFromChange={setMovementFrom} onToChange={setMovementTo}
-            pagination={movementPagination.transfer} onPageChange={(page) => changeMovementPage("transfer", page)}
+            from={movementFrom}
+            to={movementTo}
+            onFromChange={setMovementFrom}
+            onToChange={setMovementTo}
+            pagination={movementPagination.transfer}
+            onPageChange={(page) => changeMovementPage("transfer", page)}
           />
         </TabsContent>
       </Tabs>
@@ -9192,6 +9855,7 @@ function InventoryPage() {
                   ...current,
                   productId: value,
                   lotId: "",
+                  unitId: defaultInventoryUnitId(value),
                   expiryDate: productHasExpiry(products, value)
                     ? current.expiryDate
                     : "",
@@ -9231,6 +9895,16 @@ function InventoryPage() {
                 }
               />
             )}
+            {form.type !== "TRANSFER" && (
+              <LookupSelect
+                label="واحد"
+                value={form.unitId}
+                options={inventoryUnitOptions(form.productId)}
+                onChange={(value) =>
+                  setForm((current) => ({ ...current, unitId: value }))
+                }
+              />
+            )}
             <NumberField
               label="مقدار"
               value={form.quantity}
@@ -9238,10 +9912,26 @@ function InventoryPage() {
                 setForm((current) => ({ ...current, quantity: value }))
               }
             />
+            {form.type !== "TRANSFER" && form.productId ? (
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                مقدار پایه:{" "}
+                <strong className="text-foreground">
+                  {new Intl.NumberFormat("en-US").format(
+                    form.quantity *
+                      productUnitInfo(products, form.productId, form.unitId)
+                        .conversionRate,
+                  )}{" "}
+                  {
+                    productUnitInfo(products, form.productId, form.unitId)
+                      .baseUnitName
+                  }
+                </strong>
+              </div>
+            ) : null}
             {form.type === "ADJUSTMENT_IN" && (
               <>
                 <NumberField
-                  label="قیمت تمام‌شده واحد"
+                  label="قیمت تمام‌شده واحد انتخاب‌شده"
                   value={form.unitCost}
                   onChange={(value) =>
                     setForm((current) => ({ ...current, unitCost: value }))
@@ -9452,7 +10142,7 @@ function TextField({
           className="min-h-24 rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
         />
       ) : type === "date" ? (
-        <DatePicker value={value} onChange={onChange} />
+        <ManualDateInput value={value} onChange={onChange} />
       ) : (
         <Input
           type={type}
@@ -9533,9 +10223,13 @@ function InvoiceItemsPanel({
             <TableHead>گدام</TableHead>
             <TableHead>واحد</TableHead>
             <TableHead>مقدار</TableHead>
+            <TableHead>واحد پایه</TableHead>
             <TableHead>{unitAmountLabel}</TableHead>
-            <TableHead>تخفیف/انقضا</TableHead>
-            <TableHead>جمع</TableHead>
+            <TableHead>تخفیف قلم/انقضا</TableHead>
+            <TableHead>تخفیف عمومی</TableHead>
+            <TableHead>جمع خام</TableHead>
+            <TableHead>جمع خالص</TableHead>
+            <TableHead>قیمت فروش</TableHead>
             <TableHead>عملیات</TableHead>
           </TableRow>
         </TableHeader>
@@ -9543,7 +10237,7 @@ function InvoiceItemsPanel({
           {rows.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={8}
+                colSpan={12}
                 className="py-8 text-center text-muted-foreground"
               >
                 {emptyLabel}
@@ -9556,11 +10250,47 @@ function InvoiceItemsPanel({
                 <TableCell>{row.warehouse}</TableCell>
                 <TableCell>{row.unit}</TableCell>
                 <TableCell>{row.quantity}</TableCell>
+                <TableCell>
+                  {row.baseQuantity
+                    ? `${new Intl.NumberFormat("en-US").format(row.baseQuantity)} ${row.baseUnit || ""}`
+                    : "-"}
+                  {row.baseUnitAmount ? (
+                    <div className="text-[11px] text-muted-foreground">
+                      {money(row.baseUnitAmount, currencyCode)}
+                    </div>
+                  ) : null}
+                </TableCell>
                 <TableCell>{money(row.unitAmount, currencyCode)}</TableCell>
                 <TableCell>
-                  {row.expiryDate || money(Number(row.discount || 0), currencyCode)}
+                  {row.expiryDate ||
+                    money(Number(row.discount || 0), currencyCode)}
+                </TableCell>
+                <TableCell>
+                  {money(Number(row.generalDiscount || 0), currencyCode)}
                 </TableCell>
                 <TableCell>{money(row.total, currencyCode)}</TableCell>
+                <TableCell>
+                  {money(row.netTotal ?? row.total, currencyCode)}
+                </TableCell>
+                <TableCell>
+                  {row.salePrice !== undefined ? (
+                    <>
+                      <div>{money(row.salePrice, currencyCode)}</div>
+                      {row.baseSalePrice !== undefined ? (
+                        <div className="text-[11px] text-muted-foreground">
+                          پایه: {money(row.baseSalePrice, currencyCode)}
+                        </div>
+                      ) : null}
+                      {row.salePriceUpdate ? (
+                        <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                          آپدیت
+                        </Badge>
+                      ) : null}
+                    </>
+                  ) : (
+                    "-"
+                  )}
+                </TableCell>
                 <TableCell>
                   <div className="flex gap-1">
                     <Button
@@ -9756,7 +10486,8 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
   if (pageTitle === "اجناس") {
     const baseSaleUnit =
       Array.isArray(item.units) && item.units.length > 0
-        ? item.units.find((unit: any) => unit.unitId === item.baseUnitId) || item.units[0]
+        ? item.units.find((unit: any) => unit.unitId === item.baseUnitId) ||
+          item.units[0]
         : null;
 
     return {
@@ -9766,9 +10497,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
       barcode: item.barcode || item.sku || "-",
       category: item.category?.name || "-",
       unit: item.baseUnit?.shortName || item.baseUnit?.name || "-",
-      salePrice: baseSaleUnit?.salePrice
-        ? money(baseSaleUnit.salePrice)
-        : "-",
+      salePrice: baseSaleUnit?.salePrice ? money(baseSaleUnit.salePrice) : "-",
       status: item.isActive === false ? "غیرفعال" : "فعال",
       ...auditMeta,
     };

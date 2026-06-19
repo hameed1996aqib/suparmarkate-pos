@@ -24,6 +24,7 @@ const adjustmentSchema = z.object({
   productId: z.string().min(1),
   warehouseId: z.string().min(1),
   lotId: z.string().trim().optional().nullable(),
+  unitId: z.string().trim().optional().nullable(),
   type: z.enum(["ADJUSTMENT_IN", "ADJUSTMENT_OUT", "DAMAGE"]),
   quantity: z.coerce.number().positive(),
   unitCost: z.coerce.number().nonnegative().optional().nullable(),
@@ -67,13 +68,42 @@ function parseExpiryDate(value: string | null | undefined) {
 
 async function ensureProductAndWarehouse(productId: string, warehouseId: string) {
   const [product, warehouse] = await Promise.all([
-    prisma.product.findUnique({ where: { id: productId } }),
+    prisma.product.findUnique({
+      where: { id: productId },
+      include: { units: true, baseUnit: true }
+    }),
     prisma.warehouse.findUnique({ where: { id: warehouseId } })
   ]);
 
   return {
     product,
     warehouse
+  };
+}
+
+function resolveProductUnitConversion(
+  product: NonNullable<Awaited<ReturnType<typeof ensureProductAndWarehouse>>["product"]>,
+  unitId: string | null | undefined
+) {
+  const selectedUnitId = unitId || product.baseUnitId;
+  const productUnit = product.units.find((item) => item.unitId === selectedUnitId);
+
+  if (selectedUnitId === product.baseUnitId) {
+    return {
+      unitId: selectedUnitId,
+      conversionRate: 1,
+      unitName: product.baseUnit?.shortName || product.baseUnit?.name || "base"
+    };
+  }
+
+  if (!productUnit) {
+    throw new Error("Selected unit is not configured for this product");
+  }
+
+  return {
+    unitId: selectedUnitId,
+    conversionRate: Number(productUnit.conversionRate || 1),
+    unitName: product.baseUnit?.shortName || product.baseUnit?.name || "base"
   };
 }
 
@@ -747,6 +777,27 @@ inventoryRoute.post("/adjustments", async (c) => {
     return c.json({ message: "Warehouse not found" }, 404);
   }
 
+  let unitConversion;
+  try {
+    unitConversion = resolveProductUnitConversion(product, parsed.data.unitId);
+  } catch (error) {
+    return c.json(
+      {
+        message:
+          error instanceof Error
+            ? error.message
+            : "Selected unit is not configured for this product"
+      },
+      400
+    );
+  }
+
+  const quantityBase = parsed.data.quantity * unitConversion.conversionRate;
+  const unitCostBase =
+    parsed.data.unitCost !== null && parsed.data.unitCost !== undefined
+      ? Number(parsed.data.unitCost) / unitConversion.conversionRate
+      : 0;
+
   const expiryDate = parseExpiryDate(parsed.data.expiryDate);
 
   if (expiryDate === "INVALID_DATE") {
@@ -772,14 +823,17 @@ inventoryRoute.post("/adjustments", async (c) => {
           productId: parsed.data.productId,
           warehouseId: parsed.data.warehouseId,
           expiryDate,
-          initialQuantity: parsed.data.quantity,
-          remainingQuantity: parsed.data.quantity,
-          unitCost: parsed.data.unitCost ?? 0,
+          initialQuantity: quantityBase,
+          remainingQuantity: quantityBase,
+          unitCost: unitCostBase,
           currencyId: parsed.data.currencyId ?? null,
           exchangeRate: stockSnapshot.exchangeRate,
-          baseUnitCost: Number(parsed.data.unitCost ?? 0) * stockSnapshot.exchangeRate,
+          baseUnitCost: unitCostBase * stockSnapshot.exchangeRate,
           sourceType: "ADJUSTMENT_IN",
-          note: parsed.data.note ?? null
+          note: [
+            parsed.data.note ?? null,
+            `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+          ].filter(Boolean).join(" | ") || null
         }
       });
 
@@ -789,14 +843,17 @@ inventoryRoute.post("/adjustments", async (c) => {
           warehouseId: parsed.data.warehouseId,
           lotId: lot.id,
           type: StockMovementType.ADJUSTMENT_IN,
-          quantity: parsed.data.quantity,
-          unitCost: parsed.data.unitCost ?? 0,
+          quantity: quantityBase,
+          unitCost: unitCostBase,
           currencyId: parsed.data.currencyId ?? null,
           exchangeRate: stockSnapshot.exchangeRate,
-          baseUnitCost: Number(parsed.data.unitCost ?? 0) * stockSnapshot.exchangeRate,
+          baseUnitCost: unitCostBase * stockSnapshot.exchangeRate,
           referenceType: "ADJUSTMENT",
           referenceId: lot.id,
-          note: parsed.data.note ?? null,
+          note: [
+            parsed.data.note ?? null,
+            `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+          ].filter(Boolean).join(" | ") || null,
           createdByUserId: authUser?.id || null
         }
       });
@@ -811,7 +868,10 @@ inventoryRoute.post("/adjustments", async (c) => {
       metadata: {
         productId: parsed.data.productId,
         warehouseId: parsed.data.warehouseId,
-        quantity: parsed.data.quantity
+        quantity: quantityBase,
+        enteredQuantity: parsed.data.quantity,
+        enteredUnitId: unitConversion.unitId,
+        conversionRate: unitConversion.conversionRate
       }
     });
 
@@ -828,7 +888,7 @@ inventoryRoute.post("/adjustments", async (c) => {
     orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }]
   });
 
-  let remaining = parsed.data.quantity;
+  let remaining = quantityBase;
   const allocations: Array<{ lot: (typeof lots)[number]; quantity: number }> = [];
 
   for (const lot of lots) {
@@ -845,7 +905,9 @@ inventoryRoute.post("/adjustments", async (c) => {
     return c.json(
       {
         message: "Not enough stock for adjustment",
-        required: parsed.data.quantity,
+        required: quantityBase,
+        enteredQuantity: parsed.data.quantity,
+        conversionRate: unitConversion.conversionRate,
         missing: remaining
       },
       400
@@ -883,7 +945,10 @@ inventoryRoute.post("/adjustments", async (c) => {
           baseUnitCost: allocation.lot.baseUnitCost,
           referenceType: parsed.data.type,
           referenceId: allocation.lot.id,
-          note: parsed.data.note ?? null,
+          note: [
+            parsed.data.note ?? null,
+            `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+          ].filter(Boolean).join(" | ") || null,
           createdByUserId: authUser?.id || null
         }
       });
@@ -900,7 +965,10 @@ inventoryRoute.post("/adjustments", async (c) => {
     metadata: {
       productId: parsed.data.productId,
       warehouseId: parsed.data.warehouseId,
-      quantity: parsed.data.quantity
+      quantity: quantityBase,
+      enteredQuantity: parsed.data.quantity,
+      enteredUnitId: unitConversion.unitId,
+      conversionRate: unitConversion.conversionRate
     }
   });
 

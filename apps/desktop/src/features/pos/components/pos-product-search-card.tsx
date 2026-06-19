@@ -1,10 +1,13 @@
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
 } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Barcode,
   BottleWine,
@@ -19,7 +22,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 import type { ProductSearchItem } from "../types";
 
@@ -29,6 +31,9 @@ type PosProductSearchCardProps = {
   categories: Array<{ id: string; name: string; count: number }>;
   activeCategoryId: string;
   isLoading: boolean;
+  isLoadingMore?: boolean;
+  hasMore?: boolean;
+  totalProducts?: number;
   warehouseName?: string;
   currencyCode?: string;
   currencyRate?: number;
@@ -36,6 +41,7 @@ type PosProductSearchCardProps = {
   isWsConnected: boolean;
   onSearchChange: (value: string) => void;
   onCategoryChange: (value: string) => void;
+  onLoadMore?: () => void;
   onAddProduct: (barcode: string) => void;
   onScanBarcode: (barcode: string) => void;
 };
@@ -80,6 +86,7 @@ function getProductVisual(
         src={src}
         alt={product.name}
         className="h-full w-full object-cover"
+        loading="lazy"
       />
     );
   }
@@ -98,6 +105,9 @@ function getProductVisual(
 }
 
 function productAvailability(product: ProductSearchItem) {
+  const totalStock = Number(product.totalStock || 0);
+  const minStock = Number(product.minStock || 0);
+
   if (product.isActive === false) {
     return {
       label: "غیرفعال",
@@ -105,9 +115,16 @@ function productAvailability(product: ProductSearchItem) {
     };
   }
 
-  if (!product.barcode) {
+  if (totalStock <= 0) {
     return {
-      label: "بدون بارکود",
+      label: "ناموجود",
+      className: "bg-destructive/15 text-destructive",
+    };
+  }
+
+  if (minStock > 0 && totalStock <= minStock) {
+    return {
+      label: "موجودی کم",
       className: "bg-amber-500/15 text-amber-300",
     };
   }
@@ -128,6 +145,9 @@ export const PosProductSearchCard = forwardRef<
     categories,
     activeCategoryId,
     isLoading,
+    isLoadingMore = false,
+    hasMore = false,
+    totalProducts = 0,
     warehouseName,
     currencyCode,
     currencyRate = 1,
@@ -135,13 +155,59 @@ export const PosProductSearchCard = forwardRef<
     isWsConnected,
     onSearchChange,
     onCategoryChange,
+    onLoadMore,
     onAddProduct,
     onScanBarcode,
   },
   ref,
 ) {
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
+  const productListRef = useRef<HTMLDivElement | null>(null);
   const [barcode, setBarcode] = useState("");
+  const [listWidth, setListWidth] = useState(0);
+  const columnCount = listWidth >= 1280 ? 4 : listWidth >= 640 ? 4 : 1;
+  const rows = useMemo(() => {
+    const nextRows: ProductSearchItem[][] = [];
+
+    for (let index = 0; index < products.length; index += columnCount) {
+      nextRows.push(products.slice(index, index + columnCount));
+    }
+
+    return nextRows;
+  }, [columnCount, products]);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => productListRef.current,
+    estimateSize: () => 226,
+    overscan: 5,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const element = productListRef.current;
+    if (!element) return;
+
+    const updateWidth = () => setListWidth(element.clientWidth);
+    updateWidth();
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    rowVirtualizer.scrollToIndex(0);
+  }, [activeCategoryId, rowVirtualizer, searchTerm]);
+
+  useEffect(() => {
+    const lastRow = virtualRows.at(-1);
+    if (!lastRow || !hasMore || isLoading || isLoadingMore) return;
+
+    if (lastRow.index >= rows.length - 3) {
+      onLoadMore?.();
+    }
+  }, [hasMore, isLoading, isLoadingMore, onLoadMore, rows.length, virtualRows]);
 
   useImperativeHandle(ref, () => ({
     focusBarcode() {
@@ -174,7 +240,7 @@ export const PosProductSearchCard = forwardRef<
   }
 
   return (
-    <Card className="overflow-hidden border-border bg-card shadow-sm  ">
+    <Card className="overflow-hidden border-border bg-card shadow-sm">
       <CardHeader className="gap-3">
         <div className="grid gap-3 xl:grid-cols-[260px_1fr_auto]">
           <div className="relative">
@@ -216,7 +282,7 @@ export const PosProductSearchCard = forwardRef<
             <Grid2X2 className="h-4 w-4" />
             همه محصولات
           </Button>
-          {categories.slice(0, 6).map((item) => (
+          {categories.slice(0, 8).map((item) => (
             <Button
               key={item.id}
               size="sm"
@@ -248,80 +314,118 @@ export const PosProductSearchCard = forwardRef<
       </CardHeader>
 
       <CardContent>
-        <ScrollArea className="h-[96.5vh] rounded-xl">
-          <div className="grid gap-3 p-1 sm:grid-cols-2 2xl:grid-cols-4">
-            {isLoading ? (
-              <div className="col-span-full rounded-xl border border-border bg-muted/20 py-12 text-center text-sm text-muted-foreground">
-                در حال دریافت محصولات...
-              </div>
-            ) : products.length ? (
-              products.map((product, index) => {
-                const hasBarcode = Boolean(product.barcode);
-                const price = getDefaultSalePrice(product) / currencyRate;
-                const availability = productAvailability(product);
-
-                return (
-                  <div
-                    key={product.id}
-                    className="group relative grid min-h-[210px] overflow-hidden rounded-xl border border-border bg-card p-3 shadow-sm transition hover:-translate-y-0.5 hover:border-primary/45 hover:shadow-lg"
-                  >
-                    <div className="pointer-events-none absolute -start-10 -top-10 size-28 rounded-full bg-primary/10 blur-2xl transition group-hover:bg-primary/20" />
-                    <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-primary/30" />
-
-                    <div className="flex items-start justify-between gap-3 mb-3">
-                      <div className="grid gap-5">
-                        <Badge className={availability.className}>
-                          {availability.label}
-                        </Badge>
-                        <div className="line-clamp-2 min-h-10 text-sm font-bold leading-6">
-                          {product.name}
-                        </div>
-                      </div>
-                      <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-xl border border-border/80 bg-background/75 text-primary shadow-inner transition group-hover:scale-[1.02]">
-                        {getProductVisual(product, index, apiBaseUrl)}
-                      </div>
-                    </div>
-
-                    <div className="grid gap-2">
-                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <span>واحد: {getUnitName(product)}</span>
-                        <span dir="ltr" className="font-mono">
-                          {product.sku || product.barcode || "-"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="mt-auto flex items-end justify-between gap-3">
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        disabled={!hasBarcode || product.isActive === false}
-                        onClick={() => onAddProduct(product.barcode || "")}
-                        className="size-9 rounded-xl border-primary/35 bg-primary/10 text-primary shadow-sm hover:bg-primary hover:text-primary-foreground"
-                        title="افزودن به فاکتور"
+        <div
+          ref={productListRef}
+          className="h-[96.5vh] overflow-auto rounded-xl"
+        >
+          {isLoading ? (
+            <div className="rounded-xl border border-border bg-muted/20 py-12 text-center text-sm text-muted-foreground">
+              در حال دریافت محصولات...
+            </div>
+          ) : products.length ? (
+            <div
+              className="relative p-1"
+              style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+            >
+              {virtualRows.map((virtualRow) => (
+                <div
+                  key={virtualRow.key}
+                  className="absolute inset-s-0 top-0 grid w-full gap-3"
+                  style={{
+                    gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  {rows[virtualRow.index]?.map((product, columnIndex) => {
+                    const productIndex =
+                      virtualRow.index * columnCount + columnIndex;
+                    const hasBarcode = Boolean(product.barcode);
+                    const price = getDefaultSalePrice(product) / currencyRate;
+                    const availability = productAvailability(product);
+                    console.log({ product, availability });
+                    return (
+                      <div
+                        key={product.id}
+                        className={`group relative grid min-h-52.5 overflow-hidden rounded-xl border border-border bg-card p-3 shadow-sm transition hover:-translate-y-0.5 hover:${availability.className && "border-primary/45"} hover:shadow-lg`}
                       >
-                        <Plus className="h-5 w-5" />
-                      </Button>
+                        <div className="pointer-events-none absolute -inset-s-10 -top-10 size-28 rounded-full bg-primary/10 blur-2xl transition group-hover:bg-primary/20" />
+                        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-primary/30" />
 
-                      <div className="text-end">
-                        <div className="text-lg font-black text-primary">
-                          {new Intl.NumberFormat("en-US").format(price)}
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div className="grid gap-5">
+                            <Badge className={availability.className}>
+                              {availability.label}
+                            </Badge>
+                            <div className="line-clamp-2 min-h-10 text-sm font-bold leading-6">
+                              {product.name}
+                            </div>
+                          </div>
+                          <div className="grid h-28 w-28 place-items-center overflow-hidden rounded-xl border border-border/80 bg-background/75 text-primary shadow-inner transition group-hover:scale-[1.02]">
+                            {getProductVisual(
+                              product,
+                              productIndex,
+                              apiBaseUrl,
+                            )}
+                          </div>
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          {currencyCode || "AFN"}
+
+                        <div className="grid gap-2">
+                          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                            <span>واحد: {getUnitName(product)}</span>
+                            <span dir="ltr" className="font-mono">
+                              {product.sku || product.barcode || "-"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-auto flex items-end justify-between gap-3">
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            disabled={!hasBarcode || product.isActive === false}
+                            onClick={() => onAddProduct(product.barcode || "")}
+                            className="size-9 rounded-xl border-primary/35 bg-primary/10 text-primary shadow-sm hover:bg-primary hover:text-primary-foreground"
+                            title="افزودن به فاکتور"
+                          >
+                            <Plus className="h-5 w-5" />
+                          </Button>
+
+                          <div className="text-end">
+                            <div className="text-lg font-black text-primary">
+                              {new Intl.NumberFormat("en-US").format(price)}
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              {currencyCode || "AFN"}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="col-span-full rounded-xl border border-border bg-muted/20 py-16 text-center text-sm text-muted-foreground">
-                محصولی پیدا نشد.
-              </div>
-            )}
-          </div>
-        </ScrollArea>
+                    );
+                  })}
+                </div>
+              ))}
+              {isLoadingMore ? (
+                <div className="absolute inset-x-1 bottom-1 rounded-xl border border-border bg-card/95 py-3 text-center text-xs text-muted-foreground">
+                  در حال دریافت بیشتر...
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border bg-muted/20 py-16 text-center text-sm text-muted-foreground">
+              محصولی پیدا نشد.
+            </div>
+          )}
+        </div>
+        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+          <span>
+            {products.length} / {totalProducts || products.length}
+          </span>
+          <span>
+            {hasMore
+              ? "برای دیدن بیشتر اسکرول کنید"
+              : "همه نتایج نمایش داده شد"}
+          </span>
+        </div>
       </CardContent>
     </Card>
   );

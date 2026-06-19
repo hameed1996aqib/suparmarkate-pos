@@ -33,11 +33,23 @@ const scanSchema = z.object({
   warehouseId: z.string().trim().optional().nullable()
 });
 
+function getConfiguredPublicBaseUrl() {
+  const configured = process.env.PUBLIC_API_BASE_URL || process.env.LAN_API_BASE_URL;
+  if (!configured) return null;
+
+  try {
+    return new URL(configured);
+  } catch {
+    return null;
+  }
+}
+
 function getBaseUrls(c: any, sessionId: string) {
   const url = new URL(c.req.url);
-  const apiBaseUrl = `${url.protocol}//${url.host}`;
-  const hostname = url.hostname;
-  const wsProtocol = url.protocol === "https:" ? "wss" : "ws";
+  const publicUrl = getConfiguredPublicBaseUrl() || url;
+  const apiBaseUrl = `${publicUrl.protocol}//${publicUrl.host}`;
+  const hostname = publicUrl.hostname;
+  const wsProtocol = publicUrl.protocol === "https:" ? "wss" : "ws";
 
   const mobileWebSocketUrl = `${wsProtocol}://${hostname}:${posWebSocketPort}?sessionId=${sessionId}&clientType=mobile`;
   const desktopWebSocketUrl = `${wsProtocol}://${hostname}:${posWebSocketPort}?sessionId=${sessionId}&clientType=desktop`;

@@ -47,6 +47,8 @@ services:
       PORT: 4000
       POS_WS_PORT: 4001
       SYSTEM_HEALTH_WS_PORT: 4002
+      WEB_APP_ENABLED: ${WEB_APP_ENABLED:-true}
+      WEB_DIST_DIR: /app/apps/desktop/dist
       JWT_SECRET: ${JWT_SECRET:-change-this-production-secret-at-least-24-characters}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       LAN_API_BASE_URL: ${LAN_API_BASE_URL:-}

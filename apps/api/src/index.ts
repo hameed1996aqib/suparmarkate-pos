@@ -4,6 +4,8 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { HTTPException } from "hono/http-exception";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { prisma } from "./lib/prisma";
 import { startPosWebSocketServer } from "./lib/pos-realtime";
 import { authMiddleware } from "./lib/auth";
@@ -56,6 +58,11 @@ import { ensureRuntimeServerConfigFile } from "./lib/runtime-server-config";
 import { startSystemHealthWebSocketServer } from "./lib/system-health-realtime";
 
 const app = new Hono();
+const webDistDir =
+  process.env.WEB_DIST_DIR || path.resolve(process.cwd(), "../desktop/dist");
+const webIndexPath = path.join(webDistDir, "index.html");
+const webAppAvailable =
+  process.env.WEB_APP_ENABLED !== "false" && existsSync(webIndexPath);
 
 const corsOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
@@ -130,9 +137,14 @@ app.use("/api/*", authMiddleware);
 app.use("/api/*", permissionMiddleware);
 
 app.get("/", (c) => {
+  if (webAppAvailable) {
+    return c.html(readFileSync(webIndexPath, "utf8"));
+  }
+
   return c.json({
     name: "Supermarket POS API",
-    status: "running"
+    status: "running",
+    webApp: "not-built"
   });
 });
 
@@ -203,6 +215,24 @@ app.route("/api/backups", backupsRoute);
 app.route("/api/attachments", attachmentsRoute);
 app.route("/api/exports", exportsRoute);
 app.route("/api/system-health", systemHealthRoute);
+
+if (webAppAvailable) {
+  app.use("/*", serveStatic({ root: webDistDir }));
+
+  app.get("*", (c) => {
+    const pathName = new URL(c.req.url).pathname;
+    if (
+      pathName.startsWith("/api/") ||
+      pathName.startsWith("/uploads/") ||
+      pathName === "/health" ||
+      path.extname(pathName)
+    ) {
+      return c.notFound();
+    }
+
+    return c.html(readFileSync(webIndexPath, "utf8"));
+  });
+}
 
 app.notFound((c) => {
   return c.json(

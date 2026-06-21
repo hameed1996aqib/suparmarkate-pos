@@ -16,10 +16,28 @@ export function getStoredApiBaseUrl() {
   return window.localStorage.getItem(API_BASE_URL_KEY);
 }
 
+function getDefaultApiBaseUrl() {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+
+  if (typeof window !== "undefined") {
+    const { protocol, origin, port } = window.location;
+    const isHttp = protocol === "http:" || protocol === "https:";
+    const isViteDevOrPreview = port === "5173" || port === "4173";
+
+    if (isHttp && origin && !isViteDevOrPreview) {
+      return origin;
+    }
+  }
+
+  return "http://localhost:4000";
+}
+
 export function getApiBaseUrl() {
   const stored = getStoredApiBaseUrl();
   if (stored) return normalizeApiBaseUrl(stored);
-  return normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL || "http://localhost:4000");
+  return normalizeApiBaseUrl(getDefaultApiBaseUrl());
 }
 
 export function saveApiBaseUrl(value: string) {
@@ -33,7 +51,9 @@ export async function testApiBaseUrl(value: string) {
   const response = await fetch(`${normalized}/health`);
   if (!response.ok) throw new Error("سرور پاسخ معتبر نداد");
   const json = await response.json().catch(() => null);
-  if (json?.status !== "ok") throw new Error("اتصال دیتابیس سرور برقرار نیست");
+  if (json?.status !== "ok") {
+    throw new Error("اتصال دیتابیس سرور برقرار نیست");
+  }
   return normalized;
 }
 

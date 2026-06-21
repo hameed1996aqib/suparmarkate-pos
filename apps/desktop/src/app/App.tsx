@@ -6470,6 +6470,7 @@ function CashBankPage() {
             )
           : [],
       );
+      setTransactionsPagination(transfersRes?.pagination || null);
       setCustomers(Array.isArray(customersRes?.data) ? customersRes.data : []);
       setSuppliers(Array.isArray(suppliersRes?.data) ? suppliersRes.data : []);
       setCurrencies(
@@ -6737,7 +6738,6 @@ function CashBankPage() {
             ? "دریافت از مشتری ثبت شد"
             : "پرداخت به فروشنده ثبت شد",
       );
-      setTransactionsPagination(transfersRes?.pagination || null);
       const receiptId = json?.data?.partyTransaction?.id;
       if (receiptId) {
         window.open(

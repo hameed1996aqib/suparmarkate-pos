@@ -34,6 +34,7 @@ if (-not $lanIp) {
   $lanIp = "127.0.0.1"
 }
 $lanApiBaseUrl = "http://$lanIp`:$ApiPort"
+$lanWebUrl = $lanApiBaseUrl
 
 $composeEnvPath = Join-Path $ProjectDir ".env"
 if (-not (Test-Path $composeEnvPath)) {
@@ -51,6 +52,7 @@ JWT_SECRET=$jwtSecret
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 LAN_API_BASE_URL=$lanApiBaseUrl
 PUBLIC_API_BASE_URL=$lanApiBaseUrl
+WEB_APP_ENABLED=true
 SEED_ADMIN_USERNAME=admin
 SEED_ADMIN_PASSWORD=change-me-now
 BACKUP_RETENTION_COUNT=7
@@ -66,9 +68,13 @@ BACKUP_SCHEDULE_ENABLED=true
   if ($composeEnvContent -notmatch "(?m)^PUBLIC_API_BASE_URL=") {
     Add-Content -Path $composeEnvPath -Value "PUBLIC_API_BASE_URL=$lanApiBaseUrl"
   }
+  if ($composeEnvContent -notmatch "(?m)^WEB_APP_ENABLED=") {
+    Add-Content -Path $composeEnvPath -Value "WEB_APP_ENABLED=true"
+  }
 }
 
 Write-Host "Muhaseb LAN API URL: $lanApiBaseUrl"
+Write-Host "Muhaseb LAN Web URL: $lanWebUrl"
 
 Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 & (Join-Path $PSScriptRoot "configure-firewall.ps1") `
@@ -116,6 +122,7 @@ do {
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/health" -TimeoutSec 3
     if ($health.status -eq "ok") {
       Write-Host "Muhaseb API is ready: http://127.0.0.1:$ApiPort"
+      Write-Host "Muhaseb Web is ready: $lanWebUrl"
       exit 0
     }
   } catch {

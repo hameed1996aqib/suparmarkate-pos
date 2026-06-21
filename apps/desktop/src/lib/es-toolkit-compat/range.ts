@@ -1,1 +1,1 @@
-export { range as default } from "../../../../../node_modules/es-toolkit/dist/compat/math/range.mjs";
+export { range as default } from "es-toolkit/compat";

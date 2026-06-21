@@ -3,6 +3,7 @@
   Suspense,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
@@ -8077,8 +8078,11 @@ function ProductsPage() {
     [],
   );
   const [isLoading, setIsLoading] = useState(true);
+  const productsRequestSeqRef = useRef(0);
 
   const loadProductsData = async (page = productsPagination?.page || 1) => {
+    const requestSeq = productsRequestSeqRef.current + 1;
+    productsRequestSeqRef.current = requestSeq;
     setIsLoading(true);
     try {
       const [productRes, categoryRes, unitRes, warehouseRes, currencyRes] =
@@ -8098,6 +8102,8 @@ function ProductsPage() {
         ? productRes.data.map((item: unknown) => normalizeRow(item, "اجناس"))
         : [];
 
+      if (requestSeq !== productsRequestSeqRef.current) return;
+
       setProducts(loadedProducts);
       setProductsSummary(
         productRes?.summary || { total: 0, active: 0, barcodeCount: 0 },
@@ -8108,10 +8114,13 @@ function ProductsPage() {
       setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
       setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
     } catch {
+      if (requestSeq !== productsRequestSeqRef.current) return;
       toast.error("داده‌های اجناس از API خوانده نشد");
       setProducts([]);
     } finally {
-      setIsLoading(false);
+      if (requestSeq === productsRequestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 

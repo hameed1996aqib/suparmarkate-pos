@@ -1,1 +1,1 @@
-export { isPlainObject as default } from "../../../../../node_modules/es-toolkit/dist/compat/predicate/isPlainObject.mjs";
+export { isPlainObject as default } from "es-toolkit/compat";

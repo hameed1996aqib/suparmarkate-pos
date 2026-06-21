@@ -189,6 +189,7 @@ export async function loadProducts(
   input: {
     search?: string;
     categoryId?: string;
+    warehouseId?: string | null;
     offset?: number;
     limit?: number;
   } = {},
@@ -204,6 +205,10 @@ export async function loadProducts(
 
   if (input.categoryId && input.categoryId !== "all") {
     params.set("categoryId", input.categoryId);
+  }
+
+  if (input.warehouseId) {
+    params.set("warehouseId", input.warehouseId);
   }
 
   return fetchJson<PosProductSearchResponse>(

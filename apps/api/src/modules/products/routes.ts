@@ -176,13 +176,17 @@ productsRoute.get("/", async (c) => {
 productsRoute.get("/pos-search", async (c) => {
   const search = (c.req.query("search") || "").trim();
   const categoryId = (c.req.query("categoryId") || "").trim();
+  const warehouseId = (c.req.query("warehouseId") || "").trim();
   const requestedLimit = Number.parseInt(c.req.query("limit") || "60", 10);
   const requestedOffset = Number.parseInt(c.req.query("offset") || "0", 10);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 60, 1), 100);
   const offset = Math.max(Number.isFinite(requestedOffset) ? requestedOffset : 0, 0);
   const barcodeSearch = normalizeBarcodeText(search);
-  const cacheKey = `pos:products:v3:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}:${barcodeSearch}`;
-  const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
+  const cacheKey = `pos:products:v4:${warehouseId || "all"}:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}:${barcodeSearch}`;
+  const shouldUseCache = !search;
+  const cached = shouldUseCache
+    ? await cacheGetJson<Record<string, unknown>>(cacheKey)
+    : null;
 
   if (cached) {
     return c.json({ ...cached, cache: "hit" });
@@ -229,7 +233,10 @@ productsRoute.get("/pos-search", async (c) => {
   const stockRows = productIds.length
     ? await prisma.stockBalance.groupBy({
         by: ["productId"],
-        where: { productId: { in: productIds } },
+        where: {
+          productId: { in: productIds },
+          ...(warehouseId ? { warehouseId } : {})
+        },
         _sum: { quantityBase: true }
       })
     : [];
@@ -269,7 +276,9 @@ productsRoute.get("/pos-search", async (c) => {
     }
   };
 
-  await cacheSetJson(cacheKey, payload, 10);
+  if (shouldUseCache) {
+    await cacheSetJson(cacheKey, payload, 5);
+  }
   return c.json({ ...payload, cache: "miss" });
 });
 

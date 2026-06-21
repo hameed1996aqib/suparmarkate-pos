@@ -1,1 +1,1 @@
-export { sortBy as default } from "../../../../../node_modules/es-toolkit/dist/compat/array/sortBy.mjs";
+export { sortBy as default } from "es-toolkit/compat";

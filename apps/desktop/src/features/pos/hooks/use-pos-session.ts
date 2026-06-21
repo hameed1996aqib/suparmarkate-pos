@@ -39,6 +39,7 @@ import { getApiBaseUrl } from "../utils";
 export function usePosSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const productRequestSeqRef = useRef(0);
 
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiBaseUrlOverride, setApiBaseUrlOverrideState] = useState(() => {
@@ -584,6 +585,11 @@ export function usePosSession() {
 
     localStorage.setItem("muhaseb_pos_warehouse_id", nextWarehouse.id);
     setWarehouse(nextWarehouse);
+    if (apiBaseUrl) {
+      void loadProductList(apiBaseUrl, productSearchTerm, {
+        warehouseId: nextWarehouse.id,
+      });
+    }
 
     if (sendWsMessage({ type: "SET_ACTIVE_WAREHOUSE", warehouseId: nextWarehouse.id })) {
       toast.success(`گدام فعال شد: ${nextWarehouse.name}`);
@@ -599,22 +605,41 @@ export function usePosSession() {
     }
   }
 
-  async function loadProductList(baseUrl: string, search = productSearchTerm) {
+  async function loadProductList(
+    baseUrl: string,
+    search = productSearchTerm,
+    input?: {
+      categoryId?: string;
+      warehouseId?: string | null;
+    },
+  ) {
+    const requestSeq = productRequestSeqRef.current + 1;
+    productRequestSeqRef.current = requestSeq;
+    const nextCategoryId = input?.categoryId ?? productCategoryId;
+    const nextWarehouseId = input?.warehouseId ?? warehouse?.id ?? null;
+
     try {
       setIsLoadingProducts(true);
       const res = await loadProducts(baseUrl, {
         search,
-        categoryId: productCategoryId,
+        categoryId: nextCategoryId,
+        warehouseId: nextWarehouseId,
         offset: 0,
         limit: 60,
       });
+
+      if (requestSeq !== productRequestSeqRef.current) return;
+
       setProducts(res.data || []);
       setProductPagination(res.pagination);
       setProductCategories(res.facets?.categories || []);
     } catch (error: any) {
+      if (requestSeq !== productRequestSeqRef.current) return;
       toast.error(error?.message || "لیست محصولات دریافت نشد");
     } finally {
-      setIsLoadingProducts(false);
+      if (requestSeq === productRequestSeqRef.current) {
+        setIsLoadingProducts(false);
+      }
     }
   }
 
@@ -627,12 +652,16 @@ export function usePosSession() {
 
     try {
       setIsLoadingMoreProducts(true);
+      const requestSeq = productRequestSeqRef.current;
       const res = await loadProducts(baseUrl, {
         search: productSearchTerm,
         categoryId: productCategoryId,
+        warehouseId: warehouse?.id || null,
         offset: productPagination.nextOffset,
         limit: 60,
       });
+
+      if (requestSeq !== productRequestSeqRef.current) return;
 
       setProducts((current) => [...current, ...(res.data || [])]);
       setProductPagination(res.pagination);
@@ -648,7 +677,9 @@ export function usePosSession() {
     const baseUrl = apiBaseUrl || getEffectiveApiBaseUrl();
 
     await Promise.all([
-      loadProductList(baseUrl),
+      loadProductList(baseUrl, productSearchTerm, {
+        warehouseId: warehouse?.id || null,
+      }),
       loadCustomerList(baseUrl),
     ]);
 
@@ -838,7 +869,9 @@ export function usePosSession() {
       applyServerCart(cartRes.data);
 
       await refreshHeldCarts(baseUrl, sessionRes.data.session.id);
-      await loadProductList(baseUrl);
+      await loadProductList(baseUrl, productSearchTerm, {
+        warehouseId: selectedWarehouse?.id || null,
+      });
       await loadCustomerList(baseUrl);
 
       connectWebSocket(
@@ -1302,7 +1335,7 @@ export function usePosSession() {
     return () => window.clearTimeout(timer);
     // loadProductList intentionally stays local to keep the POS hook compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBaseUrl, productCategoryId, productSearchTerm]);
+  }, [apiBaseUrl, productCategoryId, productSearchTerm, warehouse?.id]);
 
   return {
     apiBaseUrl,

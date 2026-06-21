@@ -13,27 +13,26 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client-16 \
   && rm -rf /var/lib/apt/lists/*
 
+COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
+COPY apps/desktop/package.json apps/desktop/package.json
+COPY apps/mobile-scanner/package.json apps/mobile-scanner/package.json
+COPY packages packages
 
-WORKDIR /app/apps/api
-RUN npm install
+RUN npm ci --workspace @supermarket/api --workspace @supermarket/desktop --include-workspace-root
 
-COPY apps/desktop/package.json /app/apps/desktop/package.json
+COPY apps/api apps/api
+COPY apps/desktop apps/desktop
+COPY scripts/docker scripts/docker
 
-WORKDIR /app/apps/desktop
-RUN npm install
-
-COPY apps/desktop /app/apps/desktop
-RUN npm run build
-
-WORKDIR /app
-COPY apps/api /app/apps/api
-COPY scripts/docker /app/scripts/docker
 RUN sed -i 's/\r$//' /app/scripts/docker/api-entrypoint.sh
 
 ENV DATABASE_URL="postgresql://supermarket:supermarket_password@postgres:5432/supermarket_db"
 ENV WEB_APP_ENABLED="true"
 ENV WEB_DIST_DIR="/app/apps/desktop/dist"
+
+WORKDIR /app/apps/desktop
+RUN npm run build
 
 WORKDIR /app/apps/api
 RUN npm run prisma -- generate && npm run build

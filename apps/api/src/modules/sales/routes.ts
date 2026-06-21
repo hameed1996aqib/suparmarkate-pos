@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
+import { normalizeBarcodeText } from "../../lib/barcode";
 import { resolveCurrencySnapshot, snapshotBaseFields, toBaseAmount } from "../../lib/currency-rates";
 import { createPostedJournal, createReversalJournal, treasuryAccountCode } from "../../lib/journal";
 import { getRequestPosDevice } from "../../lib/pos-device";
@@ -128,7 +129,7 @@ salesRoute.get("/", async (c) => {
 });
 
 salesRoute.get("/scan/:barcode", async (c) => {
-  const barcode = c.req.param("barcode");
+  const barcode = normalizeBarcodeText(c.req.param("barcode"));
   const warehouseId = c.req.query("warehouseId");
 
   const product = await prisma.product.findUnique({

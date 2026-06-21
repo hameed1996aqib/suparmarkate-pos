@@ -24,9 +24,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
-    volumes:
-      - supermarket_redis_data:/data
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,8 +40,6 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     environment:
       NODE_ENV: production
@@ -103,6 +99,5 @@ services:
 
 volumes:
   supermarket_postgres_data:
-  supermarket_redis_data:
   muhaseb_api_data:
   muhaseb_uploads:

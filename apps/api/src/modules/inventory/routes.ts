@@ -7,6 +7,7 @@ import { resolveCurrencySnapshot } from "../../lib/currency-rates";
 import { StockMovementType } from "../../generated/prisma/enums";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
+import { normalizeBarcodeText } from "../../lib/barcode";
 
 export const inventoryRoute = new Hono();
 
@@ -107,6 +108,34 @@ function resolveProductUnitConversion(
   };
 }
 
+function buildStockMovementSearchWhere(search: string | null | undefined) {
+  const rawSearch = (search || "").trim();
+  const barcodeSearch = normalizeBarcodeText(rawSearch);
+
+  if (!rawSearch) return {};
+
+  return {
+    OR: [
+      { referenceId: { contains: rawSearch, mode: "insensitive" as const } },
+      { referenceType: { contains: rawSearch, mode: "insensitive" as const } },
+      { note: { contains: rawSearch, mode: "insensitive" as const } },
+      { product: { name: { contains: rawSearch, mode: "insensitive" as const } } },
+      { product: { sku: { contains: rawSearch, mode: "insensitive" as const } } },
+      { product: { barcode: rawSearch } },
+      { product: { barcode: { contains: rawSearch, mode: "insensitive" as const } } },
+      { warehouse: { name: { contains: rawSearch, mode: "insensitive" as const } } },
+      { lot: { id: { contains: rawSearch, mode: "insensitive" as const } } },
+      ...(barcodeSearch
+        ? [
+            { product: { barcode: barcodeSearch } },
+            { product: { barcode: { contains: barcodeSearch, mode: "insensitive" as const } } },
+            { product: { sku: { contains: barcodeSearch, mode: "insensitive" as const } } }
+          ]
+        : [])
+    ]
+  };
+}
+
 inventoryRoute.get("/stock", async (c) => {
   const productId = c.req.query("productId");
   const warehouseId = c.req.query("warehouseId");
@@ -189,6 +218,7 @@ inventoryRoute.get("/movements", async (c) => {
   const productId = c.req.query("productId");
   const warehouseId = c.req.query("warehouseId");
   const referenceId = c.req.query("referenceId");
+  const search = c.req.query("search");
   const pagination = getPagePagination(c, { defaultLimit: 100, maxLimit: 200 });
   const allowedTypes = Object.values(StockMovementType);
   const movementType = allowedTypes.includes(type as StockMovementType)
@@ -200,7 +230,8 @@ inventoryRoute.get("/movements", async (c) => {
       ...(movementType ? { type: movementType } : {}),
       ...(productId ? { productId } : {}),
       ...(warehouseId ? { warehouseId } : {}),
-      ...(referenceId ? { referenceId } : {})
+      ...(referenceId ? { referenceId } : {}),
+      ...buildStockMovementSearchWhere(search)
   };
   const [movements, total] = await Promise.all([
     prisma.stockMovement.findMany({
@@ -229,11 +260,13 @@ inventoryRoute.get("/movements", async (c) => {
 
 inventoryRoute.get("/transfer-reports", async (c) => {
   const pagination = getPagePagination(c, { defaultLimit: 100, maxLimit: 200 });
+  const search = c.req.query("search");
   const where = {
       createdAt: getRecentDateRange(c),
       type: {
         in: [StockMovementType.TRANSFER_OUT, StockMovementType.TRANSFER_IN]
-      }
+      },
+      ...buildStockMovementSearchWhere(search)
   };
   const [movements, total] = await Promise.all([
     prisma.stockMovement.findMany({

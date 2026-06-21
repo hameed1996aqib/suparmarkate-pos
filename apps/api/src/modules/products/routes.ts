@@ -78,6 +78,29 @@ async function ensureBarcodeIsAvailable(barcode: string, excludeProductId?: stri
   }
 }
 
+function buildProductSearchWhere(search: string | null | undefined) {
+  const rawSearch = (search || "").trim();
+  const barcodeSearch = normalizeBarcodeText(rawSearch);
+
+  if (!rawSearch) return {};
+
+  return {
+    OR: [
+      { name: { contains: rawSearch, mode: "insensitive" as const } },
+      { sku: { contains: rawSearch, mode: "insensitive" as const } },
+      { barcode: rawSearch },
+      { barcode: { contains: rawSearch, mode: "insensitive" as const } },
+      ...(barcodeSearch
+        ? [
+            { barcode: barcodeSearch },
+            { barcode: { contains: barcodeSearch, mode: "insensitive" as const } },
+            { sku: { contains: barcodeSearch, mode: "insensitive" as const } }
+          ]
+        : [])
+    ]
+  };
+}
+
 function productImageExtension(mimeType: string, originalName: string) {
   const ext = path.extname(originalName).toLowerCase();
   if ([".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)) return ext;
@@ -118,17 +141,7 @@ productsRoute.get("/", async (c) => {
             }
           ]
         },
-        ...(search
-          ? [
-              {
-                OR: [
-                  { name: { contains: search, mode: "insensitive" as const } },
-                  { barcode: { contains: search, mode: "insensitive" as const } },
-                  { sku: { contains: search, mode: "insensitive" as const } }
-                ]
-              }
-            ]
-          : [])
+        ...(search ? [buildProductSearchWhere(search)] : [])
       ]
     };
   const [items, total, active, barcodeCount] = await Promise.all([
@@ -167,22 +180,15 @@ productsRoute.get("/pos-search", async (c) => {
   const requestedOffset = Number.parseInt(c.req.query("offset") || "0", 10);
   const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 60, 1), 100);
   const offset = Math.max(Number.isFinite(requestedOffset) ? requestedOffset : 0, 0);
-  const cacheKey = `pos:products:v2:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}`;
+  const barcodeSearch = normalizeBarcodeText(search);
+  const cacheKey = `pos:products:v3:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}:${barcodeSearch}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
 
   if (cached) {
     return c.json({ ...cached, cache: "hit" });
   }
 
-  const searchWhere = search
-    ? {
-        OR: [
-          { name: { contains: search, mode: "insensitive" as const } },
-          { barcode: { contains: search, mode: "insensitive" as const } },
-          { sku: { contains: search, mode: "insensitive" as const } }
-        ]
-      }
-    : {};
+  const searchWhere = buildProductSearchWhere(search);
   const where = {
     deletedAt: null,
     isActive: true,
@@ -560,3 +566,4 @@ productsRoute.delete("/:id", async (c) => {
 
   return c.json({ message: "Product deactivated", data: item });
 });
+

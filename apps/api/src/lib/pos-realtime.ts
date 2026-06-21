@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./prisma";
+import { normalizeBarcodeText } from "./barcode";
 
 const MIN_CART_QUANTITY = 0.0001;
 
@@ -460,7 +461,7 @@ export async function handlePosBarcodeScan(input: {
   warehouseId?: string | null;
   source?: "http" | "websocket";
 }) {
-  const barcode = input.barcode.trim();
+  const barcode = normalizeBarcodeText(input.barcode);
 
   if (!barcode) {
     const payload = {

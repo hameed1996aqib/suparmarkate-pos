@@ -13,7 +13,11 @@ async function getClient() {
   connecting = (async () => {
     try {
       const nextClient = createClient({
-        url: process.env.REDIS_URL
+        url: process.env.REDIS_URL,
+        socket: {
+          connectTimeout: 1000,
+          reconnectStrategy: false
+        }
       });
 
       nextClient.on("error", (error) => {
@@ -39,7 +43,14 @@ export async function cacheGetJson<T>(key: string): Promise<T | null> {
   try {
     const redis = await getClient();
     const value = await redis?.get(key);
-    return value ? (JSON.parse(value) as T) : null;
+    if (!value) return null;
+
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      await redis?.del(key);
+      return null;
+    }
   } catch {
     return null;
   }

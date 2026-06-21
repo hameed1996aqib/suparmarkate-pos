@@ -9096,7 +9096,7 @@ function InventoryMovementSection({
   };
   onPageChange?: (page: number) => void;
 }) {
-  const filteredRows = filterDataRows(rows, query);
+  const filteredRows = pagination ? rows : filterDataRows(rows, query);
 
   return (
     <Card className="border-border bg-card">
@@ -9228,7 +9228,28 @@ function InventoryPage() {
     };
   };
 
-  const loadInventoryData = async (pages = movementPages) => {
+  const movementRequestQuery = (
+    page: number,
+    search: string,
+    type?: string,
+  ) => {
+    const params = new URLSearchParams({
+      limit: "20",
+      page: String(page),
+      from: movementFrom,
+      to: movementTo,
+    });
+
+    if (type) params.set("type", type);
+    if (search.trim()) params.set("search", search.trim());
+
+    return params.toString();
+  };
+
+  const loadInventoryData = async (
+    pages = movementPages,
+    queries = movementQueries,
+  ) => {
     setIsLoading(true);
     try {
       const [
@@ -9247,19 +9268,19 @@ function InventoryPage() {
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(
-          `${API_BASE_URL}/api/inventory/movements?type=OPENING_STOCK&limit=20&page=${pages.opening}&${dateRangeQuery(movementFrom, movementTo)}`,
+          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.opening, queries.opening, "OPENING_STOCK")}`,
         ).then((res) => res.json()),
         fetch(
-          `${API_BASE_URL}/api/inventory/movements?type=ADJUSTMENT_IN&limit=20&page=${pages.increase}&${dateRangeQuery(movementFrom, movementTo)}`,
+          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.increase, queries.increase, "ADJUSTMENT_IN")}`,
         ).then((res) => res.json()),
         fetch(
-          `${API_BASE_URL}/api/inventory/movements?type=ADJUSTMENT_OUT&limit=20&page=${pages.decrease}&${dateRangeQuery(movementFrom, movementTo)}`,
+          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.decrease, queries.decrease, "ADJUSTMENT_OUT")}`,
         ).then((res) => res.json()),
         fetch(
-          `${API_BASE_URL}/api/inventory/movements?type=DAMAGE&limit=20&page=${pages.damage}&${dateRangeQuery(movementFrom, movementTo)}`,
+          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.damage, queries.damage, "DAMAGE")}`,
         ).then((res) => res.json()),
         fetch(
-          `${API_BASE_URL}/api/inventory/transfer-reports?limit=20&page=${pages.transfer}&${dateRangeQuery(movementFrom, movementTo)}`,
+          `${API_BASE_URL}/api/inventory/transfer-reports?${movementRequestQuery(pages.transfer, queries.transfer)}`,
         ).then((res) => res.json()),
       ]);
 
@@ -9359,7 +9380,7 @@ function InventoryPage() {
   ) => {
     const next = { ...movementPages, [key]: page };
     setMovementPages(next);
-    void loadInventoryData(next);
+    void loadInventoryData(next, movementQueries);
   };
 
   const refreshInventoryFromFirstPage = () => {
@@ -9371,7 +9392,7 @@ function InventoryPage() {
       transfer: 1,
     };
     setMovementPages(firstPages);
-    void loadInventoryData(firstPages);
+    void loadInventoryData(firstPages, movementQueries);
   };
 
   useEffect(() => {
@@ -9428,7 +9449,11 @@ function InventoryPage() {
     key: keyof typeof movementQueries,
     value: string,
   ) => {
-    setMovementQueries((current) => ({ ...current, [key]: value }));
+    const nextQueries = { ...movementQueries, [key]: value };
+    const nextPages = { ...movementPages, [key]: 1 };
+    setMovementQueries(nextQueries);
+    setMovementPages(nextPages);
+    void loadInventoryData(nextPages, nextQueries);
   };
 
   const openOpeningEdit = (row: DataRow) => {

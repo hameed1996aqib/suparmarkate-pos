@@ -1,5 +1,6 @@
 import { Check, ChevronsUpDown, Search } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,9 @@ type ComboboxOption = {
   label: string;
   description?: string | null;
   meta?: string | null;
+  searchText?: string | null;
+  barcode?: string | null;
+  sku?: string | null;
 };
 
 type ComboboxProps = {
@@ -37,21 +41,40 @@ export function Combobox({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
 
   const selected = options.find((option) => option.value === value) || null;
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredOptions = normalizedQuery
-    ? options.filter((option) =>
-        [option.label, option.description, option.meta]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-          .includes(normalizedQuery),
-      )
-    : options;
+  const filteredOptions = useMemo(
+    () =>
+      normalizedQuery
+        ? options.filter((option) =>
+            [
+              option.label,
+              option.description,
+              option.meta,
+              option.searchText,
+              option.barcode,
+              option.sku,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase()
+              .includes(normalizedQuery),
+          )
+        : options,
+    [normalizedQuery, options],
+  );
+  const optionVirtualizer = useVirtualizer({
+    count: filteredOptions.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 52,
+    overscan: 8,
+  });
+  const virtualOptions = optionVirtualizer.getVirtualItems();
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -97,6 +120,11 @@ export function Combobox({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    optionVirtualizer.scrollToIndex(0);
+  }, [normalizedQuery, open, optionVirtualizer]);
+
   function updateQuery(nextQuery: string) {
     setQuery(nextQuery);
     onSearchChange?.(nextQuery);
@@ -135,41 +163,55 @@ export function Combobox({
             />
           </div>
 
-          <div className="max-h-64 overflow-auto">
+          <div ref={listRef} className="max-h-64 overflow-auto">
             {filteredOptions.length ? (
-              filteredOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-start text-sm hover:bg-secondary"
-                  onClick={() => {
-                    onValueChange(option.value);
-                    setOpen(false);
-                    setQuery("");
-                  }}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate font-medium">
-                      {option.label}
-                    </span>
-                    {option.description ? (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {option.description}
-                      </span>
-                    ) : null}
-                  </span>
+              <div
+                className="relative"
+                style={{ height: optionVirtualizer.getTotalSize() }}
+              >
+                {virtualOptions.map((virtualOption) => {
+                  const option = filteredOptions[virtualOption.index];
+                  if (!option) return null;
 
-                  <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                    {option.meta ? <span>{option.meta}</span> : null}
-                    <Check
-                      className={cn(
-                        "h-4 w-4",
-                        option.value === value ? "opacity-100" : "opacity-0",
-                      )}
-                    />
-                  </span>
-                </button>
-              ))
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className="absolute start-0 top-0 flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-start text-sm hover:bg-secondary"
+                      style={{
+                        minHeight: virtualOption.size,
+                        transform: `translateY(${virtualOption.start}px)`,
+                      }}
+                      onClick={() => {
+                        onValueChange(option.value);
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">
+                          {option.label}
+                        </span>
+                        {option.description ? (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {option.description}
+                          </span>
+                        ) : null}
+                      </span>
+
+                      <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                        {option.meta ? <span>{option.meta}</span> : null}
+                        <Check
+                          className={cn(
+                            "h-4 w-4",
+                            option.value === value ? "opacity-100" : "opacity-0",
+                          )}
+                        />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
               <div className="px-3 py-6 text-center text-sm text-muted-foreground">
                 {emptyText}

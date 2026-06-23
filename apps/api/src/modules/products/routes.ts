@@ -4,11 +4,23 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
-import { attachAuditUsers, auditCreateData, auditDeleteData, auditUpdateData } from "../../lib/audit-meta";
+import {
+  attachAuditUsers,
+  auditCreateData,
+  auditDeleteData,
+  auditUpdateData,
+} from "../../lib/audit-meta";
 import { getAuthUser, writeAudit } from "../../lib/auth";
-import { cacheDeleteByPattern, cacheGetJson, cacheSetJson } from "../../lib/cache";
+import {
+  cacheDeleteByPattern,
+  cacheGetJson,
+  cacheSetJson,
+} from "../../lib/cache";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
-import { generateProductBarcodeCandidate, normalizeBarcodeText } from "../../lib/barcode";
+import {
+  generateProductBarcodeCandidate,
+  normalizeBarcodeText,
+} from "../../lib/barcode";
 
 export const productsRoute = new Hono();
 
@@ -18,7 +30,7 @@ const productUnitSchema = z.object({
   purchasePrice: z.coerce.number().nonnegative().optional().nullable(),
   salePrice: z.coerce.number().nonnegative().optional().nullable(),
   isDefaultPurchase: z.boolean().optional(),
-  isDefaultSale: z.boolean().optional()
+  isDefaultSale: z.boolean().optional(),
 });
 
 const createProductSchema = z.object({
@@ -33,14 +45,19 @@ const createProductSchema = z.object({
   hasExpiry: z.boolean().default(false),
   minStock: z.coerce.number().nonnegative().default(0),
   isActive: z.boolean().optional(),
-  units: z.array(productUnitSchema).optional().default([])
+  units: z.array(productUnitSchema).optional().default([]),
 });
 
 const updateProductSchema = createProductSchema.partial().extend({
-  units: z.array(productUnitSchema).optional()
+  units: z.array(productUnitSchema).optional(),
 });
 
-const imageMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const imageMimeTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
 
 async function generateUniqueProductBarcode() {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -64,13 +81,13 @@ function duplicateBarcodeMessage(barcode: string) {
 
 function isUniqueConstraintError(error: unknown) {
   if (!error || typeof error !== "object") return false;
-  return (
-    "code" in error &&
-    (error as { code?: string }).code === "P2002"
-  );
+  return "code" in error && (error as { code?: string }).code === "P2002";
 }
 
-async function ensureBarcodeIsAvailable(barcode: string, excludeProductId?: string) {
+async function ensureBarcodeIsAvailable(
+  barcode: string,
+  excludeProductId?: string,
+) {
   const existing = await prisma.product.findUnique({ where: { barcode } });
 
   if (existing && existing.id !== excludeProductId) {
@@ -93,12 +110,37 @@ function buildProductSearchWhere(search: string | null | undefined) {
       ...(barcodeSearch
         ? [
             { barcode: barcodeSearch },
-            { barcode: { contains: barcodeSearch, mode: "insensitive" as const } },
-            { sku: { contains: barcodeSearch, mode: "insensitive" as const } }
+            {
+              barcode: {
+                contains: barcodeSearch,
+                mode: "insensitive" as const,
+              },
+            },
+            { sku: { contains: barcodeSearch, mode: "insensitive" as const } },
           ]
-        : [])
-    ]
+        : []),
+    ],
   };
+}
+
+function buildBarcodeFilterWhere(filter: string | null | undefined) {
+  switch ((filter || "all").trim()) {
+    case "has":
+      return { barcode: { not: null } };
+    case "missing":
+      return { barcode: null };
+    case "system":
+      return { barcode: { startsWith: "20" } };
+    case "manual":
+      return {
+        AND: [
+          { barcode: { not: null } },
+          { NOT: { barcode: { startsWith: "20" } } }
+        ]
+      };
+    default:
+      return {};
+  }
 }
 
 function productImageExtension(mimeType: string, originalName: string) {
@@ -112,64 +154,71 @@ function productImageExtension(mimeType: string, originalName: string) {
 }
 
 productsRoute.get("/", async (c) => {
-  const pagination = getPagePagination(c, { defaultLimit: 100, maxLimit: 100 });
+  const pagination = getPagePagination(c, {
+    defaultLimit: 10000,
+    maxLimit: 10000,
+  });
   const search = c.req.query("search");
+  const barcodeFilter = c.req.query("barcodeFilter");
   const where = {
-      AND: [
-        {
-          OR: [
-            {
-              deletedAt: null
-            },
-            {
-              stockLots: { some: {} }
-            },
-            {
-              stockMovements: { some: {} }
-            },
-            {
-              purchaseItems: { some: {} }
-            },
-            {
-              purchaseReturnItems: { some: {} }
-            },
-            {
-              saleItems: { some: {} }
-            },
-            {
-              saleReturnItems: { some: {} }
-            }
-          ]
-        },
-        ...(search ? [buildProductSearchWhere(search)] : [])
-      ]
-    };
+    AND: [
+      {
+        OR: [
+          {
+            deletedAt: null,
+          },
+          {
+            stockLots: { some: {} },
+          },
+          {
+            stockMovements: { some: {} },
+          },
+          {
+            purchaseItems: { some: {} },
+          },
+          {
+            purchaseReturnItems: { some: {} },
+          },
+          {
+            saleItems: { some: {} },
+          },
+          {
+            saleReturnItems: { some: {} },
+          },
+        ],
+      },
+      ...(search ? [buildProductSearchWhere(search)] : []),
+      buildBarcodeFilterWhere(barcodeFilter),
+    ],
+  };
   const [items, total, active, barcodeCount] = await Promise.all([
     prisma.product.findMany({
-    where,
-    include: {
-      category: true,
-      baseUnit: true,
-      defaultWarehouse: true,
-      units: {
-        include: {
-          unit: true
-        }
-      }
-    },
-    orderBy: { createdAt: "desc" },
-    skip: pagination.skip,
-    take: pagination.limit
-  }),
+      where,
+      include: {
+        category: true,
+        baseUnit: true,
+        defaultWarehouse: true,
+        units: {
+          include: {
+            unit: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: pagination.skip,
+      take: pagination.limit,
+    }),
     prisma.product.count({ where }),
     prisma.product.count({ where: { deletedAt: null, isActive: true } }),
-    prisma.product.count({ where: { deletedAt: null, barcode: { not: null } } })
+    prisma.product.count({
+      where: { deletedAt: null, barcode: { not: null } },
+    }),
   ]);
 
   return c.json({
     data: await attachAuditUsers(items),
     pagination: createPaginationMeta({ ...pagination, total }),
-    summary: { total, active, barcodeCount }
+    summary: { total, active, barcodeCount },
   });
 });
 
@@ -179,8 +228,14 @@ productsRoute.get("/pos-search", async (c) => {
   const warehouseId = (c.req.query("warehouseId") || "").trim();
   const requestedLimit = Number.parseInt(c.req.query("limit") || "60", 10);
   const requestedOffset = Number.parseInt(c.req.query("offset") || "0", 10);
-  const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 60, 1), 100);
-  const offset = Math.max(Number.isFinite(requestedOffset) ? requestedOffset : 0, 0);
+  const limit = Math.min(
+    Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 60, 1),
+    100,
+  );
+  const offset = Math.max(
+    Number.isFinite(requestedOffset) ? requestedOffset : 0,
+    0,
+  );
   const barcodeSearch = normalizeBarcodeText(search);
   const cacheKey = `pos:products:v4:${warehouseId || "all"}:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}:${barcodeSearch}`;
   const shouldUseCache = !search;
@@ -197,12 +252,12 @@ productsRoute.get("/pos-search", async (c) => {
     deletedAt: null,
     isActive: true,
     ...(categoryId ? { categoryId } : {}),
-    ...searchWhere
+    ...searchWhere,
   };
   const facetWhere = {
     deletedAt: null,
     isActive: true,
-    ...searchWhere
+    ...searchWhere,
   };
 
   const [items, total, categoryRows] = await Promise.all([
@@ -214,20 +269,20 @@ productsRoute.get("/pos-search", async (c) => {
         defaultWarehouse: true,
         units: {
           include: {
-            unit: true
-          }
-        }
+            unit: true,
+          },
+        },
       },
       orderBy: [{ name: "asc" }, { createdAt: "desc" }],
       skip: offset,
-      take: limit
+      take: limit,
     }),
     prisma.product.count({ where }),
     prisma.product.groupBy({
       by: ["categoryId"],
       where: facetWhere,
-      _count: { _all: true }
-    })
+      _count: { _all: true },
+    }),
   ]);
   const productIds = items.map((item) => item.id);
   const stockRows = productIds.length
@@ -235,45 +290,49 @@ productsRoute.get("/pos-search", async (c) => {
         by: ["productId"],
         where: {
           productId: { in: productIds },
-          ...(warehouseId ? { warehouseId } : {})
+          ...(warehouseId ? { warehouseId } : {}),
         },
-        _sum: { quantityBase: true }
+        _sum: { quantityBase: true },
       })
     : [];
   const stockByProductId = new Map(
-    stockRows.map((row) => [row.productId, Number(row._sum.quantityBase || 0)])
+    stockRows.map((row) => [row.productId, Number(row._sum.quantityBase || 0)]),
   );
-  const categoryIds = categoryRows.map((row) => row.categoryId).filter((id): id is string => Boolean(id));
+  const categoryIds = categoryRows
+    .map((row) => row.categoryId)
+    .filter((id): id is string => Boolean(id));
   const categories = categoryIds.length
     ? await prisma.productCategory.findMany({
         where: { id: { in: categoryIds }, deletedAt: null, isActive: true },
-        select: { id: true, name: true }
+        select: { id: true, name: true },
       })
     : [];
-  const categoryNameById = new Map(categories.map((item) => [item.id, item.name]));
+  const categoryNameById = new Map(
+    categories.map((item) => [item.id, item.name]),
+  );
   const facets = categoryRows
     .filter((row) => row.categoryId && categoryNameById.has(row.categoryId))
     .map((row) => ({
       id: row.categoryId as string,
       name: categoryNameById.get(row.categoryId as string) || "",
-      count: row._count._all
+      count: row._count._all,
     }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   const payload = {
     data: items.map((item) => ({
       ...item,
-      totalStock: stockByProductId.get(item.id) || 0
+      totalStock: stockByProductId.get(item.id) || 0,
     })),
     pagination: {
       offset,
       limit,
       total,
       hasMore: offset + items.length < total,
-      nextOffset: offset + items.length
+      nextOffset: offset + items.length,
     },
     facets: {
-      categories: facets
-    }
+      categories: facets,
+    },
   };
 
   if (shouldUseCache) {
@@ -293,11 +352,11 @@ productsRoute.get("/:id", async (c) => {
       defaultWarehouse: true,
       units: {
         include: {
-          unit: true
+          unit: true,
         },
-        orderBy: { createdAt: "asc" }
-      }
-    }
+        orderBy: { createdAt: "asc" },
+      },
+    },
   });
 
   if (!item || item.deletedAt) {
@@ -334,9 +393,9 @@ productsRoute.post("/", async (c) => {
             purchasePrice: unit.purchasePrice ?? null,
             salePrice: unit.salePrice ?? null,
             isDefaultPurchase: unit.isDefaultPurchase ?? false,
-            isDefaultSale: unit.isDefaultSale ?? false
-          }))
-        }
+            isDefaultSale: unit.isDefaultSale ?? false,
+          })),
+        },
       },
       include: {
         category: true,
@@ -344,10 +403,10 @@ productsRoute.post("/", async (c) => {
         defaultWarehouse: true,
         units: {
           include: {
-            unit: true
-          }
-        }
-      }
+            unit: true,
+          },
+        },
+      },
     });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -360,7 +419,7 @@ productsRoute.post("/", async (c) => {
     action: "PRODUCT_CREATED",
     entityType: "Product",
     entityId: item.id,
-    metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
+    metadata: { name: item.name, barcode: item.barcode, sku: item.sku },
   });
   await cacheDeleteByPattern("pos:products:*");
 
@@ -382,7 +441,7 @@ productsRoute.patch("/:id", async (c) => {
     ...productData,
     ...(Object.prototype.hasOwnProperty.call(productData, "barcode")
       ? { barcode: await resolveProductBarcode(productData.barcode) }
-      : {})
+      : {}),
   };
 
   if (nextProductData.barcode) {
@@ -394,7 +453,7 @@ productsRoute.patch("/:id", async (c) => {
     item = await prisma.$transaction(async (tx) => {
       if (units) {
         await tx.productUnit.deleteMany({
-          where: { productId: id }
+          where: { productId: id },
         });
       }
 
@@ -412,11 +471,11 @@ productsRoute.patch("/:id", async (c) => {
                     purchasePrice: unit.purchasePrice ?? null,
                     salePrice: unit.salePrice ?? null,
                     isDefaultPurchase: unit.isDefaultPurchase ?? false,
-                    isDefaultSale: unit.isDefaultSale ?? false
-                  }))
-                }
+                    isDefaultSale: unit.isDefaultSale ?? false,
+                  })),
+                },
               }
-            : {})
+            : {}),
         },
         include: {
           category: true,
@@ -424,17 +483,17 @@ productsRoute.patch("/:id", async (c) => {
           defaultWarehouse: true,
           units: {
             include: {
-              unit: true
-            }
-          }
-        }
+              unit: true,
+            },
+          },
+        },
       });
     });
   } catch (error) {
     if (isUniqueConstraintError(error) && nextProductData.barcode) {
       return c.json(
         { message: duplicateBarcodeMessage(nextProductData.barcode) },
-        409
+        409,
       );
     }
     throw error;
@@ -444,7 +503,7 @@ productsRoute.patch("/:id", async (c) => {
     action: "PRODUCT_UPDATED",
     entityType: "Product",
     entityId: item.id,
-    metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
+    metadata: { name: item.name, barcode: item.barcode, sku: item.sku },
   });
   await cacheDeleteByPattern("pos:products:*");
 
@@ -457,7 +516,11 @@ productsRoute.post("/:id/image", async (c) => {
   const body = await c.req.parseBody();
   const file = body.file as any;
 
-  if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
+  if (
+    !file ||
+    typeof file === "string" ||
+    typeof file.arrayBuffer !== "function"
+  ) {
     return c.json({ message: "عکس محصول ضروری است" }, 400);
   }
 
@@ -490,7 +553,7 @@ productsRoute.post("/:id/image", async (c) => {
     where: { id },
     data: {
       imageUrl,
-      ...auditUpdateData(authUser?.id)
+      ...auditUpdateData(authUser?.id),
     },
     include: {
       category: true,
@@ -498,17 +561,17 @@ productsRoute.post("/:id/image", async (c) => {
       defaultWarehouse: true,
       units: {
         include: {
-          unit: true
-        }
-      }
-    }
+          unit: true,
+        },
+      },
+    },
   });
 
   await writeAudit(c, {
     action: "PRODUCT_IMAGE_UPLOADED",
     entityType: "Product",
     entityId: id,
-    metadata: { imageUrl }
+    metadata: { imageUrl },
   });
   await cacheDeleteByPattern("pos:products:*");
 
@@ -525,14 +588,14 @@ productsRoute.delete("/:id", async (c) => {
     purchaseItems,
     purchaseReturnItems,
     saleItems,
-    saleReturnItems
+    saleReturnItems,
   ] = await Promise.all([
     prisma.stockLot.count({ where: { productId: id } }),
     prisma.stockMovement.count({ where: { productId: id } }),
     prisma.purchaseItem.count({ where: { productId: id } }),
     prisma.purchaseReturnItem.count({ where: { productId: id } }),
     prisma.saleItem.count({ where: { productId: id } }),
-    prisma.saleReturnItem.count({ where: { productId: id } })
+    prisma.saleReturnItem.count({ where: { productId: id } }),
   ]);
   const usageCount =
     stockLots +
@@ -553,26 +616,25 @@ productsRoute.delete("/:id", async (c) => {
           purchaseItems,
           purchaseReturnItems,
           saleItems,
-          saleReturnItems
-        }
+          saleReturnItems,
+        },
       },
-      400
+      400,
     );
   }
 
   const item = await prisma.product.update({
     where: { id },
-    data: auditDeleteData(authUser?.id)
+    data: auditDeleteData(authUser?.id),
   });
 
   await writeAudit(c, {
     action: "PRODUCT_DELETED",
     entityType: "Product",
     entityId: item.id,
-    metadata: { name: item.name, barcode: item.barcode, sku: item.sku }
+    metadata: { name: item.name, barcode: item.barcode, sku: item.sku },
   });
   await cacheDeleteByPattern("pos:products:*");
 
   return c.json({ message: "Product deactivated", data: item });
 });
-

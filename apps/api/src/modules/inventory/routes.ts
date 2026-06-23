@@ -136,15 +136,41 @@ function buildStockMovementSearchWhere(search: string | null | undefined) {
   };
 }
 
+function buildStockBalanceSearchWhere(search: string | null | undefined) {
+  const rawSearch = (search || "").trim();
+  const barcodeSearch = normalizeBarcodeText(rawSearch);
+
+  if (!rawSearch) return {};
+
+  return {
+    OR: [
+      { product: { name: { contains: rawSearch, mode: "insensitive" as const } } },
+      { product: { sku: { contains: rawSearch, mode: "insensitive" as const } } },
+      { product: { barcode: rawSearch } },
+      { product: { barcode: { contains: rawSearch, mode: "insensitive" as const } } },
+      { warehouse: { name: { contains: rawSearch, mode: "insensitive" as const } } },
+      ...(barcodeSearch
+        ? [
+            { product: { barcode: barcodeSearch } },
+            { product: { barcode: { contains: barcodeSearch, mode: "insensitive" as const } } },
+            { product: { sku: { contains: barcodeSearch, mode: "insensitive" as const } } }
+          ]
+        : [])
+    ]
+  };
+}
+
 inventoryRoute.get("/stock", async (c) => {
   const productId = c.req.query("productId");
   const warehouseId = c.req.query("warehouseId");
+  const search = c.req.query("search");
 
   const balances = await prisma.stockBalance.findMany({
     where: {
       quantityBase: { gt: 0 },
       ...(productId ? { productId } : {}),
-      ...(warehouseId ? { warehouseId } : {})
+      ...(warehouseId ? { warehouseId } : {}),
+      ...buildStockBalanceSearchWhere(search)
     },
     include: {
       product: {

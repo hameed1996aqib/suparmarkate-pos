@@ -385,8 +385,12 @@ type LookupItem = {
   name: string;
   shortName?: string | null;
   code?: string;
+  sku?: string | null;
+  barcode?: string | null;
   isBase?: boolean;
   latestRate?: number | null;
+  category?: { name?: string | null } | null;
+  baseUnit?: { name?: string | null; shortName?: string | null } | null;
 };
 
 type InventoryActionForm = {
@@ -3237,6 +3241,31 @@ function productUnitInfo(products: any[], productId: string, unitId: string) {
   };
 }
 
+function mergeById<T extends { id: string }>(current: T[], incoming: T[]) {
+  const rows = new Map<string, T>();
+  current.forEach((item) => rows.set(item.id, item));
+  incoming.forEach((item) => {
+    if (item?.id) rows.set(item.id, item);
+  });
+  return Array.from(rows.values());
+}
+
+async function searchProductLookupOptions(query: string) {
+  const normalized = query.trim();
+  if (normalized.length < 2) return [];
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/products?page=1&limit=20&search=${encodeURIComponent(normalized)}`,
+  );
+  const json = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(json?.message || "جستجوی جنس ناکام شد");
+  }
+
+  return Array.isArray(json?.data) ? json.data : [];
+}
+
 function invoiceLineTotal(quantity: number, unitAmount: number, discount = 0) {
   return Math.max(0, quantity * unitAmount - discount);
 }
@@ -3290,6 +3319,7 @@ function SalesPage() {
   const [invoicePaymentAccountKey, setInvoicePaymentAccountKey] = useState("");
   const [invoicePaymentNote, setInvoicePaymentNote] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const saleProductSearchSeqRef = useRef(0);
 
   const loadSalesData = async (
     page = salesPagination?.page || 1,
@@ -3386,6 +3416,22 @@ function SalesPage() {
   useEffect(() => {
     void loadSalesData();
   }, []);
+
+  const searchSaleProducts = async (value: string) => {
+    const query = value.trim();
+    const requestSeq = saleProductSearchSeqRef.current + 1;
+    saleProductSearchSeqRef.current = requestSeq;
+
+    if (query.length < 2) return;
+
+    try {
+      const rows = await searchProductLookupOptions(query);
+      if (requestSeq !== saleProductSearchSeqRef.current) return;
+      setProducts((current) => mergeById(current, rows));
+    } catch {
+      // Product lookup search is best-effort; form submission still validates.
+    }
+  };
 
   const filteredSales = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -4186,6 +4232,7 @@ function SalesPage() {
                       label={`جنس ${index + 1}`}
                       value={line.productId}
                       options={products}
+                      onSearchChange={searchSaleProducts}
                       onChange={(value) => setSaleLineProduct(line.id, value)}
                     />
                     <LookupSelect
@@ -4330,7 +4377,7 @@ function SalesPage() {
       </Dialog>
 
       <Dialog open={saleItemDialogOpen} onOpenChange={setSaleItemDialogOpen}>
-        <DialogContent dir="rtl" className="max-w-[min(96vw,980px)]">
+        <DialogContent dir="rtl" className="max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>
               {editingSaleLineId ? "ویرایش قلم فروش" : "افزودن قلم فروش"}
@@ -4345,6 +4392,7 @@ function SalesPage() {
               label="جنس"
               value={saleLineDraft.productId}
               options={products}
+              onSearchChange={searchSaleProducts}
               onChange={setSaleDraftProduct}
             />
             <LookupSelect
@@ -4701,6 +4749,7 @@ function PurchasesPage() {
   const [invoicePaymentAccountKey, setInvoicePaymentAccountKey] = useState("");
   const [invoicePaymentNote, setInvoicePaymentNote] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const purchaseProductSearchSeqRef = useRef(0);
 
   const loadPurchasesData = async (
     page = purchasesPagination?.page || 1,
@@ -4800,6 +4849,22 @@ function PurchasesPage() {
   useEffect(() => {
     void loadPurchasesData();
   }, []);
+
+  const searchPurchaseProducts = async (value: string) => {
+    const query = value.trim();
+    const requestSeq = purchaseProductSearchSeqRef.current + 1;
+    purchaseProductSearchSeqRef.current = requestSeq;
+
+    if (query.length < 2) return;
+
+    try {
+      const rows = await searchProductLookupOptions(query);
+      if (requestSeq !== purchaseProductSearchSeqRef.current) return;
+      setProducts((current) => mergeById(current, rows));
+    } catch {
+      // Product lookup search is best-effort; form submission still validates.
+    }
+  };
 
   const filteredPurchases = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -5659,6 +5724,7 @@ function PurchasesPage() {
                       label={`جنس ${index + 1}`}
                       value={line.productId}
                       options={products}
+                      onSearchChange={searchPurchaseProducts}
                       onChange={(value) =>
                         setPurchaseLineProduct(line.id, value)
                       }
@@ -5817,7 +5883,7 @@ function PurchasesPage() {
         open={purchaseItemDialogOpen}
         onOpenChange={setPurchaseItemDialogOpen}
       >
-        <DialogContent dir="rtl" className="max-w-[min(96vw,980px)]">
+        <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>
               {editingPurchaseLineId ? "ویرایش قلم خرید" : "افزودن قلم خرید"}
@@ -5833,6 +5899,7 @@ function PurchasesPage() {
               label="جنس"
               value={purchaseLineDraft.productId}
               options={products}
+              onSearchChange={searchPurchaseProducts}
               onChange={setPurchaseDraftProduct}
             />
             <LookupSelect
@@ -8070,6 +8137,7 @@ function ProductsPage() {
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [query, setQuery] = useState("");
+  const [barcodeFilter, setBarcodeFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<ProductFormState>(emptyProductForm);
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
@@ -8088,7 +8156,7 @@ function ProductsPage() {
       const [productRes, categoryRes, unitRes, warehouseRes, currencyRes] =
         await Promise.all([
           fetch(
-            `${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}`,
+            `${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}&barcodeFilter=${encodeURIComponent(barcodeFilter)}`,
           ).then((res) => res.json()),
           fetch(`${API_BASE_URL}/api/product-categories`).then((res) =>
             res.json(),
@@ -8131,7 +8199,7 @@ function ProductsPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => void loadProductsData(1), 300);
     return () => window.clearTimeout(timer);
-  }, [query]);
+  }, [query, barcodeFilter]);
 
   const filteredProducts = products;
 
@@ -8492,6 +8560,21 @@ function ProductsPage() {
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="جستجوی کالا، بارکود، کتگوری..."
                 className="w-72 ps-9"
+              />
+            </div>
+            <div className="w-48">
+              <Combobox
+                value={barcodeFilter}
+                onValueChange={setBarcodeFilter}
+                placeholder="فیلتر بارکود"
+                searchPlaceholder="نوع بارکود..."
+                options={[
+                  { value: "all", label: "همه اجناس" },
+                  { value: "has", label: "بارکوددار" },
+                  { value: "missing", label: "بی‌بارکود" },
+                  { value: "system", label: "بارکود سیستمی" },
+                  { value: "manual", label: "بارکود دستی" },
+                ]}
               />
             </div>
             <Button variant="outline" onClick={() => void loadProductsData(1)}>
@@ -9190,6 +9273,7 @@ function InventoryPage() {
     emptyInventoryActionForm,
   );
   const [isLoading, setIsLoading] = useState(true);
+  const inventoryProductSearchSeqRef = useRef(0);
   const [openingEdit, setOpeningEdit] = useState<DataRow | null>(null);
   const [openingEditForm, setOpeningEditForm] = useState({
     quantity: 0,
@@ -9272,7 +9356,9 @@ function InventoryPage() {
         damageRes,
         transferRes,
       ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/inventory/stock`).then((res) => res.json()),
+        fetch(
+          `${API_BASE_URL}/api/inventory/stock?search=${encodeURIComponent(query.trim())}`,
+        ).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/products`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
@@ -9382,6 +9468,40 @@ function InventoryPage() {
   useEffect(() => {
     void loadInventoryData();
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const firstPages = {
+        opening: 1,
+        increase: 1,
+        decrease: 1,
+        damage: 1,
+        transfer: 1,
+      };
+      setMovementPages(firstPages);
+      void loadInventoryData(firstPages, movementQueries);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+    // loadInventoryData intentionally stays local to keep this page compact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  const searchInventoryProducts = async (value: string) => {
+    const query = value.trim();
+    const requestSeq = inventoryProductSearchSeqRef.current + 1;
+    inventoryProductSearchSeqRef.current = requestSeq;
+
+    if (query.length < 2) return;
+
+    try {
+      const rows = await searchProductLookupOptions(query);
+      if (requestSeq !== inventoryProductSearchSeqRef.current) return;
+      setProducts((current) => mergeById(current, rows));
+    } catch {
+      // Product lookup search is best-effort; form submission still validates.
+    }
+  };
 
   const changeMovementPage = (
     key: keyof typeof movementPages,
@@ -9732,7 +9852,7 @@ function InventoryPage() {
                   <Input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="جستجوی جنس یا گدام..."
+                    placeholder="جستجوی جنس، بارکود یا گدام..."
                     className="w-72 ps-9"
                   />
                 </div>
@@ -9749,6 +9869,7 @@ function InventoryPage() {
               <DenseTable
                 columns={[
                   { key: "name", label: "جنس" },
+                  { key: "barcode", label: "بارکود" },
                   { key: "warehouse", label: "گدام" },
                   { key: "quantity", label: "مقدار" },
                   { key: "expiry", label: "نزدیک‌ترین انقضا" },
@@ -9884,6 +10005,7 @@ function InventoryPage() {
               label="جنس"
               value={form.productId}
               options={products}
+              onSearchChange={searchInventoryProducts}
               onChange={(value) =>
                 setForm((current) => ({
                   ...current,
@@ -10389,6 +10511,7 @@ function LookupSelect({
   options,
   emptyLabel,
   onChange,
+  onSearchChange,
   fullWidth = false,
 }: {
   label: string;
@@ -10396,6 +10519,7 @@ function LookupSelect({
   options: LookupItem[];
   emptyLabel?: string;
   onChange: (value: string) => void;
+  onSearchChange?: (value: string) => void;
   fullWidth?: boolean;
 }) {
   return (
@@ -10407,15 +10531,35 @@ function LookupSelect({
         value={value}
         placeholder={emptyLabel || "انتخاب کنید"}
         onValueChange={onChange}
+        onSearchChange={onSearchChange}
         options={[
           ...(emptyLabel ? [{ value: "", label: emptyLabel }] : []),
           ...options.map((option) => ({
             value: option.id,
             label: option.code || option.shortName || option.name,
             description:
-              option.code || option.shortName
-                ? option.name
-                : option.shortName || option.code,
+              option.barcode || option.sku
+                ? [option.name, option.barcode, option.sku]
+                    .filter(Boolean)
+                    .join(" / ")
+                : option.code || option.shortName
+                  ? option.name
+                  : option.shortName || option.code,
+            meta: option.barcode || option.sku || option.baseUnit?.shortName || option.baseUnit?.name,
+            barcode: option.barcode,
+            sku: option.sku,
+            searchText: [
+              option.name,
+              option.code,
+              option.shortName,
+              option.barcode,
+              option.sku,
+              option.category?.name,
+              option.baseUnit?.name,
+              option.baseUnit?.shortName,
+            ]
+              .filter(Boolean)
+              .join(" "),
           })),
         ]}
       />
@@ -10541,6 +10685,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     return {
       id: `${item.productId}-${item.warehouseId}`,
       name: item.productName || "-",
+      barcode: item.barcode || "-",
       warehouse: item.warehouseName || "-",
       quantity: `${new Intl.NumberFormat("en-US").format(Number(item.totalQuantity || 0))} ${item.baseUnitName || ""}`,
       expiry:
@@ -10986,6 +11131,7 @@ const pageConfigs: AdminPageConfig[] = [
     ],
     columns: [
       { key: "name", label: "جنس" },
+      { key: "barcode", label: "بارکود" },
       { key: "warehouse", label: "گدام" },
       { key: "quantity", label: "مقدار" },
       { key: "expiry", label: "انقضا" },

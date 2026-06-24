@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
-import { normalizeBarcodeText } from "../../lib/barcode";
+import { barcodeSearchCandidates, normalizeBarcodeText } from "../../lib/barcode";
 import { resolveCurrencySnapshot, snapshotBaseFields, toBaseAmount } from "../../lib/currency-rates";
 import { createPostedJournal, createReversalJournal, treasuryAccountCode } from "../../lib/journal";
 import { getRequestPosDevice } from "../../lib/pos-device";
@@ -130,10 +130,13 @@ salesRoute.get("/", async (c) => {
 
 salesRoute.get("/scan/:barcode", async (c) => {
   const barcode = normalizeBarcodeText(c.req.param("barcode"));
+  const barcodeCandidates = barcodeSearchCandidates(c.req.param("barcode"));
   const warehouseId = c.req.query("warehouseId");
 
-  const product = await prisma.product.findUnique({
-    where: { barcode },
+  const product = await prisma.product.findFirst({
+    where: {
+      barcode: { in: barcodeCandidates }
+    },
     include: {
       baseUnit: true,
       units: {
@@ -145,7 +148,18 @@ salesRoute.get("/scan/:barcode", async (c) => {
   });
 
   if (!product) {
-    return c.json({ message: "Product not found" }, 404);
+    return c.json({ message: "محصولی با این بارکود ثبت نشده است" }, 404);
+  }
+
+  if (product.deletedAt || !product.isActive) {
+    return c.json(
+      {
+        message: product.deletedAt
+          ? "این محصول حذف شده و قابل فروش نیست"
+          : "این محصول غیرفعال است و قابل فروش نیست",
+      },
+      409,
+    );
   }
 
   const lots = await prisma.stockLot.findMany({
@@ -166,6 +180,22 @@ salesRoute.get("/scan/:barcode", async (c) => {
   });
 
   const totalStock = lots.reduce((sum, lot) => sum + Number(lot.remainingQuantity), 0);
+
+  if (totalStock <= 0) {
+    return c.json(
+      {
+        message: warehouseId
+          ? "این محصول در گدام انتخاب‌شده موجودی قابل فروش ندارد"
+          : "موجودی این محصول تمام شده است",
+        data: {
+          product,
+          totalStock,
+          lots,
+        },
+      },
+      409,
+    );
+  }
 
   return c.json({
     data: {

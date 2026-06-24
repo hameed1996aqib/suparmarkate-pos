@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+﻿import { Hono } from "hono";
 import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -13,11 +13,10 @@ import {
 import { getAuthUser, writeAudit } from "../../lib/auth";
 import {
   cacheDeleteByPattern,
-  cacheGetJson,
-  cacheSetJson,
 } from "../../lib/cache";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import {
+  barcodeSearchCandidates,
   generateProductBarcodeCandidate,
   normalizeBarcodeText,
 } from "../../lib/barcode";
@@ -76,7 +75,7 @@ async function resolveProductBarcode(value: string | null | undefined) {
 }
 
 function duplicateBarcodeMessage(barcode: string) {
-  return `بارکود ${barcode} قبلاً برای محصول دیگری ثبت شده است. لطفاً بارکود دیگر وارد کنید یا فیلد بارکود را خالی بگذارید تا سیستم بارکود جدید بسازد.`;
+  return `بارکود ${barcode} قبلا برای محصول دیگری ثبت شده است. لطفا بارکود دیگر وارد کنید یا فیلد بارکود را خالی بگذارید تا سیستم بارکود جدید بسازد.`;
 }
 
 function isUniqueConstraintError(error: unknown) {
@@ -153,10 +152,22 @@ function productImageExtension(mimeType: string, originalName: string) {
   return ".png";
 }
 
+const productLookupInclude = {
+  category: true,
+  baseUnit: true,
+  defaultWarehouse: true,
+  units: {
+    include: {
+      unit: true,
+    },
+    orderBy: { createdAt: "asc" as const },
+  },
+};
+
 productsRoute.get("/", async (c) => {
   const pagination = getPagePagination(c, {
-    defaultLimit: 10000,
-    maxLimit: 10000,
+    defaultLimit: 100,
+    maxLimit: 200,
   });
   const search = c.req.query("search");
   const barcodeFilter = c.req.query("barcodeFilter");
@@ -222,6 +233,56 @@ productsRoute.get("/", async (c) => {
   });
 });
 
+productsRoute.get("/lookup", async (c) => {
+  const search = (c.req.query("search") || "").trim();
+  const requestedLimit = Number.parseInt(c.req.query("limit") || "50", 10);
+  const limit = Math.min(
+    Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 50, 1),
+    100,
+  );
+  const barcodeCandidates = barcodeSearchCandidates(search);
+  const baseWhere = { deletedAt: null, isActive: true };
+
+  if (!search) {
+    const items = await prisma.product.findMany({
+      where: baseWhere,
+      include: productLookupInclude,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: limit,
+    });
+
+    return c.json({ data: items, pagination: { limit, total: items.length } });
+  }
+
+  const exactBarcodeRows = barcodeCandidates.length
+    ? await prisma.product.findMany({
+        where: {
+          ...baseWhere,
+          barcode: { in: barcodeCandidates },
+        },
+        include: productLookupInclude,
+        take: limit,
+      })
+    : [];
+  const exactIds = new Set(exactBarcodeRows.map((item) => item.id));
+  const remainingLimit = Math.max(0, limit - exactBarcodeRows.length);
+  const fuzzyRows = remainingLimit
+    ? await prisma.product.findMany({
+        where: {
+          ...baseWhere,
+          ...(exactIds.size ? { id: { notIn: Array.from(exactIds) } } : {}),
+          ...buildProductSearchWhere(search),
+        },
+        include: productLookupInclude,
+        orderBy: [{ name: "asc" }, { updatedAt: "desc" }],
+        take: remainingLimit,
+      })
+    : [];
+  const data = [...exactBarcodeRows, ...fuzzyRows];
+
+  return c.json({ data, pagination: { limit, total: data.length } });
+});
+
 productsRoute.get("/pos-search", async (c) => {
   const search = (c.req.query("search") || "").trim();
   const categoryId = (c.req.query("categoryId") || "").trim();
@@ -236,16 +297,6 @@ productsRoute.get("/pos-search", async (c) => {
     Number.isFinite(requestedOffset) ? requestedOffset : 0,
     0,
   );
-  const barcodeSearch = normalizeBarcodeText(search);
-  const cacheKey = `pos:products:v4:${warehouseId || "all"}:${categoryId || "all"}:${offset}:${limit}:${search.toLowerCase()}:${barcodeSearch}`;
-  const shouldUseCache = !search;
-  const cached = shouldUseCache
-    ? await cacheGetJson<Record<string, unknown>>(cacheKey)
-    : null;
-
-  if (cached) {
-    return c.json({ ...cached, cache: "hit" });
-  }
 
   const searchWhere = buildProductSearchWhere(search);
   const where = {
@@ -335,9 +386,6 @@ productsRoute.get("/pos-search", async (c) => {
     },
   };
 
-  if (shouldUseCache) {
-    await cacheSetJson(cacheKey, payload, 5);
-  }
   return c.json({ ...payload, cache: "miss" });
 });
 
@@ -638,3 +686,4 @@ productsRoute.delete("/:id", async (c) => {
 
   return c.json({ message: "Product deactivated", data: item });
 });
+

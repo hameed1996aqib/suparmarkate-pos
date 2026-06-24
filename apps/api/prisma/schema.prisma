@@ -603,6 +603,8 @@ model Product {
   @@index([barcode])
   @@index([sku])
   @@index([deletedAt])
+  @@index([isActive, deletedAt, barcode])
+  @@index([isActive, deletedAt, name])
 }
 
 model ProductUnit {
@@ -625,6 +627,8 @@ model ProductUnit {
   updatedAt DateTime @updatedAt
 
   @@unique([productId, unitId])
+  @@index([productId, isDefaultPurchase])
+  @@index([productId, isDefaultSale])
 }
 
 model StockLot {
@@ -720,6 +724,8 @@ model StockBalance {
 
   @@unique([productId, warehouseId])
   @@index([warehouseId])
+  @@index([productId, quantityBase])
+  @@index([warehouseId, quantityBase])
   @@index([quantityBase])
   @@index([earliestExpiryAt])
 }

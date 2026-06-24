@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./prisma";
-import { normalizeBarcodeText } from "./barcode";
+import { barcodeSearchCandidates, normalizeBarcodeText } from "./barcode";
 
 const MIN_CART_QUANTITY = 0.0001;
 
@@ -466,7 +466,7 @@ export async function handlePosBarcodeScan(input: {
   if (!barcode) {
     const payload = {
       barcode,
-      message: "Barcode is required"
+      message: "بارکود لازم است"
     };
 
     broadcastToPosSession(input.sessionId, "SCAN_ERROR", payload);
@@ -475,9 +475,12 @@ export async function handlePosBarcodeScan(input: {
 
   const sessionSettings = getPosSessionSettings(input.sessionId);
   const warehouseIdForScan = input.warehouseId || sessionSettings.warehouseId || null;
+  const barcodeCandidates = barcodeSearchCandidates(input.barcode);
 
-  const product = await prisma.product.findUnique({
-    where: { barcode },
+  const product = await prisma.product.findFirst({
+    where: {
+      barcode: { in: barcodeCandidates }
+    },
     include: {
       baseUnit: true,
       units: {
@@ -491,7 +494,20 @@ export async function handlePosBarcodeScan(input: {
   if (!product) {
     const payload = {
       barcode,
-      message: "Product not found"
+      message: "محصولی با این بارکود ثبت نشده است"
+    };
+
+    broadcastToPosSession(input.sessionId, "SCAN_ERROR", payload);
+    return { ok: false, error: payload };
+  }
+
+  if (product.deletedAt || !product.isActive) {
+    const payload = {
+      barcode,
+      product,
+      message: product.deletedAt
+        ? "این محصول حذف شده و قابل فروش نیست"
+        : "این محصول غیرفعال است و قابل فروش نیست"
     };
 
     broadcastToPosSession(input.sessionId, "SCAN_ERROR", payload);
@@ -544,7 +560,9 @@ export async function handlePosBarcodeScan(input: {
       product,
       totalStock,
       activeWarehouseId: warehouseIdForScan,
-      message: "Product is out of stock"
+      message: warehouseIdForScan
+        ? "این محصول در گدام انتخاب‌شده موجودی قابل فروش ندارد"
+        : "موجودی این محصول تمام شده است"
     };
 
     broadcastToPosSession(input.sessionId, "SCAN_ERROR", errorPayload);

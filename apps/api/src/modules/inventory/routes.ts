@@ -164,14 +164,17 @@ inventoryRoute.get("/stock", async (c) => {
   const productId = c.req.query("productId");
   const warehouseId = c.req.query("warehouseId");
   const search = c.req.query("search");
+  const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 100 });
+  const where = {
+    quantityBase: { gt: 0 },
+    ...(productId ? { productId } : {}),
+    ...(warehouseId ? { warehouseId } : {}),
+    ...buildStockBalanceSearchWhere(search)
+  };
 
-  const balances = await prisma.stockBalance.findMany({
-    where: {
-      quantityBase: { gt: 0 },
-      ...(productId ? { productId } : {}),
-      ...(warehouseId ? { warehouseId } : {}),
-      ...buildStockBalanceSearchWhere(search)
-    },
+  const [balances, total] = await Promise.all([
+    prisma.stockBalance.findMany({
+    where,
     include: {
       product: {
         include: {
@@ -180,8 +183,12 @@ inventoryRoute.get("/stock", async (c) => {
       },
       warehouse: true
     },
-    orderBy: [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }]
-  });
+    orderBy: [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }],
+    skip: pagination.skip,
+    take: pagination.limit
+  }),
+    prisma.stockBalance.count({ where })
+  ]);
 
   return c.json({
     data: balances.map((balance) => ({
@@ -197,7 +204,8 @@ inventoryRoute.get("/stock", async (c) => {
       // Kept for compatibility with the existing inventory table. Full lot detail
       // is loaded only when the user opens the lot view.
       lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []
-    }))
+    })),
+    pagination: createPaginationMeta({ ...pagination, total })
   });
 });
 

@@ -30,6 +30,13 @@ export function normalizeBarcodeText(value: string) {
     .replace(/[\s\u200b\u200c\u200d\u2060-]/g, "");
 }
 
+export function barcodeSearchCandidates(value: string) {
+  const raw = value.trim();
+  const normalized = normalizeBarcodeText(raw);
+
+  return Array.from(new Set([raw, normalized].filter(Boolean)));
+}
+
 export function detectBarcodeType(text: string) {
   const value = normalizeBarcodeText(text);
 

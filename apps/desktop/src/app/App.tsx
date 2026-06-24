@@ -3255,7 +3255,7 @@ async function searchProductLookupOptions(query: string) {
   if (normalized.length < 2) return [];
 
   const response = await fetch(
-    `${API_BASE_URL}/api/products?page=1&limit=20&search=${encodeURIComponent(normalized)}`,
+    `${API_BASE_URL}/api/products/lookup?limit=30&search=${encodeURIComponent(normalized)}`,
   );
   const json = await response.json().catch(() => null);
 
@@ -3346,7 +3346,9 @@ function SalesPage() {
         fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
           res.json(),
         ),
-        fetch(`${API_BASE_URL}/api/products`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
+          res.json(),
+        ),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
@@ -4114,7 +4116,7 @@ function SalesPage() {
       />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent dir="rtl" className="max-w-[min(96vw,1280px)]">
+        <DialogContent dir="rtl" className="sm:max-w-[min(96vw,1280px)]">
           <DialogHeader>
             <DialogTitle>ثبت فروش جدید</DialogTitle>
             <DialogDescription>
@@ -4377,7 +4379,7 @@ function SalesPage() {
       </Dialog>
 
       <Dialog open={saleItemDialogOpen} onOpenChange={setSaleItemDialogOpen}>
-        <DialogContent dir="rtl" className="max-w-[min(196vw,1280px)]">
+        <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>
               {editingSaleLineId ? "ویرایش قلم فروش" : "افزودن قلم فروش"}
@@ -4479,7 +4481,7 @@ function SalesPage() {
       </Dialog>
 
       <Dialog open={returnDialogOpen} onOpenChange={setReturnDialogOpen}>
-        <DialogContent dir="rtl" className="max-w-[max(96vw,1280px)]">
+        <DialogContent dir="rtl" className="sm:max-w-[max(96vw,1280px)]">
           <DialogHeader>
             <DialogTitle>برگشت فروش</DialogTitle>
             <DialogDescription>
@@ -4776,7 +4778,9 @@ function PurchasesPage() {
         fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) =>
           res.json(),
         ),
-        fetch(`${API_BASE_URL}/api/products`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
+          res.json(),
+        ),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
@@ -9247,6 +9251,7 @@ function InventoryPage() {
   const [movementFrom, setMovementFrom] = useState(initialMovementRange.from);
   const [movementTo, setMovementTo] = useState(initialMovementRange.to);
   const [movementPages, setMovementPages] = useState({
+    stock: 1,
     opening: 1,
     increase: 1,
     decrease: 1,
@@ -9357,9 +9362,11 @@ function InventoryPage() {
         transferRes,
       ] = await Promise.all([
         fetch(
-          `${API_BASE_URL}/api/inventory/stock?search=${encodeURIComponent(query.trim())}`,
+          `${API_BASE_URL}/api/inventory/stock?page=${pages.stock}&limit=20&search=${encodeURIComponent(query.trim())}`,
         ).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/products`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
+          res.json(),
+        ),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(
@@ -9390,6 +9397,7 @@ function InventoryPage() {
       setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
       setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
       setMovementPagination({
+        stock: stockRes?.pagination,
         opening: openingRes?.pagination,
         increase: increaseRes?.pagination,
         decrease: decreaseRes?.pagination,
@@ -9472,6 +9480,7 @@ function InventoryPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const firstPages = {
+        stock: 1,
         opening: 1,
         increase: 1,
         decrease: 1,
@@ -9514,6 +9523,7 @@ function InventoryPage() {
 
   const refreshInventoryFromFirstPage = () => {
     const firstPages = {
+      stock: 1,
       opening: 1,
       increase: 1,
       decrease: 1,
@@ -9806,7 +9816,9 @@ function InventoryPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="ردیف‌های موجودی"
-          value={new Intl.NumberFormat("en-US").format(stockRows.length)}
+          value={new Intl.NumberFormat("en-US").format(
+            movementPagination.stock?.total || stockRows.length,
+          )}
           icon={<Boxes />}
         />
         <MetricCard
@@ -9876,6 +9888,8 @@ function InventoryPage() {
                   { key: "status", label: "وضعیت" },
                 ]}
                 rows={filteredRows}
+                pagination={movementPagination.stock}
+                onPageChange={(page) => changeMovementPage("stock", page)}
               />
             </CardContent>
           </Card>
@@ -10545,7 +10559,11 @@ function LookupSelect({
                 : option.code || option.shortName
                   ? option.name
                   : option.shortName || option.code,
-            meta: option.barcode || option.sku || option.baseUnit?.shortName || option.baseUnit?.name,
+            meta:
+              option.barcode ||
+              option.sku ||
+              option.baseUnit?.shortName ||
+              option.baseUnit?.name,
             barcode: option.barcode,
             sku: option.sku,
             searchText: [

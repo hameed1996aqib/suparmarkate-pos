@@ -342,7 +342,6 @@ export const PosProductSearchCard = forwardRef<
                     const hasBarcode = Boolean(product.barcode);
                     const price = getDefaultSalePrice(product) / currencyRate;
                     const availability = productAvailability(product);
-                    console.log({ product, availability });
                     return (
                       <div
                         key={product.id}

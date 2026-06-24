@@ -138,6 +138,7 @@ app.use("/api/*", permissionMiddleware);
 
 app.get("/", (c) => {
   if (webAppAvailable) {
+    c.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     return c.html(readFileSync(webIndexPath, "utf8"));
   }
 
@@ -230,6 +231,7 @@ if (webAppAvailable) {
       return c.notFound();
     }
 
+    c.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     return c.html(readFileSync(webIndexPath, "utf8"));
   });
 }

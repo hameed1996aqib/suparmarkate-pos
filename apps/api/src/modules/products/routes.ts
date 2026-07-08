@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import {
@@ -61,7 +62,11 @@ const imageMimeTypes = new Set([
 async function generateUniqueProductBarcode() {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const barcode = generateProductBarcodeCandidate();
-    const existing = await prisma.product.findUnique({ where: { barcode } });
+    const existing = await prisma.product.findFirst({
+      where: {
+        OR: [{ barcode }, { barcodeNormalized: normalizeBarcodeText(barcode) }],
+      },
+    });
 
     if (!existing) return barcode;
   }
@@ -70,8 +75,8 @@ async function generateUniqueProductBarcode() {
 }
 
 async function resolveProductBarcode(value: string | null | undefined) {
-  const normalized = normalizeBarcodeText(value || "");
-  return normalized || generateUniqueProductBarcode();
+  const raw = (value || "").trim();
+  return raw || generateUniqueProductBarcode();
 }
 
 function duplicateBarcodeMessage(barcode: string) {
@@ -87,9 +92,51 @@ async function ensureBarcodeIsAvailable(
   barcode: string,
   excludeProductId?: string,
 ) {
-  const existing = await prisma.product.findUnique({ where: { barcode } });
+  const normalized = normalizeBarcodeText(barcode);
+  if (!normalized) return;
 
-  if (existing && existing.id !== excludeProductId) {
+  const existing = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id
+    FROM "Product"
+    WHERE "deletedAt" IS NULL
+      ${excludeProductId ? Prisma.sql`AND id <> ${excludeProductId}` : Prisma.empty}
+      AND (
+        barcode = ${barcode}
+        OR "barcodeNormalized" = ${normalized}
+        OR NULLIF(
+          replace(
+            replace(
+              replace(
+                replace(
+                  regexp_replace(
+                    translate(
+                      COALESCE(barcode, ''),
+                      '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩',
+                      '01234567890123456789'
+                    ),
+                    '[-[:space:]]+',
+                    '',
+                    'g'
+                  ),
+                  chr(8203),
+                  ''
+                ),
+                chr(8204),
+                ''
+              ),
+              chr(8205),
+              ''
+            ),
+            chr(8288),
+            ''
+          ),
+          ''
+        ) = ${normalized}
+      )
+    LIMIT 1
+  `);
+
+  if (existing.length) {
     throw new Error(duplicateBarcodeMessage(barcode));
   }
 }
@@ -109,8 +156,15 @@ function buildProductSearchWhere(search: string | null | undefined) {
       ...(barcodeSearch
         ? [
             { barcode: barcodeSearch },
+            { barcodeNormalized: barcodeSearch },
             {
               barcode: {
+                contains: barcodeSearch,
+                mode: "insensitive" as const,
+              },
+            },
+            {
+              barcodeNormalized: {
                 contains: barcodeSearch,
                 mode: "insensitive" as const,
               },
@@ -258,7 +312,10 @@ productsRoute.get("/lookup", async (c) => {
     ? await prisma.product.findMany({
         where: {
           ...baseWhere,
-          barcode: { in: barcodeCandidates },
+          OR: [
+            { barcode: { in: barcodeCandidates } },
+            { barcodeNormalized: { in: barcodeCandidates } },
+          ],
         },
         include: productLookupInclude,
         take: limit,
@@ -299,35 +356,84 @@ productsRoute.get("/pos-search", async (c) => {
   );
 
   const searchWhere = buildProductSearchWhere(search);
-  const where = {
+  const barcodeCandidates = barcodeSearchCandidates(search);
+  const baseWhere = {
     deletedAt: null,
     isActive: true,
     ...(categoryId ? { categoryId } : {}),
-    ...searchWhere,
   };
+  const exactBarcodeWhere =
+    search && barcodeCandidates.length
+      ? {
+          ...baseWhere,
+          OR: [
+            { barcode: { in: barcodeCandidates } },
+            { barcodeNormalized: { in: barcodeCandidates } },
+          ],
+        }
+      : null;
+  const exactIdRows = exactBarcodeWhere
+    ? await prisma.product.findMany({
+        where: exactBarcodeWhere,
+        select: { id: true },
+      })
+    : [];
+  const exactIds = exactIdRows.map((item) => item.id);
+  const fuzzyWhere = {
+    ...baseWhere,
+    ...searchWhere,
+    ...(exactIds.length ? { id: { notIn: exactIds } } : {}),
+  };
+  const where = search ? fuzzyWhere : baseWhere;
   const facetWhere = {
     deletedAt: null,
     isActive: true,
     ...searchWhere,
   };
 
-  const [items, total, categoryRows] = await Promise.all([
-    prisma.product.findMany({
-      where,
-      include: {
-        category: true,
-        baseUnit: true,
-        defaultWarehouse: true,
-        units: {
+  const exactCount = exactIds.length;
+  const exactSkip = Math.min(offset, exactCount);
+  const exactTake = Math.max(0, Math.min(limit, exactCount - exactSkip));
+  const fuzzySkip = Math.max(0, offset - exactCount);
+  const fuzzyTake = Math.max(0, limit - exactTake);
+
+  const [exactRows, fuzzyRows, fuzzyTotal, categoryRows] = await Promise.all([
+    exactBarcodeWhere && exactTake > 0
+      ? prisma.product.findMany({
+          where: exactBarcodeWhere,
           include: {
-            unit: true,
+            category: true,
+            baseUnit: true,
+            defaultWarehouse: true,
+            units: {
+              include: {
+                unit: true,
+              },
+            },
           },
-        },
-      },
-      orderBy: [{ name: "asc" }, { createdAt: "desc" }],
-      skip: offset,
-      take: limit,
-    }),
+          orderBy: [{ barcodeNormalized: "asc" }, { name: "asc" }],
+          skip: exactSkip,
+          take: exactTake,
+        })
+      : [],
+    fuzzyTake > 0
+      ? prisma.product.findMany({
+          where,
+          include: {
+            category: true,
+            baseUnit: true,
+            defaultWarehouse: true,
+            units: {
+              include: {
+                unit: true,
+              },
+            },
+          },
+          orderBy: [{ name: "asc" }, { createdAt: "desc" }],
+          skip: fuzzySkip,
+          take: fuzzyTake,
+        })
+      : [],
     prisma.product.count({ where }),
     prisma.product.groupBy({
       by: ["categoryId"],
@@ -335,6 +441,8 @@ productsRoute.get("/pos-search", async (c) => {
       _count: { _all: true },
     }),
   ]);
+  const items = [...exactRows, ...fuzzyRows];
+  const total = exactCount + fuzzyTotal;
   const productIds = items.map((item) => item.id);
   const stockRows = productIds.length
     ? await prisma.stockBalance.groupBy({
@@ -389,6 +497,68 @@ productsRoute.get("/pos-search", async (c) => {
   return c.json({ ...payload, cache: "miss" });
 });
 
+productsRoute.get("/barcode-duplicates", async (c) => {
+  const rows = await prisma.$queryRaw<
+    Array<{
+      normalized: string;
+      count: number;
+      products: Array<{ id: string; name: string; barcode: string | null }>;
+    }>
+  >`
+    WITH normalized AS (
+      SELECT
+        id,
+        name,
+        barcode,
+        NULLIF(
+          replace(
+            replace(
+              replace(
+                replace(
+                  regexp_replace(
+                    translate(
+                      COALESCE(barcode, ''),
+                      '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩',
+                      '01234567890123456789'
+                    ),
+                    '[-[:space:]]+',
+                    '',
+                    'g'
+                  ),
+                  chr(8203),
+                  ''
+                ),
+                chr(8204),
+                ''
+              ),
+              chr(8205),
+              ''
+            ),
+            chr(8288),
+            ''
+          ),
+          ''
+        ) AS normalized
+      FROM "Product"
+      WHERE barcode IS NOT NULL AND "deletedAt" IS NULL
+    )
+    SELECT
+      normalized,
+      COUNT(*)::int AS count,
+      json_agg(
+        json_build_object('id', id, 'name', name, 'barcode', barcode)
+        ORDER BY name
+      ) AS products
+    FROM normalized
+    WHERE normalized IS NOT NULL
+    GROUP BY normalized
+    HAVING COUNT(*) > 1
+    ORDER BY COUNT(*) DESC, normalized ASC
+  `;
+
+  return c.json({ data: rows });
+});
+
 productsRoute.get("/:id", async (c) => {
   const id = c.req.param("id");
 
@@ -425,6 +595,7 @@ productsRoute.post("/", async (c) => {
 
   const { units, ...productData } = parsed.data;
   const barcode = await resolveProductBarcode(productData.barcode);
+  const barcodeNormalized = normalizeBarcodeText(barcode);
   await ensureBarcodeIsAvailable(barcode);
 
   let item;
@@ -433,6 +604,7 @@ productsRoute.post("/", async (c) => {
       data: {
         ...productData,
         barcode,
+        barcodeNormalized,
         ...auditCreateData(authUser?.id),
         units: {
           create: units.map((unit) => ({
@@ -485,10 +657,16 @@ productsRoute.patch("/:id", async (c) => {
   }
 
   const { units, ...productData } = parsed.data;
+  const nextBarcode = Object.prototype.hasOwnProperty.call(productData, "barcode")
+    ? await resolveProductBarcode(productData.barcode)
+    : undefined;
   const nextProductData = {
     ...productData,
-    ...(Object.prototype.hasOwnProperty.call(productData, "barcode")
-      ? { barcode: await resolveProductBarcode(productData.barcode) }
+    ...(nextBarcode
+      ? {
+          barcode: nextBarcode,
+          barcodeNormalized: normalizeBarcodeText(nextBarcode),
+        }
       : {}),
   };
 

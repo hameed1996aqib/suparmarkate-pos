@@ -24,6 +24,7 @@ function parseDate(value?: string | null) {
 currencyRatesRoute.get("/", async (c) => {
   const pagination = getPagePagination(c, { defaultLimit: 50, maxLimit: 200 });
   const currencyId = c.req.query("currencyId");
+  const search = c.req.query("search")?.trim();
   const from = parseDate(c.req.query("from"));
   const to = parseDate(c.req.query("to"));
   if (to) to.setHours(23, 59, 59, 999);
@@ -34,7 +35,16 @@ currencyRatesRoute.get("/", async (c) => {
 
   const baseWhere = {
       deletedAt: null,
-      ...(currencyId ? { currencyId } : {})
+      ...(currencyId ? { currencyId } : {}),
+      ...(search
+        ? {
+            OR: [
+              { note: { contains: search, mode: "insensitive" as const } },
+              { currency: { code: { contains: search, mode: "insensitive" as const } } },
+              { currency: { name: { contains: search, mode: "insensitive" as const } } },
+            ],
+          }
+        : {})
     };
   const where = {
       ...baseWhere,

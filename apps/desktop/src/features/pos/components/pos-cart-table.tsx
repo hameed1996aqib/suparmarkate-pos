@@ -51,16 +51,18 @@ function getDaysUntilExpiry(expiryDate?: string | null) {
 
 function StockBadge({ item }: { item: ServerCartItem }) {
   const totalStock = Number(item.totalStock || 0);
+  const requiredBaseQuantity =
+    Number(item.quantity || 0) * Number(item.conversionRate || 1);
 
   if (totalStock <= 0) {
     return <Badge variant="destructive">بدون موجودی</Badge>;
   }
 
-  if (item.quantity > totalStock) {
+  if (requiredBaseQuantity > totalStock) {
     return <Badge variant="destructive">کمبود موجودی</Badge>;
   }
 
-  if (totalStock <= item.quantity + 2) {
+  if (totalStock <= requiredBaseQuantity + 2) {
     return <Badge variant="secondary">موجودی کم: {totalStock}</Badge>;
   }
 
@@ -102,7 +104,11 @@ export function PosCartTable({
   onUpdateItem,
   onRemoveItem,
 }: PosCartTableProps) {
-  const hasStockIssue = items.some((item) => Number(item.quantity || 0) > Number(item.totalStock || 0));
+  const hasStockIssue = items.some(
+    (item) =>
+      Number(item.quantity || 0) * Number(item.conversionRate || 1) >
+      Number(item.totalStock || 0),
+  );
 
   return (
     <Card className="border-border bg-card">
@@ -166,7 +172,9 @@ export function PosCartTable({
 
               <TableBody>
                 {items.map((item) => {
-                  const stockIssue = Number(item.quantity || 0) > Number(item.totalStock || 0);
+                  const stockIssue =
+                    Number(item.quantity || 0) * Number(item.conversionRate || 1) >
+                    Number(item.totalStock || 0);
 
                   return (
                     <TableRow

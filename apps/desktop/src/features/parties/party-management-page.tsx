@@ -247,19 +247,6 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const filteredRows = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return rows;
-
-    return rows.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [query, rows]);
-
   const openCreate = () => {
     setForm({
       ...emptyPartyForm,
@@ -456,7 +443,7 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
                 { key: "balance", label: "مانده" },
                 { key: "status", label: "وضعیت" },
               ]}
-              rows={filteredRows}
+              rows={rows}
               pagination={pagination}
               onPageChange={(page) => void loadParties(page)}
               onEdit={openDetails}

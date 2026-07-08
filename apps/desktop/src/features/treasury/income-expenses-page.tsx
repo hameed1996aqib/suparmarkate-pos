@@ -118,9 +118,18 @@ export function IncomeExpensesPage() {
   const loadIncomeExpensesData = async (page = pagination.page) => {
     setIsLoading(true);
     try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(pagination.limit),
+      });
+      const rangeQuery = dateRangeQuery(from, to);
+      for (const [key, value] of new URLSearchParams(rangeQuery)) {
+        params.set(key, value);
+      }
+      if (query.trim()) params.set("search", query.trim());
       const [itemsRes, cashRes, bankRes, currenciesRes, categoriesRes] =
         await Promise.all([
-          fetch(`${API_BASE_URL}/api/income-expenses?page=${page}&limit=${pagination.limit}&${dateRangeQuery(from, to)}`).then((res) => res.json()),
+          fetch(`${API_BASE_URL}/api/income-expenses?${params.toString()}`).then((res) => res.json()),
           fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
           fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
           fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
@@ -163,16 +172,11 @@ export function IncomeExpensesPage() {
     void loadIncomeExpensesData();
   }, []);
 
-  const filteredRows = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return rows;
-
-    return rows.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "").toLowerCase().includes(normalized),
-      ),
-    );
-  }, [query, rows]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadIncomeExpensesData(1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
 
   const openCreate = (kind: "INCOME" | "EXPENSE") => {
     const baseCurrency =
@@ -415,7 +419,7 @@ export function IncomeExpensesPage() {
                 { key: "amount", label: "مبلغ" },
                 { key: "status", label: "وضعیت" },
               ]}
-              rows={filteredRows}
+              rows={rows}
               pagination={pagination}
               onPageChange={(page) => void loadIncomeExpensesData(page)}
               onEdit={openIncomeExpenseEdit}

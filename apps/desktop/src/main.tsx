@@ -1,3 +1,4 @@
+import "./lib/browser-crypto-polyfill";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { AppErrorBoundary } from "./app/app-error-boundary";

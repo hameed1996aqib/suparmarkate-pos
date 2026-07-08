@@ -567,6 +567,7 @@ model Product {
   name        String
   sku         String? @unique
   barcode     String? @unique
+  barcodeNormalized String?
   description String?
   imageUrl    String?
 
@@ -601,9 +602,11 @@ model Product {
 
   @@index([name])
   @@index([barcode])
+  @@index([barcodeNormalized])
   @@index([sku])
   @@index([deletedAt])
   @@index([isActive, deletedAt, barcode])
+  @@index([isActive, deletedAt, barcodeNormalized])
   @@index([isActive, deletedAt, name])
 }
 

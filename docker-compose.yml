@@ -92,6 +92,9 @@ services:
       - "4002:4002"
     volumes:
       - muhaseb_api_data:/data
+      - type: bind
+        source: "${MUHASEB_BACKUP_DIR:-D:\\BelalBackups}"
+        target: /data/backups
       - muhaseb_uploads:/app/apps/api/uploads
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

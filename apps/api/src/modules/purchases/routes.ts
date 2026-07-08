@@ -10,6 +10,7 @@ import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { parseKabulDateInput } from "../../lib/kabul-date";
 import { cacheDeleteByPattern } from "../../lib/cache";
+import { normalizeBarcodeText } from "../../lib/barcode";
 import {
   MoneyDirection,
   MoneyTransactionType,
@@ -74,11 +75,26 @@ function parseDate(value: string | null | undefined) {
 
 purchasesRoute.get("/", async (c) => {
   const supplierId = c.req.query("supplierId");
+  const search = c.req.query("search")?.trim();
   const pagination = getPagePagination(c);
   const purchaseDate = getRecentDateRange(c);
   const where = {
     ...(supplierId ? { supplierId } : {}),
-    purchaseDate
+    purchaseDate,
+    ...(search
+      ? {
+          OR: [
+            { invoiceNo: { contains: search, mode: "insensitive" as const } },
+            { note: { contains: search, mode: "insensitive" as const } },
+            { supplier: { name: { contains: search, mode: "insensitive" as const } } },
+            { supplier: { phone: { contains: search, mode: "insensitive" as const } } },
+            { supplier: { code: { contains: search, mode: "insensitive" as const } } },
+            { items: { some: { product: { name: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcode: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcodeNormalized: { contains: normalizeBarcodeText(search), mode: "insensitive" as const } } } } },
+          ],
+        }
+      : {})
   };
 
   const [items, total, summary] = await Promise.all([

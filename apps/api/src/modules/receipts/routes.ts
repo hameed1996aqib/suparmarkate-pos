@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../../lib/prisma";
-import {
-  PartyTransactionType
-} from "../../generated/prisma/enums";
+import { PartyTransactionType } from "../../generated/prisma/enums";
 
 export const receiptsRoute = new Hono();
 
@@ -11,7 +9,7 @@ function escapeHtml(value: unknown) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
+    .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
 
@@ -19,7 +17,7 @@ function formatNumber(value: unknown) {
   const number = Number(value ?? 0);
 
   return new Intl.NumberFormat("fa-AF", {
-    maximumFractionDigits: 2
+    maximumFractionDigits: 2,
   }).format(number);
 }
 
@@ -28,15 +26,15 @@ function formatDate(value: Date | string) {
 
   return new Intl.DateTimeFormat("fa-AF", {
     dateStyle: "medium",
-    timeStyle: "short"
+    timeStyle: "short",
   }).format(date);
 }
 
 async function getSetting() {
   return prisma.companySetting.findFirst({
     orderBy: {
-      createdAt: "asc"
-    }
+      createdAt: "asc",
+    },
   });
 }
 
@@ -75,6 +73,20 @@ function receiptFooter(setting: Awaited<ReturnType<typeof getSetting>>) {
 
 function receiptCss() {
   return `
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
     * { box-sizing: border-box; }
 
     body {
@@ -82,7 +94,7 @@ function receiptCss() {
       padding: 0;
       background: #fff;
       color: #000;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Zain", Tahoma, Arial, sans-serif;
       font-size: 12px;
       direction: rtl;
     }
@@ -215,13 +227,13 @@ receiptsRoute.get("/sales/:id", async (c) => {
           product: true,
           unit: true,
           lot: true,
-          warehouse: true
+          warehouse: true,
         },
         orderBy: {
-          createdAt: "asc"
-        }
-      }
-    }
+          createdAt: "asc",
+        },
+      },
+    },
   });
 
   if (!sale) {
@@ -231,8 +243,8 @@ receiptsRoute.get("/sales/:id", async (c) => {
   return c.json({
     data: {
       setting,
-      sale
-    }
+      sale,
+    },
   });
 });
 
@@ -251,13 +263,13 @@ receiptsRoute.get("/sales/:id/html", async (c) => {
           product: true,
           unit: true,
           lot: true,
-          warehouse: true
+          warehouse: true,
         },
         orderBy: {
-          createdAt: "asc"
-        }
-      }
-    }
+          createdAt: "asc",
+        },
+      },
+    },
   });
 
   if (!sale) {
@@ -365,8 +377,8 @@ receiptsRoute.get("/party-payments/:id", async (c) => {
     where: { id },
     include: {
       party: true,
-      currency: true
-    }
+      currency: true,
+    },
   });
 
   if (!partyTransaction) {
@@ -375,29 +387,29 @@ receiptsRoute.get("/party-payments/:id", async (c) => {
 
   const moneyTransaction = await prisma.moneyTransaction.findFirst({
     where: {
-      referenceId: partyTransaction.id
+      referenceId: partyTransaction.id,
     },
     include: {
       cashRegisterAccount: {
         include: {
           cashRegister: true,
-          currency: true
-        }
+          currency: true,
+        },
       },
       bankAccount: {
         include: {
-          currency: true
-        }
-      }
-    }
+          currency: true,
+        },
+      },
+    },
   });
 
   return c.json({
     data: {
       setting,
       partyTransaction,
-      moneyTransaction
-    }
+      moneyTransaction,
+    },
   });
 });
 
@@ -410,8 +422,8 @@ receiptsRoute.get("/party-payments/:id/html", async (c) => {
     where: { id },
     include: {
       party: true,
-      currency: true
-    }
+      currency: true,
+    },
   });
 
   if (!partyTransaction) {
@@ -420,24 +432,25 @@ receiptsRoute.get("/party-payments/:id/html", async (c) => {
 
   const moneyTransaction = await prisma.moneyTransaction.findFirst({
     where: {
-      referenceId: partyTransaction.id
+      referenceId: partyTransaction.id,
     },
     include: {
       cashRegisterAccount: {
         include: {
           cashRegister: true,
-          currency: true
-        }
+          currency: true,
+        },
       },
       bankAccount: {
         include: {
-          currency: true
-        }
-      }
-    }
+          currency: true,
+        },
+      },
+    },
   });
 
-  const currency = partyTransaction.currency.symbol || partyTransaction.currency.code;
+  const currency =
+    partyTransaction.currency.symbol || partyTransaction.currency.code;
 
   const isCustomerPayment =
     partyTransaction.type === PartyTransactionType.PAYMENT_RECEIVED;

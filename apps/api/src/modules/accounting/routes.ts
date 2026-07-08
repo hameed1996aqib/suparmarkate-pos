@@ -1821,6 +1821,7 @@ accountingRoute.get("/account-period-ledger", async (c) => {
   const fromQuery = c.req.query("from");
   const toQuery = c.req.query("to");
   const accountId = c.req.query("accountId");
+  const q = c.req.query("q")?.trim();
   const pagination = getPagePagination(c, { defaultLimit: 50, maxLimit: 250 });
   const fromDate = fromQuery ? new Date(fromQuery) : defaultFrom;
   const toDate = toQuery ? new Date(toQuery) : now;
@@ -1845,9 +1846,24 @@ accountingRoute.get("/account-period-ledger", async (c) => {
   }
 
   const accountFilter = accountId ? { accountId } : {};
+  const searchFilter = q
+    ? {
+        OR: [
+          { note: { contains: q, mode: "insensitive" as const } },
+          { account: { code: { contains: q, mode: "insensitive" as const } } },
+          { account: { name: { contains: q, mode: "insensitive" as const } } },
+          { party: { name: { contains: q, mode: "insensitive" as const } } },
+          { party: { phone: { contains: q, mode: "insensitive" as const } } },
+          { journalEntry: { entryNo: { contains: q, mode: "insensitive" as const } } },
+          { journalEntry: { description: { contains: q, mode: "insensitive" as const } } },
+          { journalEntry: { sourceType: { contains: q, mode: "insensitive" as const } } },
+        ],
+      }
+    : {};
 
   const periodWhere = {
     ...accountFilter,
+    ...searchFilter,
     journalEntry: {
       date: {
         gte: fromDate,
@@ -1960,6 +1976,7 @@ accountingRoute.get("/party-period-ledger", async (c) => {
   const fromQuery = c.req.query("from");
   const toQuery = c.req.query("to");
   const partyId = c.req.query("partyId");
+  const q = c.req.query("q")?.trim();
   const pagination = getPagePagination(c, { defaultLimit: 50, maxLimit: 250 });
   const fromDate = fromQuery ? new Date(fromQuery) : defaultFrom;
   const toDate = toQuery ? new Date(toQuery) : now;
@@ -1987,6 +2004,18 @@ accountingRoute.get("/party-period-ledger", async (c) => {
 
   const periodWhere = {
     partyId,
+    ...(q
+      ? {
+          OR: [
+            { note: { contains: q, mode: "insensitive" as const } },
+            { account: { code: { contains: q, mode: "insensitive" as const } } },
+            { account: { name: { contains: q, mode: "insensitive" as const } } },
+            { journalEntry: { entryNo: { contains: q, mode: "insensitive" as const } } },
+            { journalEntry: { description: { contains: q, mode: "insensitive" as const } } },
+            { journalEntry: { sourceType: { contains: q, mode: "insensitive" as const } } },
+          ],
+        }
+      : {}),
     journalEntry: {
       date: {
         gte: fromDate,

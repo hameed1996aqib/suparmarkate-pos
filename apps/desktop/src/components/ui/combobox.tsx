@@ -28,6 +28,44 @@ type ComboboxProps = {
   className?: string;
 };
 
+const digitMap: Record<string, string> = {
+  "\u06f0": "0",
+  "\u06f1": "1",
+  "\u06f2": "2",
+  "\u06f3": "3",
+  "\u06f4": "4",
+  "\u06f5": "5",
+  "\u06f6": "6",
+  "\u06f7": "7",
+  "\u06f8": "8",
+  "\u06f9": "9",
+  "\u0660": "0",
+  "\u0661": "1",
+  "\u0662": "2",
+  "\u0663": "3",
+  "\u0664": "4",
+  "\u0665": "5",
+  "\u0666": "6",
+  "\u0667": "7",
+  "\u0668": "8",
+  "\u0669": "9",
+};
+
+function normalizeSearchText(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\u06f0-\u06f9\u0660-\u0669]/g, (digit) => digitMap[digit] || digit)
+    .replace(/\u0643/g, "\u06a9")
+    .replace(/[\u064a\u0649]/g, "\u06cc")
+    .replace(/[\u064b-\u065f\u0670]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeBarcodeText(value: unknown) {
+  return normalizeSearchText(value).replace(/[\s\u200b\u200c\u200d\u2060-]/g, "");
+}
+
 export function Combobox({
   options,
   value,
@@ -47,12 +85,13 @@ export function Combobox({
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
 
   const selected = options.find((option) => option.value === value) || null;
-  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedBarcodeQuery = normalizeBarcodeText(query);
   const filteredOptions = useMemo(
     () =>
       normalizedQuery
-        ? options.filter((option) =>
-            [
+        ? options.filter((option) => {
+            const haystack = [
               option.label,
               option.description,
               option.meta,
@@ -61,12 +100,18 @@ export function Combobox({
               option.sku,
             ]
               .filter(Boolean)
-              .join(" ")
-              .toLowerCase()
-              .includes(normalizedQuery),
-          )
+              .join(" ");
+            const normalizedHaystack = normalizeSearchText(haystack);
+            const normalizedBarcodeHaystack = normalizeBarcodeText(haystack);
+
+            return (
+              normalizedHaystack.includes(normalizedQuery) ||
+              (!!normalizedBarcodeQuery &&
+                normalizedBarcodeHaystack.includes(normalizedBarcodeQuery))
+            );
+          })
         : options,
-    [normalizedQuery, options],
+    [normalizedBarcodeQuery, normalizedQuery, options],
   );
   const optionVirtualizer = useVirtualizer({
     count: filteredOptions.length,

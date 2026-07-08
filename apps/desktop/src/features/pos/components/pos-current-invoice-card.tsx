@@ -100,6 +100,7 @@ type PosCurrentInvoiceCardProps = {
     key: string,
     input: {
       quantity?: number;
+      unitId?: string;
       unitPrice?: number;
       discount?: number;
     },
@@ -130,15 +131,17 @@ function quickAmounts(payableTotal: number) {
 
 function stockTone(item: ServerCartItem) {
   const totalStock = Number(item.totalStock || 0);
+  const requiredBaseQuantity =
+    Number(item.quantity || 0) * Number(item.conversionRate || 1);
 
-  if (totalStock <= 0 || item.quantity > totalStock) {
+  if (totalStock <= 0 || requiredBaseQuantity > totalStock) {
     return {
       label: "کمبود موجودی",
       className: "border-destructive/30 bg-destructive/10 text-destructive",
     };
   }
 
-  if (totalStock <= item.quantity + 2) {
+  if (totalStock <= requiredBaseQuantity + 2) {
     return {
       label: `کم موجود: ${totalStock}`,
       className: "border-primary/30 bg-primary/10 text-primary",
@@ -213,14 +216,16 @@ export function PosCurrentInvoiceCard({
     itemsCount + 17,
   ).padStart(4, "0")}`;
   const hasStockIssue = items.some(
-    (item) => Number(item.quantity || 0) > Number(item.totalStock || 0),
+    (item) =>
+      Number(item.quantity || 0) * Number(item.conversionRate || 1) >
+      Number(item.totalStock || 0),
   );
 
   return (
     <Card className="overflow-hidden border-border bg-card shadow-sm">
       <CardHeader className="flex flex-row items-center justify-between border-b border-border px-4 py-3">
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+          <DropdownMenuTrigger>
             <Button size="icon-sm" variant="secondary">
               <MoreHorizontal className="h-4 w-4" />
             </Button>
@@ -334,22 +339,70 @@ export function PosCurrentInvoiceCard({
                       <TableRow
                         key={item.key}
                         className={
-                          item.quantity > Number(item.totalStock || 0)
+                          Number(item.quantity || 0) *
+                            Number(item.conversionRate || 1) >
+                          Number(item.totalStock || 0)
                             ? "bg-destructive/5"
                             : ""
                         }
                       >
                         <TableCell className="py-2">
                           <div className="flex items-center gap-2">
-                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-border bg-background text-primary">
-                              <ShoppingCart className="h-4 w-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="line-clamp-1 font-medium">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger>
+                                <Button
+                                  type="button"
+                                  size="icon-sm"
+                                  variant="outline"
+                                  className="h-10 w-10 shrink-0 rounded-lg text-primary"
+                                  title="انتخاب واحد فروش"
+                                  disabled={
+                                    (item.unitOptions || []).length <= 1
+                                  }
+                                >
+                                  <ShoppingCart className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent
+                                align="start"
+                                className="w-56"
+                                dir="rtl"
+                              >
+                                <DropdownMenuLabel>واحد فروش</DropdownMenuLabel>
+                                {(item.unitOptions || []).map((unit) => {
+                                  const selected = unit.unitId === item.unitId;
+
+                                  return (
+                                    <DropdownMenuItem
+                                      key={unit.unitId}
+                                      onClick={() =>
+                                        onUpdateItem(item.key, {
+                                          unitId: unit.unitId,
+                                        })
+                                      }
+                                    >
+                                      <span className="flex-1">
+                                        {unit.unitName}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {money(unit.salePrice, currency)}
+                                      </span>
+                                      {selected ? (
+                                        <Check className="size-4 text-primary" />
+                                      ) : null}
+                                    </DropdownMenuItem>
+                                  );
+                                })}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                            <div className="min-w-0 w-58">
+                              <p className="line-clamp-1 leading-6 font-medium">
                                 {item.productName}
                               </p>
                               <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                                <span>{item.unitName}</span>
+                                <span className="text-primary">
+                                  {item.unitName}
+                                </span>
                                 <span>·</span>
                                 <span>{item.barcode || "-"}</span>
                                 <Badge
@@ -384,7 +437,9 @@ export function PosCurrentInvoiceCard({
                               variant="secondary"
                               onClick={() =>
                                 onUpdateItem(item.key, {
-                                  quantity: normalizePosQuantity(item.quantity - 0.1),
+                                  quantity: normalizePosQuantity(
+                                    item.quantity - 0.1,
+                                  ),
                                 })
                               }
                             >
@@ -404,7 +459,9 @@ export function PosCurrentInvoiceCard({
                               variant="secondary"
                               onClick={() =>
                                 onUpdateItem(item.key, {
-                                  quantity: normalizePosQuantity(item.quantity + 1),
+                                  quantity: normalizePosQuantity(
+                                    item.quantity + 1,
+                                  ),
                                 })
                               }
                             >

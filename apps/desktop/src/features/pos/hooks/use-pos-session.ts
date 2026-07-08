@@ -156,26 +156,13 @@ export function usePosSession() {
   }, [payableTotal, effectivePaidAmount]);
 
   const filteredCustomers = useMemo(() => {
-    const query = customerSearchTerm.trim().toLowerCase();
-
-    if (!query) {
-      return customers.slice(0, 50);
-    }
-
-    return customers
-      .filter((item) => {
-        return (
-          item.name.toLowerCase().includes(query) ||
-          item.code?.toLowerCase().includes(query) ||
-          item.phone?.toLowerCase().includes(query) ||
-          item.email?.toLowerCase().includes(query)
-        );
-      })
-      .slice(0, 50);
-  }, [customers, customerSearchTerm]);
+    return customers.slice(0, 50);
+  }, [customers]);
 
   const hasCartStockIssue = cartItems.some((item) => {
-    return Number(item.quantity || 0) > Number(item.totalStock || 0);
+    const requiredBaseQuantity =
+      Number(item.quantity || 0) * Number(item.conversionRate || 1);
+    return requiredBaseQuantity > Number(item.totalStock || 0);
   });
   const selectedCustomerPartyId =
     selectedCustomer?.source?.includes("/api/parties") ||
@@ -313,6 +300,7 @@ export function usePosSession() {
     key: string,
     input: {
       quantity?: number;
+      unitId?: string;
       unitPrice?: number;
       discount?: number;
     },
@@ -328,13 +316,29 @@ export function usePosSession() {
 
         const quantity =
           input.quantity === undefined ? item.quantity : Math.max(0.001, Number(input.quantity));
+        const selectedUnit =
+          input.unitId && input.unitId !== item.unitId
+            ? item.unitOptions?.find((option) => option.unitId === input.unitId)
+            : null;
+        const unitId = selectedUnit?.unitId || item.unitId;
+        const unitName = selectedUnit?.unitName || item.unitName;
+        const conversionRate = selectedUnit?.conversionRate || item.conversionRate || 1;
+        const nextKey = `${item.productId}:${unitId}:${item.warehouseId}`;
         const unitPrice =
-          input.unitPrice === undefined ? item.unitPrice : Math.max(0, Number(input.unitPrice));
+          input.unitPrice !== undefined
+            ? Math.max(0, Number(input.unitPrice))
+            : selectedUnit
+              ? Math.max(0, Number(selectedUnit.salePrice || 0))
+              : item.unitPrice;
         const discount =
           input.discount === undefined ? item.discount : Math.max(0, Number(input.discount));
 
         return {
           ...item,
+          key: nextKey,
+          unitId,
+          unitName,
+          conversionRate,
           quantity,
           unitPrice,
           discount,
@@ -680,7 +684,7 @@ export function usePosSession() {
       loadProductList(baseUrl, productSearchTerm, {
         warehouseId: warehouse?.id || null,
       }),
-      loadCustomerList(baseUrl),
+      loadCustomerList(baseUrl, customerSearchTerm),
     ]);
 
     if (session?.session.id) {
@@ -690,10 +694,10 @@ export function usePosSession() {
     toast.success("اطلاعات POS بروزرسانی شد");
   }
 
-  async function loadCustomerList(baseUrl: string) {
+  async function loadCustomerList(baseUrl: string, search = customerSearchTerm) {
     try {
       setIsLoadingCustomers(true);
-      const res = await loadCustomers(baseUrl);
+      const res = await loadCustomers(baseUrl, search);
       setCustomers(res.data || []);
     } catch {
       setCustomers([]);
@@ -947,11 +951,14 @@ export function usePosSession() {
     key: string,
     input: {
       quantity?: number;
+      unitId?: string;
       unitPrice?: number;
       discount?: number;
     }
   ) {
-    applyOptimisticCartItemUpdate(key, input);
+    if (!input.unitId) {
+      applyOptimisticCartItemUpdate(key, input);
+    }
 
     if (sendWsMessage({ type: "UPDATE_CART_ITEM", key, ...input })) return;
     if (!apiBaseUrl || !session?.session.id) return;
@@ -1336,6 +1343,18 @@ export function usePosSession() {
     // loadProductList intentionally stays local to keep the POS hook compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, productCategoryId, productSearchTerm, warehouse?.id]);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+
+    const timer = window.setTimeout(() => {
+      void loadCustomerList(apiBaseUrl, customerSearchTerm);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+    // loadCustomerList intentionally stays local to keep the POS hook compact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBaseUrl, customerSearchTerm]);
 
   return {
     apiBaseUrl,

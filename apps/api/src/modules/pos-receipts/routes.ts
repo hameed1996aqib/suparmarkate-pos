@@ -4,8 +4,8 @@ import { prisma } from "../../lib/prisma";
 export const posReceiptsRoute = new Hono();
 
 function money(value: unknown) {
-  return new Intl.NumberFormat("fa-AF", {
-    maximumFractionDigits: 2
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
   }).format(Number(value || 0));
 }
 
@@ -50,10 +50,10 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
         include: {
           product: true,
           warehouse: true,
-          unit: true
-        }
-      }
-    }
+          unit: true,
+        },
+      },
+    },
   });
 
   if (!sale) {
@@ -86,6 +86,20 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
   <meta charset="utf-8" />
   <title>رسید فروش ${safeText((sale as any).invoiceNo || sale.id)}</title>
   <style>
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
     @page {
       size: ${widthMm}mm auto;
       margin: 0;
@@ -103,7 +117,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
       padding: 0;
       background: white;
       color: #000;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Zain", Tahoma, Arial, sans-serif;
     }
 
     body {
@@ -217,7 +231,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
   <div class="row">
     <span>تاریخ:</span>
-    <strong>${new Date((sale as any).createdAt).toLocaleString("fa-AF")}</strong>
+    <strong>${new Date((sale as any).createdAt).toLocaleString("en-AF")}</strong>
   </div>
 
   <div class="row">
@@ -248,10 +262,9 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
             <tr>
               <td>
                 <div class="product-name">${safeText(item.product?.name || "-")}</div>
-                <div class="muted">گدام: ${safeText(item.warehouse?.name || "-")}</div>
-                <div class="muted">واحد: ${safeText(item.unit?.shortName || item.unit?.name || "-")}</div>
+            
               </td>
-              <td>${money(qty)}</td>
+              <td>${money(qty)} ${safeText(item.unit?.shortName || item.unit?.name || "-")}</td>
               <td>${money(price)}</td>
               <td>${money(lineTotal)}</td>
             </tr>

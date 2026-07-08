@@ -47,6 +47,14 @@ type PosCartItem = {
   warehouseName: string | null;
   unitId: string;
   unitName: string;
+  conversionRate: number;
+  unitOptions: Array<{
+    unitId: string;
+    unitName: string;
+    conversionRate: number;
+    salePrice: number;
+    isDefaultSale: boolean;
+  }>;
   quantity: number;
   unitPrice: number;
   discount: number;
@@ -222,6 +230,10 @@ export function updatePosSessionSettings(input: {
     const cart = getPosCart(input.sessionId);
     for (const item of cart.items) {
       item.unitPrice = (item.unitPrice * currentRate) / nextRate;
+      item.unitOptions = (item.unitOptions || []).map((option) => ({
+        ...option,
+        salePrice: (option.salePrice * currentRate) / nextRate
+      }));
       item.discount = (item.discount * currentRate) / nextRate;
       item.lineTotal = Math.max(0, item.quantity * item.unitPrice - item.discount);
     }
@@ -229,6 +241,10 @@ export function updatePosSessionSettings(input: {
     for (const heldCart of heldCartsBySession.get(input.sessionId) || []) {
       for (const item of heldCart.cart.items) {
         item.unitPrice = (item.unitPrice * currentRate) / nextRate;
+        item.unitOptions = (item.unitOptions || []).map((option) => ({
+          ...option,
+          salePrice: (option.salePrice * currentRate) / nextRate
+        }));
         item.discount = (item.discount * currentRate) / nextRate;
         item.lineTotal = Math.max(0, item.quantity * item.unitPrice - item.discount);
       }
@@ -292,37 +308,84 @@ export function updatePosCartItem(input: {
   sessionId: string;
   key: string;
   quantity?: number;
+  unitId?: string;
   unitPrice?: number;
   discount?: number;
 }) {
   const cart = getPosCart(input.sessionId);
+  let updatedItem: PosCartItem | null = null;
+  const remainingItems: PosCartItem[] = [];
+  let originalIndex = -1;
 
-  cart.items = cart.items.map((item) => {
-    if (item.key !== input.key) return item;
+  for (const item of cart.items) {
+    if (item.key !== input.key) {
+      remainingItems.push(item);
+      continue;
+    }
+
+    originalIndex = remainingItems.length;
 
     const quantity =
       input.quantity === undefined
         ? item.quantity
         : normalizeCartQuantity(input.quantity, item.quantity);
 
+    const selectedUnit =
+      input.unitId && input.unitId !== item.unitId
+        ? item.unitOptions?.find((option) => option.unitId === input.unitId)
+        : null;
+    const unitId = selectedUnit?.unitId || item.unitId;
+    const unitName = selectedUnit?.unitName || item.unitName;
+    const conversionRate = selectedUnit?.conversionRate || item.conversionRate || 1;
     const unitPrice =
-      input.unitPrice === undefined
-        ? item.unitPrice
-        : Math.max(0, Number(input.unitPrice || 0));
+      input.unitPrice !== undefined
+        ? Math.max(0, Number(input.unitPrice || 0))
+        : selectedUnit
+          ? Math.max(0, Number(selectedUnit.salePrice || 0))
+          : item.unitPrice;
 
     const discount =
       input.discount === undefined
         ? item.discount
         : Math.max(0, Number(input.discount || 0));
+    const key = `${item.productId}:${unitId}:${item.warehouseId}`;
 
-    return {
+    updatedItem = {
       ...item,
+      key,
+      unitId,
+      unitName,
+      conversionRate,
       quantity,
       unitPrice,
       discount,
       lineTotal: Math.max(0, quantity * unitPrice - discount)
     };
-  });
+  }
+
+  if (updatedItem) {
+    const existingIndex = remainingItems.findIndex((item) => item.key === updatedItem?.key);
+    if (existingIndex >= 0) {
+      const existing = remainingItems[existingIndex];
+      const quantity = normalizeCartQuantity(
+        existing.quantity + updatedItem.quantity,
+        existing.quantity
+      );
+      const discount = existing.discount + updatedItem.discount;
+
+      remainingItems[existingIndex] = {
+        ...existing,
+        quantity,
+        unitPrice: updatedItem.unitPrice,
+        discount,
+        lineTotal: Math.max(0, quantity * updatedItem.unitPrice - discount)
+      };
+    } else {
+      remainingItems.splice(Math.max(0, originalIndex), 0, updatedItem);
+    }
+  }
+
+  cart.items = remainingItems;
 
   cart.updatedAt = new Date();
 
@@ -414,6 +477,14 @@ function addPayloadToCart(input: {
 
   const exchangeRate = Number(getPosSessionSettings(input.sessionId).exchangeRate || 1);
   const unitPrice = Number(defaultSaleUnit?.salePrice || 0) / exchangeRate;
+  const conversionRate = Number(defaultSaleUnit?.conversionRate || 1);
+  const unitOptions = (product.units || []).map((item: any) => ({
+    unitId: item.unitId,
+    unitName: item.unit?.shortName || item.unit?.name || "Unit",
+    conversionRate: Number(item.conversionRate || 1),
+    salePrice: Number(item.salePrice || 0) / exchangeRate,
+    isDefaultSale: Boolean(item.isDefaultSale)
+  }));
   const recommendedLot = input.payload.recommendedLot;
   const warehouseId = recommendedLot?.warehouseId || "";
   const warehouseName = recommendedLot?.warehouse?.name || null;
@@ -426,6 +497,8 @@ function addPayloadToCart(input: {
   if (existing) {
     existing.quantity += 1;
     existing.totalStock = Number(input.payload.totalStock || 0);
+    existing.conversionRate = conversionRate;
+    existing.unitOptions = unitOptions;
     existing.lineTotal = Math.max(0, existing.quantity * existing.unitPrice - existing.discount);
   } else {
     cart.items.unshift({
@@ -437,6 +510,8 @@ function addPayloadToCart(input: {
       warehouseName,
       unitId,
       unitName,
+      conversionRate,
+      unitOptions,
       quantity: 1,
       unitPrice,
       discount: 0,
@@ -479,7 +554,10 @@ export async function handlePosBarcodeScan(input: {
 
   const product = await prisma.product.findFirst({
     where: {
-      barcode: { in: barcodeCandidates }
+      OR: [
+        { barcode: { in: barcodeCandidates } },
+        { barcodeNormalized: { in: barcodeCandidates } }
+      ]
     },
     include: {
       baseUnit: true,
@@ -857,6 +935,7 @@ export function startPosWebSocketServer(port = 4001) {
             sessionId,
             key: String(message.key || ""),
             quantity: message.quantity === undefined ? undefined : Number(message.quantity),
+            unitId: message.unitId === undefined ? undefined : String(message.unitId),
             unitPrice: message.unitPrice === undefined ? undefined : Number(message.unitPrice),
             discount: message.discount === undefined ? undefined : Number(message.discount)
           });

@@ -73,6 +73,7 @@ export function CurrencyHistoryPage() {
     try {
       const params = new URLSearchParams();
       if (currencyId) params.set("currencyId", currencyId);
+      if (query.trim()) params.set("search", query.trim());
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       params.set("page", String(page));
@@ -103,6 +104,12 @@ export function CurrencyHistoryPage() {
     void loadData(1);
   }, [currencyId, from, to]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadData(1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const baseCurrency = currencies.find((currency) => currency.isBase);
   const activeCurrencies = currencies.filter((currency) => currency.isActive !== false);
   const isLatestRate = (rate: CurrencyRate) => {
@@ -114,25 +121,6 @@ export function CurrencyHistoryPage() {
       Number(currency.latestRate || 0) === Number(rate.rateToBase || 0)
     );
   };
-
-  const filteredRates = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return rates;
-
-    return rates.filter((rate) => {
-      const currency = rate.currency;
-      return [
-        currency?.code,
-        currency?.name,
-        rate.note,
-        String(rate.rateToBase)
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle);
-    });
-  }, [rates, query]);
 
   const currencyOptions = currencies.map((currency) => ({
     value: currency.id,
@@ -275,14 +263,14 @@ export function CurrencyHistoryPage() {
                       در حال خواندن...
                     </TableCell>
                   </TableRow>
-                ) : filteredRates.length === 0 ? (
+                ) : rates.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
                       نرخ ثبت نشده است
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredRates.map((rate) => (
+                  rates.map((rate) => (
                     <TableRow key={rate.id}>
                       <TableCell className="font-medium">
                         {rate.currency?.code || rate.currencyId}

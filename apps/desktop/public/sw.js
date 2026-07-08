@@ -1,5 +1,5 @@
-const CACHE_NAME = "muhaseb-shell-v2";
-const ASSET_CACHE = "muhaseb-assets-v2";
+const CACHE_NAME = "muhaseb-shell-v3";
+const ASSET_CACHE = "muhaseb-assets-v3";
 
 const PRECACHE_URLS = ["/manifest.webmanifest", "/favicon.png", "/logo.png"];
 

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import type { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
@@ -128,7 +129,9 @@ function buildStockMovementSearchWhere(search: string | null | undefined) {
       ...(barcodeSearch
         ? [
             { product: { barcode: barcodeSearch } },
+            { product: { barcodeNormalized: barcodeSearch } },
             { product: { barcode: { contains: barcodeSearch, mode: "insensitive" as const } } },
+            { product: { barcodeNormalized: { contains: barcodeSearch, mode: "insensitive" as const } } },
             { product: { sku: { contains: barcodeSearch, mode: "insensitive" as const } } }
           ]
         : [])
@@ -152,7 +155,9 @@ function buildStockBalanceSearchWhere(search: string | null | undefined) {
       ...(barcodeSearch
         ? [
             { product: { barcode: barcodeSearch } },
+            { product: { barcodeNormalized: barcodeSearch } },
             { product: { barcode: { contains: barcodeSearch, mode: "insensitive" as const } } },
+            { product: { barcodeNormalized: { contains: barcodeSearch, mode: "insensitive" as const } } },
             { product: { sku: { contains: barcodeSearch, mode: "insensitive" as const } } }
           ]
         : [])
@@ -164,6 +169,8 @@ inventoryRoute.get("/stock", async (c) => {
   const productId = c.req.query("productId");
   const warehouseId = c.req.query("warehouseId");
   const search = c.req.query("search");
+  const sortBy = c.req.query("sortBy");
+  const sortOrder = c.req.query("sortOrder") === "asc" ? "asc" : "desc";
   const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 100 });
   const where = {
     quantityBase: { gt: 0 },
@@ -171,6 +178,12 @@ inventoryRoute.get("/stock", async (c) => {
     ...(warehouseId ? { warehouseId } : {}),
     ...buildStockBalanceSearchWhere(search)
   };
+  const orderBy: Prisma.StockBalanceOrderByWithRelationInput[] =
+    sortBy === "quantity"
+      ? [{ quantityBase: sortOrder }, { product: { name: "asc" } }]
+      : sortBy === "value"
+        ? [{ valueBase: sortOrder }, { product: { name: "asc" } }]
+        : [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }];
 
   const [balances, total] = await Promise.all([
     prisma.stockBalance.findMany({
@@ -183,7 +196,7 @@ inventoryRoute.get("/stock", async (c) => {
       },
       warehouse: true
     },
-    orderBy: [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }],
+    orderBy,
     skip: pagination.skip,
     take: pagination.limit
   }),

@@ -165,7 +165,7 @@ export const PosProductSearchCard = forwardRef<
   const productListRef = useRef<HTMLDivElement | null>(null);
   const [barcode, setBarcode] = useState("");
   const [listWidth, setListWidth] = useState(0);
-  const columnCount = listWidth >= 1280 ? 4 : listWidth >= 640 ? 4 : 1;
+  const columnCount = listWidth >= 1280 ? 4 : listWidth >= 640 ? 3 : 1;
   const rows = useMemo(() => {
     const nextRows: ProductSearchItem[][] = [];
 
@@ -342,6 +342,7 @@ export const PosProductSearchCard = forwardRef<
                     const hasBarcode = Boolean(product.barcode);
                     const price = getDefaultSalePrice(product) / currencyRate;
                     const availability = productAvailability(product);
+
                     return (
                       <div
                         key={product.id}

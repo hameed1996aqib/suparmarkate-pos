@@ -55,6 +55,7 @@ export async function updateCartItem(
   key: string,
   input: {
     quantity?: number;
+    unitId?: string;
     unitPrice?: number;
     discount?: number;
   }
@@ -252,9 +253,18 @@ function normalizeCustomer(item: any, source?: string): CustomerOption | null {
   };
 }
 
-export async function loadCustomers(baseUrl: string) {
+export async function loadCustomers(baseUrl: string, search = "") {
+  const params = new URLSearchParams({
+    type: "CUSTOMER",
+    limit: "50",
+  });
+
+  if (search.trim()) {
+    params.set("search", search.trim());
+  }
+
   const urls = [
-    "/api/parties/lookup?type=CUSTOMER&limit=100",
+    `/api/parties/lookup?${params.toString()}`,
   ];
 
   for (const url of urls) {

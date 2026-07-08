@@ -230,6 +230,26 @@ declare global {
   }
 }
 
+function createClientId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function installAuthenticatedFetch() {
   if (window.__belalAuthFetchInstalled) return;
 
@@ -245,7 +265,7 @@ function installAuthenticatedFetch() {
 
     let deviceCode = localStorage.getItem(POS_DEVICE_CODE_KEY);
     if (!deviceCode) {
-      deviceCode = `POS-${crypto.randomUUID()}`;
+      deviceCode = `POS-${createClientId()}`;
       localStorage.setItem(POS_DEVICE_CODE_KEY, deviceCode);
     }
 
@@ -1912,7 +1932,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
         );
       } else {
         const localRow = {
-          id: editingRow?.id || crypto.randomUUID(),
+          id: editingRow?.id || createClientId(),
           ...payload,
           status: payload.status || "فعال",
         };
@@ -3099,7 +3119,7 @@ function makeProductUnitLine(
   patch: Partial<ProductUnitForm> = {},
 ): ProductUnitForm {
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     unitId: units[0]?.id || "",
     conversionRate: 1,
     purchasePrice: 0,
@@ -3147,7 +3167,7 @@ function makeSaleLine(
     product?.units?.[0];
 
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     productId: product?.id || "",
     warehouseId: product?.defaultWarehouseId || warehouses[0]?.id || "",
     unitId: saleUnit?.unitId || product?.baseUnitId || "",
@@ -3168,7 +3188,7 @@ function makePurchaseLine(
     product?.units?.[0];
 
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     productId: product?.id || "",
     warehouseId: warehouses[0]?.id || "",
     unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
@@ -3327,6 +3347,22 @@ function SalesPage() {
   ) => {
     setIsLoading(true);
     try {
+      const salesParams = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+      });
+      const returnsParams = new URLSearchParams({
+        page: String(returnsPage),
+        limit: "20",
+      });
+      for (const [key, value] of new URLSearchParams(dateRangeQuery(from, to))) {
+        salesParams.set(key, value);
+        returnsParams.set(key, value);
+      }
+      if (query.trim()) {
+        salesParams.set("search", query.trim());
+        returnsParams.set("search", query.trim());
+      }
       const [
         salesRes,
         saleReturnsRes,
@@ -3337,12 +3373,8 @@ function SalesPage() {
         cashRes,
         bankRes,
       ] = await Promise.all([
-        fetch(
-          `${API_BASE_URL}/api/sales?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
-        ).then((res) => res.json()),
-        fetch(
-          `${API_BASE_URL}/api/sale-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`,
-        ).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/sales?${salesParams.toString()}`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/sale-returns?${returnsParams.toString()}`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
           res.json(),
         ),
@@ -3419,6 +3451,12 @@ function SalesPage() {
     void loadSalesData();
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadSalesData(1, 1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const searchSaleProducts = async (value: string) => {
     const query = value.trim();
     const requestSeq = saleProductSearchSeqRef.current + 1;
@@ -3434,19 +3472,6 @@ function SalesPage() {
       // Product lookup search is best-effort; form submission still validates.
     }
   };
-
-  const filteredSales = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return sales;
-
-    return sales.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [query, sales]);
 
   const subtotal = saleLines.reduce(
     (sum, line) =>
@@ -3618,7 +3643,7 @@ function SalesPage() {
         ? current.map((line) =>
             line.id === editingSaleLineId ? saleLineDraft : line,
           )
-        : [...current, { ...saleLineDraft, id: crypto.randomUUID() }],
+        : [...current, { ...saleLineDraft, id: createClientId() }],
     );
     setSaleItemDialogOpen(false);
   };
@@ -4079,7 +4104,7 @@ function SalesPage() {
                 { key: "paid", label: "پرداخت" },
                 { key: "status", label: "وضعیت" },
               ]}
-              rows={filteredSales}
+              rows={sales}
               pagination={salesPagination}
               onPageChange={(page) => void loadSalesData(page)}
               onDetails={openSaleDetails}
@@ -4759,6 +4784,22 @@ function PurchasesPage() {
   ) => {
     setIsLoading(true);
     try {
+      const purchasesParams = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+      });
+      const returnsParams = new URLSearchParams({
+        page: String(returnsPage),
+        limit: "20",
+      });
+      for (const [key, value] of new URLSearchParams(dateRangeQuery(from, to))) {
+        purchasesParams.set(key, value);
+        returnsParams.set(key, value);
+      }
+      if (query.trim()) {
+        purchasesParams.set("search", query.trim());
+        returnsParams.set("search", query.trim());
+      }
       const [
         purchasesRes,
         purchaseReturnsRes,
@@ -4769,12 +4810,8 @@ function PurchasesPage() {
         cashRes,
         bankRes,
       ] = await Promise.all([
-        fetch(
-          `${API_BASE_URL}/api/purchases?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
-        ).then((res) => res.json()),
-        fetch(
-          `${API_BASE_URL}/api/purchase-returns?page=${returnsPage}&limit=20&${dateRangeQuery(from, to)}`,
-        ).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/purchases?${purchasesParams.toString()}`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/purchase-returns?${returnsParams.toString()}`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) =>
           res.json(),
         ),
@@ -4854,6 +4891,12 @@ function PurchasesPage() {
     void loadPurchasesData();
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadPurchasesData(1, 1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const searchPurchaseProducts = async (value: string) => {
     const query = value.trim();
     const requestSeq = purchaseProductSearchSeqRef.current + 1;
@@ -4869,19 +4912,6 @@ function PurchasesPage() {
       // Product lookup search is best-effort; form submission still validates.
     }
   };
-
-  const filteredPurchases = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return purchases;
-
-    return purchases.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [purchases, query]);
 
   const selectedCurrency = currencies.find(
     (currency) => currency.id === form.currencyId,
@@ -5054,7 +5084,7 @@ function PurchasesPage() {
         ? current.map((line) =>
             line.id === editingPurchaseLineId ? purchaseLineDraft : line,
           )
-        : [...current, { ...purchaseLineDraft, id: crypto.randomUUID() }],
+        : [...current, { ...purchaseLineDraft, id: createClientId() }],
     );
     setPurchaseItemDialogOpen(false);
   };
@@ -5577,7 +5607,7 @@ function PurchasesPage() {
                 { key: "paid", label: "پرداخت" },
                 { key: "status", label: "وضعیت" },
               ]}
-              rows={filteredPurchases}
+              rows={purchases}
               pagination={purchasesPagination}
               onPageChange={(page) => void loadPurchasesData(page)}
               onDetails={openPurchaseDetails}
@@ -6496,6 +6526,15 @@ function CashBankPage() {
   const loadCashBankData = async (page = transactionsPagination?.page || 1) => {
     setIsLoading(true);
     try {
+      const transferParams = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+      });
+      for (const [key, value] of new URLSearchParams(dateRangeQuery(from, to))) {
+        transferParams.set(key, value);
+      }
+      if (query.trim()) transferParams.set("search", query.trim());
+      if (transactionFilter !== "ALL") transferParams.set("kind", transactionFilter);
       const [
         cashRes,
         bankRes,
@@ -6506,9 +6545,7 @@ function CashBankPage() {
       ] = await Promise.all([
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
-        fetch(
-          `${API_BASE_URL}/api/money-transfers?page=${page}&limit=20&${dateRangeQuery(from, to)}`,
-        ).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/money-transfers?${transferParams.toString()}`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
           res.json(),
         ),
@@ -6563,6 +6600,12 @@ function CashBankPage() {
     void loadCashBankData();
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadCashBankData(1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, transactionFilter]);
+
   const cashTotal = paymentAccounts
     .filter((account) => account.type === "CASH")
     .reduce((sum, account) => sum + Number(account.balance || 0), 0);
@@ -6577,30 +6620,6 @@ function CashBankPage() {
     (sum, supplier) => sum + partyBalance(supplier, "SUPPLIER"),
     0,
   );
-
-  const filteredTransactions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const filteredByType = transactions.filter((row) => {
-      if (transactionFilter === "ALL") return true;
-      if (transactionFilter === "RECEIPT") {
-        return row.typeRaw === "CUSTOMER_PAYMENT" || row.directionRaw === "IN";
-      }
-      if (transactionFilter === "PAYMENT") {
-        return row.typeRaw === "SUPPLIER_PAYMENT" || row.directionRaw === "OUT";
-      }
-      return row.typeRaw === "TRANSFER";
-    });
-
-    if (!normalized) return filteredByType;
-
-    return filteredByType.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [query, transactionFilter, transactions]);
 
   const treasuryAccountRows = useMemo(() => {
     const rows = paymentAccounts.map((account) => ({
@@ -7186,7 +7205,7 @@ function CashBankPage() {
                     { key: "user", label: "کاربر" },
                     { key: "note", label: "یادداشت" },
                   ]}
-                  rows={filteredTransactions}
+                  rows={transactions}
                   pagination={transactionsPagination}
                   onPageChange={(page) => void loadCashBankData(page)}
                   onEdit={openCashBankCorrection}
@@ -9266,6 +9285,8 @@ function InventoryPage() {
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [query, setQuery] = useState("");
+  const [stockSortBy, setStockSortBy] = useState("");
+  const [stockSortOrder, setStockSortOrder] = useState<"asc" | "desc">("desc");
   const [movementQueries, setMovementQueries] = useState({
     opening: "",
     increase: "",
@@ -9279,6 +9300,7 @@ function InventoryPage() {
   );
   const [isLoading, setIsLoading] = useState(true);
   const inventoryProductSearchSeqRef = useRef(0);
+  const didMountMovementQueryRef = useRef(false);
   const [openingEdit, setOpeningEdit] = useState<DataRow | null>(null);
   const [openingEditForm, setOpeningEditForm] = useState({
     quantity: 0,
@@ -9350,6 +9372,17 @@ function InventoryPage() {
   ) => {
     setIsLoading(true);
     try {
+      const stockParams = new URLSearchParams({
+        page: String(pages.stock),
+        limit: "20",
+      });
+
+      if (query.trim()) stockParams.set("search", query.trim());
+      if (stockSortBy) {
+        stockParams.set("sortBy", stockSortBy);
+        stockParams.set("sortOrder", stockSortOrder);
+      }
+
       const [
         stockRes,
         productRes,
@@ -9361,9 +9394,9 @@ function InventoryPage() {
         damageRes,
         transferRes,
       ] = await Promise.all([
-        fetch(
-          `${API_BASE_URL}/api/inventory/stock?page=${pages.stock}&limit=20&search=${encodeURIComponent(query.trim())}`,
-        ).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`).then((res) =>
+          res.json(),
+        ),
         fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
           res.json(),
         ),
@@ -9494,7 +9527,31 @@ function InventoryPage() {
     return () => window.clearTimeout(timer);
     // loadInventoryData intentionally stays local to keep this page compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, stockSortBy, stockSortOrder]);
+
+  useEffect(() => {
+    if (!didMountMovementQueryRef.current) {
+      didMountMovementQueryRef.current = true;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const firstPages = {
+        stock: movementPages.stock,
+        opening: 1,
+        increase: 1,
+        decrease: 1,
+        damage: 1,
+        transfer: 1,
+      };
+      setMovementPages(firstPages);
+      void loadInventoryData(firstPages, movementQueries);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+    // loadInventoryData intentionally stays local to keep this page compact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movementQueries]);
 
   const searchInventoryProducts = async (value: string) => {
     const query = value.trim();
@@ -9571,19 +9628,6 @@ function InventoryPage() {
     };
   }, [dialogOpen, form.productId, form.warehouseId, form.type]);
 
-  const filteredRows = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return stockRows;
-
-    return stockRows.filter((row) =>
-      Object.values(row).some((value) =>
-        String(value ?? "")
-          .toLowerCase()
-          .includes(normalized),
-      ),
-    );
-  }, [query, stockRows]);
-
   const setMovementQuery = (
     key: keyof typeof movementQueries,
     value: string,
@@ -9592,7 +9636,6 @@ function InventoryPage() {
     const nextPages = { ...movementPages, [key]: 1 };
     setMovementQueries(nextQueries);
     setMovementPages(nextPages);
-    void loadInventoryData(nextPages, nextQueries);
   };
 
   const openOpeningEdit = (row: DataRow) => {
@@ -9868,6 +9911,31 @@ function InventoryPage() {
                     className="w-72 ps-9"
                   />
                 </div>
+                <select
+                  value={stockSortBy}
+                  onChange={(event) => {
+                    setMovementPages((current) => ({ ...current, stock: 1 }));
+                    setStockSortBy(event.target.value);
+                  }}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">مرتب‌سازی پیش‌فرض</option>
+                  <option value="quantity">بر اساس مقدار</option>
+                  <option value="value">بر اساس ارزش موجودی</option>
+                </select>
+                <select
+                  value={stockSortOrder}
+                  onChange={(event) => {
+                    setMovementPages((current) => ({ ...current, stock: 1 }));
+                    setStockSortOrder(
+                      event.target.value === "asc" ? "asc" : "desc",
+                    );
+                  }}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="desc">زیاد به کم</option>
+                  <option value="asc">کم به زیاد</option>
+                </select>
                 <Button
                   variant="outline"
                   onClick={refreshInventoryFromFirstPage}
@@ -9884,10 +9952,11 @@ function InventoryPage() {
                   { key: "barcode", label: "بارکود" },
                   { key: "warehouse", label: "گدام" },
                   { key: "quantity", label: "مقدار" },
+                  { key: "value", label: "ارزش موجودی" },
                   { key: "expiry", label: "نزدیک‌ترین انقضا" },
                   { key: "status", label: "وضعیت" },
                 ]}
-                rows={filteredRows}
+                rows={stockRows}
                 pagination={movementPagination.stock}
                 onPageChange={(page) => changeMovementPage("stock", page)}
               />
@@ -10706,6 +10775,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
       barcode: item.barcode || "-",
       warehouse: item.warehouseName || "-",
       quantity: `${new Intl.NumberFormat("en-US").format(Number(item.totalQuantity || 0))} ${item.baseUnitName || ""}`,
+      value: money(Number(item.valueBase || 0)),
       expiry:
         Array.isArray(item.lots) && item.lots[0]?.expiryDate
           ? new Date(item.lots[0].expiryDate).toLocaleDateString("fa-AF")

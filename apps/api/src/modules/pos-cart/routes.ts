@@ -40,13 +40,27 @@ posCartRoute.get("/sessions/:id", (c) => {
   <meta charset="utf-8" />
   <title>POS Cart</title>
   <style>
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
     * {
       box-sizing: border-box;
     }
 
     body {
       margin: 0;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Zain", Tahoma, Arial, sans-serif;
       background: #020617;
       color: #f8fafc;
       direction: rtl;

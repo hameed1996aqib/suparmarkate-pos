@@ -80,11 +80,26 @@ function parseDate(value: string | null | undefined) {
 
 salesRoute.get("/", async (c) => {
   const customerId = c.req.query("customerId");
+  const search = c.req.query("search")?.trim();
   const pagination = getPagePagination(c);
   const saleDate = getRecentDateRange(c);
   const where = {
     ...(customerId ? { customerId } : {}),
-    saleDate
+    saleDate,
+    ...(search
+      ? {
+          OR: [
+            { invoiceNo: { contains: search, mode: "insensitive" as const } },
+            { note: { contains: search, mode: "insensitive" as const } },
+            { customer: { name: { contains: search, mode: "insensitive" as const } } },
+            { customer: { phone: { contains: search, mode: "insensitive" as const } } },
+            { customer: { code: { contains: search, mode: "insensitive" as const } } },
+            { items: { some: { product: { name: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcode: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcodeNormalized: { contains: normalizeBarcodeText(search), mode: "insensitive" as const } } } } },
+          ],
+        }
+      : {})
   };
 
   const [items, total, summary] = await Promise.all([
@@ -135,7 +150,10 @@ salesRoute.get("/scan/:barcode", async (c) => {
 
   const product = await prisma.product.findFirst({
     where: {
-      barcode: { in: barcodeCandidates }
+      OR: [
+        { barcode: { in: barcodeCandidates } },
+        { barcodeNormalized: { in: barcodeCandidates } }
+      ]
     },
     include: {
       baseUnit: true,

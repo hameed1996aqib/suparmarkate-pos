@@ -252,6 +252,7 @@ export function AccountPeriodBalancesPage() {
 
       if (tab === "account") params.set("accountId", accountId);
       if (tab === "party") params.set("partyId", partyId);
+      if (query.trim()) params.set("q", query.trim());
 
       const res = await fetch(`${endpoint}?${params}`);
       const json = await res.json().catch(() => null);
@@ -290,6 +291,7 @@ export function AccountPeriodBalancesPage() {
         });
         if (activeTab === "account") params.set("accountId", selectedAccountId);
         if (activeTab === "party") params.set("partyId", selectedPartyId);
+        if (query.trim()) params.set("q", query.trim());
 
         const res = await fetch(`${endpoint}?${params}`);
         const json = await res.json().catch(() => null);
@@ -316,6 +318,12 @@ export function AccountPeriodBalancesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadReport(activeTab, selectedAccountId, selectedPartyId, 1), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const changeTab = (value: string) => {
     const tab = value as ReportTab;
     setActiveTab(tab);
@@ -337,28 +345,6 @@ export function AccountPeriodBalancesPage() {
     if (partyId && !selectedPartyId) setSelectedPartyId(partyId);
     loadReport("party", "", partyId);
   };
-
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredRows = useMemo(
-    () =>
-      report.rows.filter((row) => {
-        const haystack = [
-          row.entryNo,
-          row.description,
-          row.note,
-          row.sourceType,
-          row.account.code,
-          row.account.name,
-          row.party?.name,
-          row.party?.phone,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        return !normalizedQuery || haystack.includes(normalizedQuery);
-      }),
-    [normalizedQuery, report.rows],
-  );
 
   const totals = report.totals;
   const reportTitle =
@@ -453,7 +439,7 @@ export function AccountPeriodBalancesPage() {
 
             <TabsContent value="all" className="mt-0 space-y-3">
               <PaginatedLedgerTable
-                rows={filteredRows}
+                rows={report.rows}
                 printRows={printRows}
                 pagination={report.pagination}
                 onPageChange={(page) => loadReport("all", "", "", page)}
@@ -480,7 +466,7 @@ export function AccountPeriodBalancesPage() {
                 />
               </div>
               <PaginatedLedgerTable
-                rows={filteredRows}
+                rows={report.rows}
                 printRows={printRows}
                 pagination={report.pagination}
                 onPageChange={(page) => loadReport("account", selectedAccountId, "", page)}
@@ -507,7 +493,7 @@ export function AccountPeriodBalancesPage() {
                 />
               </div>
               <PaginatedLedgerTable
-                rows={filteredRows}
+                rows={report.rows}
                 printRows={printRows}
                 pagination={report.pagination}
                 onPageChange={(page) => loadReport("party", "", selectedPartyId, page)}

@@ -58,7 +58,7 @@ export function PosPage() {
       </div>
 
       <div
-        className="grid gap-4 2xl:grid-cols-[600px_1fr]"
+        className="grid gap-4 2xl:grid-cols-[700px_1fr]"
         style={{ direction: "ltr" }}
       >
         <section dir="rtl" className="space-y-4">
@@ -124,7 +124,9 @@ export function PosPage() {
             totalProducts={pos.productPagination.total}
             warehouseName={pos.warehouse?.name}
             currencyCode={pos.currency?.code}
-            currencyRate={pos.currency?.isBase ? 1 : Number(pos.currency?.latestRate || 1)}
+            currencyRate={
+              pos.currency?.isBase ? 1 : Number(pos.currency?.latestRate || 1)
+            }
             apiBaseUrl={pos.apiBaseUrl}
             isWsConnected={pos.isWsConnected}
             onSearchChange={pos.setProductSearchTerm}

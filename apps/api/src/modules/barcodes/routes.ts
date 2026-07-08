@@ -28,7 +28,11 @@ function getProductBarcodeUrls(c: any, productId: string) {
 async function generateUniqueProductBarcode() {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const barcode = generateProductBarcodeCandidate();
-    const existing = await prisma.product.findUnique({ where: { barcode } });
+    const existing = await prisma.product.findFirst({
+      where: {
+        OR: [{ barcode }, { barcodeNormalized: normalizeBarcodeText(barcode) }],
+      },
+    });
 
     if (!existing) return barcode;
   }
@@ -42,12 +46,26 @@ async function ensureProductBarcode(id: string) {
   });
 
   if (!product || product.deletedAt) return null;
-  if (product.barcode && !product.barcode.startsWith("PRD-")) return product;
+  if (product.barcode && !product.barcode.startsWith("PRD-")) {
+    const barcodeNormalized = normalizeBarcodeText(product.barcode);
+
+    if (barcodeNormalized && product.barcodeNormalized !== barcodeNormalized) {
+      return prisma.product.update({
+        where: { id },
+        data: { barcodeNormalized }
+      });
+    }
+
+    return product;
+  }
+
+  const barcode = await generateUniqueProductBarcode();
 
   return prisma.product.update({
     where: { id },
     data: {
-      barcode: await generateUniqueProductBarcode()
+      barcode,
+      barcodeNormalized: normalizeBarcodeText(barcode)
     }
   });
 }
@@ -193,11 +211,25 @@ barcodesRoute.get("/products/:id/label", async (c) => {
   <meta charset="utf-8" />
   <title>چاپ بارکود - ${escapeHtml(product.name)}</title>
   <style>
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
     @page { size: ${layout === "sheet" ? "A4" : "58mm 38mm"}; margin: ${layout === "sheet" ? "8mm" : "2mm"}; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Zain", Tahoma, Arial, sans-serif;
       background: #fff;
       color: #111827;
     }

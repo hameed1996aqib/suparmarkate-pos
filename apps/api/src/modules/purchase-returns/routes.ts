@@ -14,6 +14,7 @@ import {
 } from "../../generated/prisma/enums";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
+import { normalizeBarcodeText } from "../../lib/barcode";
 
 export const purchaseReturnsRoute = new Hono();
 
@@ -60,7 +61,24 @@ async function getTreasuryAccount(type: "CASH" | "BANK", id: string) {
 
 purchaseReturnsRoute.get("/", async (c) => {
   const pagination = getPagePagination(c);
-  const where = { createdAt: getRecentDateRange(c) };
+  const search = c.req.query("search")?.trim();
+  const where = {
+    createdAt: getRecentDateRange(c),
+    ...(search
+      ? {
+          OR: [
+            { returnNo: { contains: search, mode: "insensitive" as const } },
+            { note: { contains: search, mode: "insensitive" as const } },
+            { purchase: { invoiceNo: { contains: search, mode: "insensitive" as const } } },
+            { supplier: { name: { contains: search, mode: "insensitive" as const } } },
+            { supplier: { phone: { contains: search, mode: "insensitive" as const } } },
+            { items: { some: { product: { name: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcode: { contains: search, mode: "insensitive" as const } } } } },
+            { items: { some: { product: { barcodeNormalized: { contains: normalizeBarcodeText(search), mode: "insensitive" as const } } } } },
+          ],
+        }
+      : {}),
+  };
   const [items, total] = await Promise.all([
     prisma.purchaseReturn.findMany({
     where,

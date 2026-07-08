@@ -2,7 +2,8 @@ param(
   [string]$ProjectDir = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
   [int]$ApiPort = 4000,
   [int]$PosWebSocketPort = 4001,
-  [int]$SystemHealthWebSocketPort = 4002
+  [int]$SystemHealthWebSocketPort = 4002,
+  [string]$BackupDir = "D:\BelalBackups"
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +36,8 @@ if (-not $lanIp) {
 }
 $lanApiBaseUrl = "http://$lanIp`:$ApiPort"
 $lanWebUrl = $lanApiBaseUrl
+$resolvedBackupDir = [System.IO.Path]::GetFullPath($BackupDir)
+New-Item -ItemType Directory -Force -Path $resolvedBackupDir | Out-Null
 
 $composeEnvPath = Join-Path $ProjectDir ".env"
 if (-not (Test-Path $composeEnvPath)) {
@@ -53,6 +56,7 @@ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 LAN_API_BASE_URL=$lanApiBaseUrl
 PUBLIC_API_BASE_URL=$lanApiBaseUrl
 WEB_APP_ENABLED=true
+MUHASEB_BACKUP_DIR=$resolvedBackupDir
 SEED_ADMIN_USERNAME=admin
 SEED_ADMIN_PASSWORD=change-me-now
 BACKUP_RETENTION_COUNT=7
@@ -71,10 +75,14 @@ BACKUP_SCHEDULE_ENABLED=true
   if ($composeEnvContent -notmatch "(?m)^WEB_APP_ENABLED=") {
     Add-Content -Path $composeEnvPath -Value "WEB_APP_ENABLED=true"
   }
+  if ($composeEnvContent -notmatch "(?m)^MUHASEB_BACKUP_DIR=") {
+    Add-Content -Path $composeEnvPath -Value "MUHASEB_BACKUP_DIR=$resolvedBackupDir"
+  }
 }
 
 Write-Host "Muhaseb LAN API URL: $lanApiBaseUrl"
 Write-Host "Muhaseb LAN Web URL: $lanWebUrl"
+Write-Host "Muhaseb backup folder: $resolvedBackupDir"
 
 Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 & (Join-Path $PSScriptRoot "configure-firewall.ps1") `

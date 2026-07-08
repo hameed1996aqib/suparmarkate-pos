@@ -70,11 +70,32 @@ async function getAccount(type: "CASH" | "BANK", id: string) {
 incomeExpensesRoute.get("/", async (c) => {
   const pagination = getPagePagination(c);
   const range = getRecentDateRange(c);
+  const search = c.req.query("search")?.trim();
+  const searchWhere = search
+    ? {
+        OR: [
+          { note: { contains: search, mode: "insensitive" as const } },
+          { referenceType: { contains: search, mode: "insensitive" as const } },
+          { referenceId: { contains: search, mode: "insensitive" as const } },
+          { category: { name: { contains: search, mode: "insensitive" as const } } },
+          {
+            cashRegisterAccount: {
+              cashRegister: {
+                name: { contains: search, mode: "insensitive" as const },
+              },
+            },
+          },
+          { bankAccount: { name: { contains: search, mode: "insensitive" as const } } },
+          { bankAccount: { bankName: { contains: search, mode: "insensitive" as const } } },
+        ],
+      }
+    : {};
   const where = {
     createdAt: range,
     type: {
       in: [MoneyTransactionType.INCOME, MoneyTransactionType.EXPENSE]
-    }
+    },
+    ...searchWhere
   };
   const [items, total, summaryRows] = await Promise.all([
     prisma.moneyTransaction.findMany({
@@ -111,8 +132,25 @@ incomeExpensesRoute.get("/", async (c) => {
         COALESCE(SUM(mt."baseAmount") FILTER (WHERE mt."type" = 'EXPENSE'), 0) expense,
         COUNT(*)::int count
       FROM "MoneyTransaction" mt
+      LEFT JOIN "FinancialCategory" fc ON fc.id = mt."categoryId"
+      LEFT JOIN "BankAccount" ba ON ba.id = mt."bankAccountId"
+      LEFT JOIN "CashRegisterAccount" cra ON cra.id = mt."cashRegisterAccountId"
+      LEFT JOIN "CashRegister" cr ON cr.id = cra."cashRegisterId"
       WHERE mt."createdAt" BETWEEN ${range.gte} AND ${range.lte}
         AND mt."type" IN ('INCOME', 'EXPENSE')
+        ${
+          search
+            ? Prisma.sql`AND (
+                mt.note ILIKE ${`%${search}%`}
+                OR mt."referenceType" ILIKE ${`%${search}%`}
+                OR mt."referenceId" ILIKE ${`%${search}%`}
+                OR fc.name ILIKE ${`%${search}%`}
+                OR ba.name ILIKE ${`%${search}%`}
+                OR ba."bankName" ILIKE ${`%${search}%`}
+                OR cr.name ILIKE ${`%${search}%`}
+              )`
+            : Prisma.empty
+        }
         AND NOT EXISTS (
           SELECT 1 FROM "MoneyTransaction" cancel
           WHERE cancel."type" = 'ADJUSTMENT'

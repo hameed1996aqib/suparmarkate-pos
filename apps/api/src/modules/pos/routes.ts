@@ -224,6 +224,7 @@ posRoute.patch("/sessions/:id/cart/items/:key", async (c) => {
         sessionId: id,
         key,
         quantity: body.quantity === undefined ? undefined : Number(body.quantity),
+        unitId: body.unitId === undefined ? undefined : String(body.unitId),
         unitPrice: body.unitPrice === undefined ? undefined : Number(body.unitPrice),
         discount: body.discount === undefined ? undefined : Number(body.discount)
       }),
@@ -314,10 +315,24 @@ posRoute.get("/sessions/:id/connect", async (c) => {
   <meta charset="utf-8" />
   <title>اتصال موبایل به POS</title>
   <style>
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "Zain";
+      src: url("/font/zain/Zain-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: Tahoma, Arial, sans-serif;
+      font-family: "Zain", Tahoma, Arial, sans-serif;
       background: #020617;
       color: #f8fafc;
       display: grid;

@@ -107,6 +107,14 @@ export type ServerCartItem = {
   warehouseName?: string | null;
   unitId: string;
   unitName: string;
+  conversionRate?: number;
+  unitOptions?: Array<{
+    unitId: string;
+    unitName: string;
+    conversionRate: number;
+    salePrice: number;
+    isDefaultSale?: boolean;
+  }>;
   quantity: number;
   unitPrice: number;
   discount: number;

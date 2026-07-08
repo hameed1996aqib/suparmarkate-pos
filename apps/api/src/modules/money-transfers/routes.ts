@@ -263,8 +263,45 @@ moneyTransfersRoute.post("/", async (c) => {
 
 moneyTransfersRoute.get("/", async (c) => {
   const pagination = getPagePagination(c);
+  const search = c.req.query("search")?.trim();
+  const kind = c.req.query("kind")?.trim().toUpperCase();
   const where = {
-    createdAt: getRecentDateRange(c)
+    createdAt: getRecentDateRange(c),
+    ...(kind === "RECEIPT"
+      ? {
+          OR: [
+            { type: MoneyTransactionType.CUSTOMER_PAYMENT },
+            { direction: MoneyDirection.IN },
+          ],
+        }
+      : kind === "PAYMENT"
+        ? {
+            OR: [
+              { type: MoneyTransactionType.SUPPLIER_PAYMENT },
+              { direction: MoneyDirection.OUT },
+            ],
+          }
+        : kind === "TRANSFER"
+          ? { type: MoneyTransactionType.TRANSFER }
+          : {}),
+    ...(search
+      ? {
+          AND: [
+            {
+              OR: [
+                { note: { contains: search, mode: "insensitive" as const } },
+                { referenceType: { contains: search, mode: "insensitive" as const } },
+                { referenceId: { contains: search, mode: "insensitive" as const } },
+                { createdByUser: { username: { contains: search, mode: "insensitive" as const } } },
+                { createdByUser: { displayName: { contains: search, mode: "insensitive" as const } } },
+                { cashRegisterAccount: { cashRegister: { name: { contains: search, mode: "insensitive" as const } } } },
+                { bankAccount: { name: { contains: search, mode: "insensitive" as const } } },
+                { bankAccount: { bankName: { contains: search, mode: "insensitive" as const } } },
+              ],
+            },
+          ],
+        }
+      : {})
   };
   const [items, total] = await Promise.all([
     prisma.moneyTransaction.findMany({

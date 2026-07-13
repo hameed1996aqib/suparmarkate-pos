@@ -4,6 +4,7 @@ type DbClient = PrismaClient | any;
 
 export const baselinePermissions = [
   "dashboard.view",
+  "alerts.view",
   "pos.sell",
   "sales.view",
   "sales.manage",
@@ -32,7 +33,7 @@ export const baselineRolePermissions: Record<string, string[]> = {
   Admin: baselinePermissions,
   Manager: baselinePermissions.filter((permission) => permission !== "users.manage"),
   Cashier: ["dashboard.view", "pos.sell", "sales.view"],
-  Inventory: ["dashboard.view", "inventory.view", "inventory.manage", "products.manage"],
+  Inventory: ["alerts.view", "inventory.view", "inventory.manage", "products.manage"],
   Accountant: [
     "dashboard.view",
     "sales.view",

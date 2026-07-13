@@ -18,6 +18,13 @@ function baseMoney(row: Record<string, unknown>, baseKey: string, amountKey: str
   return toNumber(row[amountKey]) * toNumber(row.exchangeRate || 1);
 }
 
+function saleDiscountBase(sale: Record<string, unknown> & { items?: Array<Record<string, unknown>> }) {
+  const exchangeRate = toNumber(sale.exchangeRate || 1);
+  const invoiceDiscount = toNumber(sale.discount) * exchangeRate;
+  const itemDiscount = (sale.items || []).reduce((sum, item) => sum + toNumber(item.discount) * exchangeRate, 0);
+  return invoiceDiscount + itemDiscount;
+}
+
 function parseReportDate(value?: string) {
   return kabulDayRange(value);
 }
@@ -56,6 +63,7 @@ function emptyReportRow(id: string, name: string) {
     totalSales: 0,
     paidSales: 0,
     remainingSales: 0,
+    discountTotal: 0,
     moneyIn: 0,
     moneyOut: 0,
     cashIn: 0,
@@ -79,7 +87,8 @@ reportsRoute.get("/daily-cashier", async (c) => {
       include: {
         cashier: true,
         posDevice: true,
-        currency: true
+        currency: true,
+        items: { select: { discount: true } }
       },
       orderBy: {
         saleDate: "desc"
@@ -141,6 +150,7 @@ reportsRoute.get("/daily-cashier", async (c) => {
       row.totalSales += baseMoney(sale as Record<string, unknown>, "baseTotal", "total");
       row.paidSales += baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount");
       row.remainingSales += baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount");
+      row.discountTotal += saleDiscountBase(sale as Record<string, unknown> & { items?: Array<Record<string, unknown>> });
     }
   }
 
@@ -169,6 +179,10 @@ reportsRoute.get("/daily-cashier", async (c) => {
   }
 
   const totalSales = sales.reduce((sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "baseTotal", "total"), 0);
+  const discountTotal = sales.reduce(
+    (sum, sale) => sum + saleDiscountBase(sale as Record<string, unknown> & { items?: Array<Record<string, unknown>> }),
+    0
+  );
   const paidSales = sales.reduce((sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount"), 0);
   const remainingSales = sales.reduce(
     (sum, sale) => sum + baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount"),
@@ -192,6 +206,7 @@ reportsRoute.get("/daily-cashier", async (c) => {
         saleCount: sales.length,
         transactionCount: moneyTransactions.length,
         totalSales,
+        discountTotal,
         paidSales,
         remainingSales,
         moneyIn,
@@ -242,7 +257,7 @@ reportsRoute.get("/employee-performance", async (c) => {
         saleDate: { gte: range.start, lt: range.end },
         status: { not: "CANCELLED" }
       },
-      include: { cashier: true }
+      include: { cashier: true, items: { select: { discount: true } } }
     }),
     prisma.moneyTransaction.findMany({
       where: { createdAt: { gte: range.start, lt: range.end } },
@@ -317,6 +332,7 @@ reportsRoute.get("/employee-performance", async (c) => {
     row.totalSales += baseMoney(sale as Record<string, unknown>, "baseTotal", "total");
     row.paidSales += baseMoney(sale as Record<string, unknown>, "basePaidAmount", "paidAmount");
     row.remainingSales += baseMoney(sale as Record<string, unknown>, "baseRemainingAmount", "remainingAmount");
+    row.discountTotal += saleDiscountBase(sale as Record<string, unknown> & { items?: Array<Record<string, unknown>> });
   }
 
   for (const transaction of moneyTransactions) {
@@ -372,6 +388,7 @@ reportsRoute.get("/employee-performance", async (c) => {
         employeeCount: dataRows.length,
         saleCount: dataRows.reduce((sum, row) => sum + row.saleCount, 0),
         totalSales: dataRows.reduce((sum, row) => sum + row.totalSales, 0),
+        discountTotal: dataRows.reduce((sum, row) => sum + row.discountTotal, 0),
         moneyIn: dataRows.reduce((sum, row) => sum + row.moneyIn, 0),
         moneyOut: dataRows.reduce((sum, row) => sum + row.moneyOut, 0),
         workedHours: Math.round(dataRows.reduce((sum, row) => sum + row.workedHours, 0) * 100) / 100
@@ -383,7 +400,7 @@ reportsRoute.get("/employee-performance", async (c) => {
 
 reportsRoute.get("/management", async (c) => {
   const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
-  const cacheKey = `reports:management:v2:${from}:${to}`;
+  const cacheKey = `reports:management:v3:${from}:${to}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
   if (cached) return c.json({ data: cached, cache: "hit" });
 
@@ -441,12 +458,13 @@ reportsRoute.get("/management", async (c) => {
           WHERE sr."createdAt" >= ${start} AND sr."createdAt" < ${end} AND sr."cancelledAt" IS NULL), 0) total
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT p.id, p.name, COALESCE(SUM(si."quantityBase"), 0) quantity,
+      SELECT p.id, p.name, COALESCE(u."shortName", u.name) unit, COALESCE(SUM(si."quantityBase"), 0) quantity,
         COALESCE(SUM(si."totalPrice" * s."exchangeRate"), 0) "totalSales",
         COALESCE(SUM(COALESCE(si."baseTotalCost", si."totalCost")), 0) cogs
       FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
+      JOIN "Unit" u ON u.id = p."baseUnitId"
       WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s."status" <> 'CANCELLED'
-      GROUP BY p.id, p.name ORDER BY "totalSales" DESC LIMIT 25
+      GROUP BY p.id, p.name, u."shortName", u.name ORDER BY "totalSales" DESC LIMIT 25
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       WITH balances AS (
@@ -582,6 +600,113 @@ reportsRoute.get("/management", async (c) => {
   };
   await cacheSetJson(cacheKey, data, 30);
   return c.json({ data, cache: "miss" });
+});
+
+reportsRoute.get("/currency-usage", async (c) => {
+  const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+
+  const rows = await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH docs AS (
+      SELECT 'SALE'::text "documentType", s."currencyId", c.code "currencyCode",
+        c.symbol "currencySymbol", s."exchangeRate", COUNT(*)::int "documentCount",
+        COALESCE(SUM(s.total), 0) "originalAmount",
+        COALESCE(SUM(COALESCE(NULLIF(s."baseTotal", 0), s.total * COALESCE(s."exchangeRate", 1))), 0) "baseAmount",
+        MIN(s."saleDate") "firstAt", MAX(s."saleDate") "lastAt"
+      FROM "Sale" s JOIN "Currency" c ON c.id = s."currencyId"
+      WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s.status <> 'CANCELLED'
+      GROUP BY s."currencyId", c.code, c.symbol, s."exchangeRate"
+
+      UNION ALL
+
+      SELECT 'PURCHASE'::text, p."currencyId", c.code, c.symbol, p."exchangeRate", COUNT(*)::int,
+        COALESCE(SUM(p.total), 0),
+        COALESCE(SUM(COALESCE(NULLIF(p."baseTotal", 0), p.total * COALESCE(p."exchangeRate", 1))), 0),
+        MIN(p."purchaseDate"), MAX(p."purchaseDate")
+      FROM "Purchase" p JOIN "Currency" c ON c.id = p."currencyId"
+      WHERE p."purchaseDate" >= ${start} AND p."purchaseDate" < ${end} AND p.status <> 'CANCELLED'
+      GROUP BY p."currencyId", c.code, c.symbol, p."exchangeRate"
+
+      UNION ALL
+
+      SELECT 'SALE_RETURN'::text, sr."currencyId", c.code, c.symbol, sr."exchangeRate", COUNT(*)::int,
+        COALESCE(SUM(sr.subtotal), 0),
+        COALESCE(SUM(COALESCE(NULLIF(sr."baseSubtotal", 0), sr.subtotal * COALESCE(sr."exchangeRate", 1))), 0),
+        MIN(sr."createdAt"), MAX(sr."createdAt")
+      FROM "SaleReturn" sr JOIN "Currency" c ON c.id = sr."currencyId"
+      WHERE sr."createdAt" >= ${start} AND sr."createdAt" < ${end} AND sr."cancelledAt" IS NULL
+      GROUP BY sr."currencyId", c.code, c.symbol, sr."exchangeRate"
+
+      UNION ALL
+
+      SELECT 'PURCHASE_RETURN'::text, pr."currencyId", c.code, c.symbol, pr."exchangeRate", COUNT(*)::int,
+        COALESCE(SUM(pr.subtotal), 0),
+        COALESCE(SUM(COALESCE(NULLIF(pr."baseSubtotal", 0), pr.subtotal * COALESCE(pr."exchangeRate", 1))), 0),
+        MIN(pr."createdAt"), MAX(pr."createdAt")
+      FROM "PurchaseReturn" pr JOIN "Currency" c ON c.id = pr."currencyId"
+      WHERE pr."createdAt" >= ${start} AND pr."createdAt" < ${end} AND pr."cancelledAt" IS NULL
+      GROUP BY pr."currencyId", c.code, c.symbol, pr."exchangeRate"
+
+      UNION ALL
+
+      SELECT ('MONEY_' || mt.direction::text || '_' || mt.type::text)::text, mt."currencyId", c.code, c.symbol,
+        mt."exchangeRate", COUNT(*)::int,
+        COALESCE(SUM(mt.amount), 0),
+        COALESCE(SUM(COALESCE(NULLIF(mt."baseAmount", 0), mt.amount * COALESCE(mt."exchangeRate", 1))), 0),
+        MIN(mt."createdAt"), MAX(mt."createdAt")
+      FROM "MoneyTransaction" mt JOIN "Currency" c ON c.id = mt."currencyId"
+      WHERE mt."createdAt" >= ${start} AND mt."createdAt" < ${end}
+        AND mt.type::text <> 'ADJUSTMENT'
+      GROUP BY mt."currencyId", c.code, c.symbol, mt."exchangeRate", mt.direction, mt.type
+    )
+    SELECT * FROM docs
+    ORDER BY "currencyCode" ASC, "exchangeRate" ASC, "documentType" ASC
+  `);
+
+  const totalsByCurrency = new Map<string, {
+    currencyId: string;
+    currencyCode: string;
+    currencySymbol: string | null;
+    documentCount: number;
+    originalAmount: number;
+    baseAmount: number;
+  }>();
+
+  for (const row of rows) {
+    const key = String(row.currencyId);
+    const existing = totalsByCurrency.get(key) || {
+      currencyId: key,
+      currencyCode: String(row.currencyCode || "-"),
+      currencySymbol: row.currencySymbol ? String(row.currencySymbol) : null,
+      documentCount: 0,
+      originalAmount: 0,
+      baseAmount: 0
+    };
+    existing.documentCount += toNumber(row.documentCount);
+    existing.originalAmount += toNumber(row.originalAmount);
+    existing.baseAmount += toNumber(row.baseAmount);
+    totalsByCurrency.set(key, existing);
+  }
+
+  return c.json({
+    data: {
+      range: { from, to, start, end },
+      rows: rows.map((row) => ({
+        documentType: row.documentType,
+        currencyId: row.currencyId,
+        currencyCode: row.currencyCode,
+        currencySymbol: row.currencySymbol,
+        exchangeRate: toNumber(row.exchangeRate),
+        documentCount: toNumber(row.documentCount),
+        originalAmount: toNumber(row.originalAmount),
+        baseAmount: toNumber(row.baseAmount),
+        firstAt: row.firstAt,
+        lastAt: row.lastAt
+      })),
+      totalsByCurrency: Array.from(totalsByCurrency.values()).sort((a, b) =>
+        a.currencyCode.localeCompare(b.currencyCode)
+      )
+    }
+  });
 });
 
 reportsRoute.get("/management-legacy", async (c) => {

@@ -17,6 +17,75 @@ export const partiesRoute = new Hono();
 
 const partyTypeSchema = z.nativeEnum(PartyType);
 
+async function attachAccountCurrencyRates(items: any[]) {
+  const currencyIds = Array.from(
+    new Set(
+      items.flatMap((item) =>
+        Array.isArray(item.accounts)
+          ? item.accounts
+              .map((account: any) => account.currencyId)
+              .filter(Boolean)
+          : []
+      )
+    )
+  );
+
+  if (currencyIds.length === 0) return items;
+
+  const currencies = await prisma.currency.findMany({
+    where: { id: { in: currencyIds } },
+    select: { id: true, isBase: true }
+  });
+  const baseByCurrency = new Map(
+    currencies.map((currency) => [currency.id, currency.isBase])
+  );
+  const latestRates = await Promise.all(
+    currencyIds.map(async (currencyId) => {
+      if (baseByCurrency.get(currencyId)) {
+        return { currencyId, latestRate: 1, latestRateAt: null };
+      }
+
+      const rate = await prisma.currencyRate.findFirst({
+        where: {
+          currencyId,
+          deletedAt: null,
+          effectiveAt: { lte: new Date() }
+        },
+        orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }]
+      });
+
+      return {
+        currencyId,
+        latestRate: rate ? Number(rate.rateToBase) : null,
+        latestRateAt: rate?.effectiveAt ?? null
+      };
+    })
+  );
+  const rateByCurrency = new Map(
+    latestRates.map((rate) => [rate.currencyId, rate])
+  );
+
+  return items.map((item) => ({
+    ...item,
+    accounts: Array.isArray(item.accounts)
+      ? item.accounts.map((account: any) => {
+          const rate = rateByCurrency.get(account.currencyId);
+
+          return {
+            ...account,
+            currency: account.currency
+              ? {
+                  ...account.currency,
+                  latestRate: rate?.latestRate ?? null,
+                  latestRateAt: rate?.latestRateAt ?? null
+                }
+              : account.currency
+          };
+        })
+      : item.accounts
+  }));
+}
+
 const createPartySchema = z.object({
   type: partyTypeSchema.default(PartyType.CUSTOMER),
   code: z.string().trim().max(60).optional().nullable(),
@@ -63,6 +132,34 @@ function normalizePartyType(value: string | undefined) {
   return undefined;
 }
 
+function partyTypeWhere(type?: PartyType) {
+  if (type === PartyType.CUSTOMER) {
+    return { type: { in: [PartyType.CUSTOMER, PartyType.BOTH] } };
+  }
+
+  if (type === PartyType.SUPPLIER) {
+    return { type: { in: [PartyType.SUPPLIER, PartyType.BOTH] } };
+  }
+
+  return type ? { type } : {};
+}
+
+function partyTypeSql(type?: PartyType) {
+  if (type === PartyType.CUSTOMER) {
+    return Prisma.sql`p.type IN ('CUSTOMER', 'BOTH')`;
+  }
+
+  if (type === PartyType.SUPPLIER) {
+    return Prisma.sql`p.type IN ('SUPPLIER', 'BOTH')`;
+  }
+
+  if (type === PartyType.BOTH) {
+    return Prisma.sql`p.type = 'BOTH'::"PartyType"`;
+  }
+
+  return Prisma.sql`TRUE`;
+}
+
 partiesRoute.get("/", async (c) => {
   const pagination = getPagePagination(c);
   const search = c.req.query("search");
@@ -97,7 +194,7 @@ partiesRoute.get("/", async (c) => {
             }
           ]
         },
-        ...(type ? [{ type }] : []),
+        partyTypeWhere(type),
         ...(search
           ? [
               {
@@ -113,8 +210,9 @@ partiesRoute.get("/", async (c) => {
             ]
           : [])
       ]
-    };
+  };
   const summaryType = type ?? PartyType.CUSTOMER;
+  const summaryTypeFilter = partyTypeSql(summaryType);
   const [items, total, summaryRows] = await Promise.all([
     prisma.party.findMany({
     where,
@@ -138,21 +236,41 @@ partiesRoute.get("/", async (c) => {
         COUNT(DISTINCT p.id) FILTER (WHERE p."isActive" = true)::int active,
         COUNT(DISTINCT p.id) FILTER (WHERE p."isActive" = false)::int inactive,
         COALESCE(SUM(
-          CASE
-            WHEN ${summaryType} = 'CUSTOMER' THEN pa."debitBalance" - pa."creditBalance"
-            ELSE pa."creditBalance" - pa."debitBalance"
-          END
+          GREATEST(
+            COALESCE(
+              CASE
+                WHEN ${summaryType} = 'CUSTOMER' THEN pa."debitBalance" - pa."creditBalance"
+                ELSE pa."creditBalance" - pa."debitBalance"
+              END,
+              0
+            ),
+            0
+          ) * COALESCE(
+            CASE WHEN c."isBase" = true THEN 1 ELSE latest_rate."rateToBase" END,
+            1
+          )
         ), 0) balance
       FROM "Party" p
       LEFT JOIN "PartyAccount" pa ON pa."partyId" = p.id
+      LEFT JOIN "Currency" c ON c.id = pa."currencyId"
+      LEFT JOIN LATERAL (
+        SELECT cr."rateToBase"
+        FROM "CurrencyRate" cr
+        WHERE cr."currencyId" = pa."currencyId"
+          AND cr."deletedAt" IS NULL
+          AND cr."effectiveAt" <= NOW()
+        ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC
+        LIMIT 1
+      ) latest_rate ON true
       WHERE p."deletedAt" IS NULL
-        AND p.type = ${summaryType}::"PartyType"
+        AND ${summaryTypeFilter}
     `)
   ]);
 
   const summary = summaryRows[0];
+  const itemsWithRates = await attachAccountCurrencyRates(items);
   return c.json({
-    data: await attachAuditUsers(items),
+    data: await attachAuditUsers(itemsWithRates),
     pagination: createPaginationMeta({ ...pagination, total }),
     summary: {
       count: summary?.count ?? 0,
@@ -205,7 +323,15 @@ partiesRoute.get("/lookup", async (c) => {
           id: true,
           currencyId: true,
           debitBalance: true,
-          creditBalance: true
+          creditBalance: true,
+          currency: {
+            select: {
+              id: true,
+              code: true,
+              symbol: true,
+              isBase: true
+            }
+          }
         }
       }
     },
@@ -213,7 +339,7 @@ partiesRoute.get("/lookup", async (c) => {
     take: limit
   });
 
-  return c.json({ data: items });
+  return c.json({ data: await attachAccountCurrencyRates(items) });
 });
 
 partiesRoute.get("/:id", async (c) => {
@@ -246,7 +372,9 @@ partiesRoute.get("/:id", async (c) => {
     return c.json({ message: "Party not found" }, 404);
   }
 
-  return c.json({ data: await attachAuditUsers(item) });
+  const [itemWithRates] = await attachAccountCurrencyRates([item]);
+
+  return c.json({ data: await attachAuditUsers(itemWithRates) });
 });
 
 partiesRoute.post("/", async (c) => {
@@ -437,7 +565,9 @@ partiesRoute.get("/:id/accounts", async (c) => {
     }
   });
 
-  return c.json({ data: accounts });
+  const [partyWithRates] = await attachAccountCurrencyRates([{ accounts }]);
+
+  return c.json({ data: partyWithRates.accounts });
 });
 
 partiesRoute.get("/:id/transactions", async (c) => {

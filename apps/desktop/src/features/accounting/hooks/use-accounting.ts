@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { kabulDateString, kabulMonthStartString } from "@/lib/kabul-date";
+
 import {
   createJournalEntry,
   createParty,
@@ -32,10 +34,9 @@ function makeId(prefix: string) {
 }
 
 export function useAccounting(baseUrl: string) {
-  const now = new Date();
   const [summaryRange, setSummaryRange] = useState({
-    from: new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10),
-    to: now.toISOString().slice(0, 10),
+    from: kabulMonthStartString(),
+    to: kabulDateString(),
   });
   const [accounts, setAccounts] = useState<AccountingAccount[]>([]);
   const [parties, setParties] = useState<Party[]>([]);

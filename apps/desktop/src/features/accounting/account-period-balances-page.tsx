@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/table";
 import { MetricCard } from "@/features/admin/components/metric-card";
 import { API_BASE_URL } from "@/lib/api-config";
+import { kabulDateString, kabulMonthStartString } from "@/lib/kabul-date";
 import { formatMoney, useBaseCurrencyCode } from "@/lib/use-base-currency";
 
 type ReportTab = "all" | "account" | "party";
@@ -105,13 +106,11 @@ const number = (value: unknown) =>
   new Intl.NumberFormat("en-US").format(Number(value || 0));
 
 function toDateInputValue(date: Date) {
-  return date.toISOString().slice(0, 10);
+  return kabulDateString(date);
 }
 
 function defaultDateRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  return { from: toDateInputValue(start), to: toDateInputValue(now) };
+  return { from: kabulMonthStartString(), to: kabulDateString() };
 }
 
 function formatDate(value: string) {

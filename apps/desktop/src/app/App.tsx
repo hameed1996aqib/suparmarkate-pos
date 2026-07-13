@@ -126,6 +126,11 @@ import {
   saveApiBaseUrl,
   testApiBaseUrl,
 } from "@/lib/api-config";
+import {
+  formatPartyBalanceByCurrency,
+  partyBalanceBase,
+} from "@/lib/party-balance";
+import { kabulDateString } from "@/lib/kabul-date";
 import { dateRangeQuery, recentDateRange } from "@/lib/recent-date-filter";
 
 const ReportsPageRoute = lazy(() =>
@@ -1195,6 +1200,7 @@ function canAccessNav(user: AuthUser, path: string) {
   if (path === "/dashboard") return permissions.has("dashboard.view");
   if (path === "/alerts")
     return (
+      permissions.has("alerts.view") ||
       permissions.has("dashboard.view") ||
       permissions.has("inventory.view") ||
       permissions.has("reports.view")
@@ -4735,6 +4741,8 @@ function PurchasesPage() {
     useState<any>(null);
   const [suppliers, setSuppliers] = useState<LookupItem[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [productCategories, setProductCategories] = useState<LookupItem[]>([]);
+  const [productUnits, setProductUnits] = useState<LookupItem[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [paymentAccounts, setPaymentAccounts] = useState<
@@ -4753,6 +4761,15 @@ function PurchasesPage() {
   const [purchaseLineDraft, setPurchaseLineDraft] = useState<PurchaseLineForm>(
     emptyPurchaseLineDraft,
   );
+  const [purchaseProductSearchText, setPurchaseProductSearchText] =
+    useState("");
+  const [quickProductDialogOpen, setQuickProductDialogOpen] = useState(false);
+  const [quickProductForm, setQuickProductForm] =
+    useState<ProductFormState>(emptyProductForm);
+  const [quickProductUnitLines, setQuickProductUnitLines] = useState<
+    ProductUnitForm[]
+  >([]);
+  const [isSavingQuickProduct, setIsSavingQuickProduct] = useState(false);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnPurchase, setReturnPurchase] = useState<any | null>(null);
   const [returnLines, setReturnLines] = useState<ReturnLineForm[]>([]);
@@ -4805,6 +4822,8 @@ function PurchasesPage() {
         purchaseReturnsRes,
         suppliersRes,
         productsRes,
+        categoryRes,
+        unitRes,
         warehousesRes,
         currenciesRes,
         cashRes,
@@ -4818,6 +4837,10 @@ function PurchasesPage() {
         fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
           res.json(),
         ),
+        fetch(`${API_BASE_URL}/api/product-categories`).then((res) =>
+          res.json(),
+        ),
+        fetch(`${API_BASE_URL}/api/units`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
@@ -4850,6 +4873,10 @@ function PurchasesPage() {
       setPurchaseReturnsPagination(purchaseReturnsRes?.pagination || null);
       setSuppliers(Array.isArray(suppliersRes?.data) ? suppliersRes.data : []);
       setProducts(Array.isArray(productsRes?.data) ? productsRes.data : []);
+      setProductCategories(
+        Array.isArray(categoryRes?.data) ? categoryRes.data : [],
+      );
+      setProductUnits(Array.isArray(unitRes?.data) ? unitRes.data : []);
       setWarehouses(
         Array.isArray(warehousesRes?.data) ? warehousesRes.data : [],
       );
@@ -4899,6 +4926,7 @@ function PurchasesPage() {
 
   const searchPurchaseProducts = async (value: string) => {
     const query = value.trim();
+    setPurchaseProductSearchText(query);
     const requestSeq = purchaseProductSearchSeqRef.current + 1;
     purchaseProductSearchSeqRef.current = requestSeq;
 
@@ -4910,6 +4938,180 @@ function PurchasesPage() {
       setProducts((current) => mergeById(current, rows));
     } catch {
       // Product lookup search is best-effort; form submission still validates.
+    }
+  };
+
+  const openQuickProductDialog = () => {
+    const searchText = purchaseProductSearchText.trim();
+    const barcodeCandidate = searchText.replace(/[\s-]/g, "");
+    const isBarcodeLike =
+      barcodeCandidate.length >= 5 && /^[0-9]+$/.test(barcodeCandidate);
+    const baseUnitId = productUnits[0]?.id || "";
+
+    setQuickProductForm({
+      ...emptyProductForm,
+      name: isBarcodeLike ? "" : searchText,
+      barcode: isBarcodeLike ? searchText : "",
+      baseUnitId,
+      defaultWarehouseId:
+        warehouses.find((item: any) => item.isDefault)?.id ||
+        warehouses[0]?.id ||
+        "",
+      purchasePrice: purchaseLineDraft.unitCost || 0,
+      salePrice: purchaseLineDraft.salePrice || 0,
+      openingCurrencyId: form.currencyId,
+    });
+    setQuickProductUnitLines([
+      makeProductUnitLine(productUnits, {
+        unitId: baseUnitId,
+        conversionRate: 1,
+        purchasePrice: purchaseLineDraft.unitCost || 0,
+        salePrice: purchaseLineDraft.salePrice || 0,
+        isDefaultPurchase: true,
+        isDefaultSale: true,
+      }),
+    ]);
+    setQuickProductDialogOpen(true);
+  };
+
+  const syncQuickProductUnitPrices = (
+    lines: ProductUnitForm[],
+    baseUnitId: string,
+    patch: Partial<Pick<ProductUnitForm, "purchasePrice" | "salePrice">>,
+  ) => {
+    const currentBase = lines.find((line) => line.unitId === baseUnitId);
+    const basePurchasePrice =
+      patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
+    const baseSalePrice = patch.salePrice ?? currentBase?.salePrice ?? 0;
+
+    return lines.map((line) => {
+      const conversionRate =
+        line.unitId === baseUnitId ? 1 : line.conversionRate;
+
+      return {
+        ...line,
+        conversionRate,
+        purchasePrice:
+          patch.purchasePrice !== undefined || line.unitId !== baseUnitId
+            ? Number((basePurchasePrice * conversionRate).toFixed(4))
+            : line.purchasePrice,
+        salePrice:
+          patch.salePrice !== undefined || line.unitId !== baseUnitId
+            ? Number((baseSalePrice * conversionRate).toFixed(4))
+            : line.salePrice,
+      };
+    });
+  };
+
+  const saveQuickPurchaseProduct = async () => {
+    if (!quickProductForm.name.trim() || !quickProductForm.baseUnitId) {
+      toast.error("نام کالا و واحد پایه ضروری است");
+      return;
+    }
+
+    const validUnitLines = quickProductUnitLines.filter(
+      (line) => line.unitId && line.conversionRate > 0,
+    );
+    const uniqueUnitIds = new Set(validUnitLines.map((line) => line.unitId));
+
+    if (validUnitLines.length === 0) {
+      toast.error("حداقل یک واحد خرید/فروش برای جنس ضروری است");
+      return;
+    }
+
+    if (uniqueUnitIds.size !== validUnitLines.length) {
+      toast.error("واحد تکراری برای یک جنس قابل ثبت نیست");
+      return;
+    }
+
+    if (!validUnitLines.some((line) => line.unitId === quickProductForm.baseUnitId)) {
+      toast.error("واحد پایه باید در لیست واحدات جنس هم ثبت شود");
+      return;
+    }
+
+    const normalizedUnitLines = validUnitLines.map((line, index) => ({
+      ...line,
+      conversionRate:
+        line.unitId === quickProductForm.baseUnitId ? 1 : line.conversionRate,
+      isDefaultPurchase: validUnitLines.some((item) => item.isDefaultPurchase)
+        ? line.isDefaultPurchase
+        : index === 0,
+      isDefaultSale: validUnitLines.some((item) => item.isDefaultSale)
+        ? line.isDefaultSale
+        : index === 0,
+    }));
+
+    setIsSavingQuickProduct(true);
+    try {
+      const payload = {
+        name: quickProductForm.name.trim(),
+        sku: quickProductForm.sku.trim() || null,
+        barcode: quickProductForm.barcode.trim() || null,
+        description: quickProductForm.description.trim() || null,
+        imageUrl: quickProductForm.imageUrl || null,
+        categoryId: quickProductForm.categoryId || null,
+        baseUnitId: quickProductForm.baseUnitId,
+        defaultWarehouseId: quickProductForm.defaultWarehouseId || null,
+        hasExpiry: quickProductForm.hasExpiry,
+        minStock: quickProductForm.minStock,
+        units: normalizedUnitLines.map((line) => ({
+          unitId: line.unitId,
+          conversionRate: line.conversionRate,
+          purchasePrice: line.purchasePrice || null,
+          salePrice: line.salePrice || null,
+          isDefaultPurchase: line.isDefaultPurchase,
+          isDefaultSale: line.isDefaultSale,
+        })),
+      };
+
+      const res = await fetch(`${API_BASE_URL}/api/products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(json?.message || "ثبت محصول ناکام شد");
+      }
+
+      const product = json?.data;
+      if (!product?.id) {
+        throw new Error("محصول ثبت شد، اما پاسخ API کامل نبود");
+      }
+
+      setProducts((current) => mergeById([product], current));
+      setQuickProductDialogOpen(false);
+      setPurchaseProductSearchText("");
+      const purchaseUnit =
+        product?.units?.find((unit: any) => unit.isDefaultPurchase) ||
+        product?.units?.[0];
+      setPurchaseLineDraft((current) => ({
+        ...current,
+        productId: product.id,
+        unitId: purchaseUnit?.unitId || product.baseUnitId || "",
+        unitCost: selectedCurrency
+          ? basePriceInCurrency(
+              Number(purchaseUnit?.purchasePrice || 0),
+              selectedCurrency,
+            )
+          : Number(purchaseUnit?.purchasePrice || 0),
+        salePrice: selectedCurrency
+          ? basePriceInCurrency(
+              Number(purchaseUnit?.salePrice || 0),
+              selectedCurrency,
+            )
+          : Number(purchaseUnit?.salePrice || 0),
+        updateSalePrice: true,
+        expiryDate: product.hasExpiry ? current.expiryDate : "",
+      }));
+      toast.success("محصول جدید ثبت و به لیست خرید اضافه شد");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "ثبت محصول جدید ناکام شد",
+      );
+    } finally {
+      setIsSavingQuickProduct(false);
     }
   };
 
@@ -5637,7 +5839,11 @@ function PurchasesPage() {
         }}
       />
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        disablePointerDismissal
+      >
         <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>ثبت خرید جدید</DialogTitle>
@@ -5916,6 +6122,7 @@ function PurchasesPage() {
       <Dialog
         open={purchaseItemDialogOpen}
         onOpenChange={setPurchaseItemDialogOpen}
+        disablePointerDismissal
       >
         <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
@@ -5935,6 +6142,17 @@ function PurchasesPage() {
               options={products}
               onSearchChange={searchPurchaseProducts}
               onChange={setPurchaseDraftProduct}
+              emptyAction={
+                <Button
+                  type="button"
+                  size="sm"
+                  className="w-full"
+                  onClick={openQuickProductDialog}
+                >
+                  <Plus className="size-4" />
+                  افزودن جنس جدید
+                </Button>
+              }
             />
             <LookupSelect
               label="گدام"
@@ -6104,6 +6322,362 @@ function PurchasesPage() {
             </Button>
             <Button onClick={savePurchaseItem}>
               {editingPurchaseLineId ? "ذخیره تغییرات" : "افزودن به فاکتور"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={quickProductDialogOpen}
+        onOpenChange={setQuickProductDialogOpen}
+        disablePointerDismissal
+      >
+        <DialogContent dir="rtl" className="max-w-[min(96vw,1120px)]">
+          <DialogHeader>
+            <DialogTitle>ثبت سریع جنس جدید</DialogTitle>
+            <DialogDescription>
+              اگر جنس در جستجوی خرید پیدا نشد، همین‌جا کالا را ثبت کنید و سپس
+              به قلم خرید اضافه کنید.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid max-h-[72vh] gap-4 overflow-y-auto pe-1">
+            <div className="grid gap-3 md:grid-cols-3">
+              <TextField
+                label="نام جنس"
+                value={quickProductForm.name}
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    name: value,
+                  }))
+                }
+              />
+              <TextField
+                label="SKU"
+                value={quickProductForm.sku}
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    sku: value,
+                  }))
+                }
+              />
+              <TextField
+                label="بارکود (اختیاری)"
+                value={quickProductForm.barcode}
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    barcode: value,
+                  }))
+                }
+              />
+              <LookupSelect
+                label="کتگوری"
+                value={quickProductForm.categoryId}
+                options={productCategories}
+                emptyLabel="بدون کتگوری"
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    categoryId: value,
+                  }))
+                }
+              />
+              <LookupSelect
+                label="واحد پایه"
+                value={quickProductForm.baseUnitId}
+                options={productUnits}
+                onChange={(value) => {
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    baseUnitId: value,
+                  }));
+                  setQuickProductUnitLines((current) => {
+                    const nextLines = current.some(
+                      (line) => line.unitId === value,
+                    )
+                      ? current.map((line) =>
+                          line.unitId === value
+                            ? { ...line, conversionRate: 1 }
+                            : line,
+                        )
+                      : [
+                          makeProductUnitLine(productUnits, {
+                            unitId: value,
+                            conversionRate: 1,
+                            isDefaultPurchase: current.length === 0,
+                            isDefaultSale: current.length === 0,
+                          }),
+                          ...current,
+                        ];
+
+                    return syncQuickProductUnitPrices(nextLines, value, {});
+                  });
+                }}
+              />
+              <LookupSelect
+                label="گدام پیش‌فرض"
+                value={quickProductForm.defaultWarehouseId}
+                options={warehouses}
+                emptyLabel="بدون گدام"
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    defaultWarehouseId: value,
+                  }))
+                }
+              />
+              <NumberField
+                label="حد هشدار کمبود موجودی"
+                value={quickProductForm.minStock}
+                onChange={(value) =>
+                  setQuickProductForm((current) => ({
+                    ...current,
+                    minStock: value,
+                  }))
+                }
+              />
+              <label className="grid gap-1.5 text-sm">
+                <span className="text-muted-foreground">تاریخ انقضا دارد؟</span>
+                <button
+                  type="button"
+                  className="flex h-10 items-center justify-between border border-border bg-background px-3 text-start"
+                  onClick={() =>
+                    setQuickProductForm((current) => ({
+                      ...current,
+                      hasExpiry: !current.hasExpiry,
+                    }))
+                  }
+                >
+                  <span>
+                    {quickProductForm.hasExpiry
+                      ? "برای خرید تاریخ انقضا نمایش داده می‌شود"
+                      : "بدون تاریخ انقضا"}
+                  </span>
+                  <Badge
+                    className={
+                      quickProductForm.hasExpiry
+                        ? "bg-primary/15 text-primary"
+                        : "bg-muted text-muted-foreground"
+                    }
+                  >
+                    {quickProductForm.hasExpiry ? "بلی" : "نخیر"}
+                  </Badge>
+                </button>
+              </label>
+              <div className="md:col-span-full">
+                <TextField
+                  label="توضیحات"
+                  value={quickProductForm.description}
+                  onChange={(value) =>
+                    setQuickProductForm((current) => ({
+                      ...current,
+                      description: value,
+                    }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="space-y-3 border border-border bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold">واحدها و قیمت‌ها</h4>
+                  <p className="text-xs text-muted-foreground">
+                    قیمت واحدهای دیگر بر اساس نرخ تبدیل واحد پایه محاسبه می‌شود.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setQuickProductUnitLines((current) => [
+                      ...current,
+                      makeProductUnitLine(productUnits),
+                    ])
+                  }
+                >
+                  <Plus className="size-4" />
+                  افزودن واحد
+                </Button>
+              </div>
+
+              {quickProductUnitLines.map((line) => (
+                <div
+                  key={line.id}
+                  className="grid gap-2 border border-border bg-background p-3 md:grid-cols-[1.5fr_repeat(3,1fr)_auto]"
+                >
+                  <LookupSelect
+                    label="واحد"
+                    value={line.unitId}
+                    options={productUnits}
+                    onChange={(value) =>
+                      setQuickProductUnitLines((current) =>
+                        current.map((item) =>
+                          item.id === line.id
+                            ? {
+                                ...item,
+                                unitId: value,
+                                conversionRate:
+                                  value === quickProductForm.baseUnitId
+                                    ? 1
+                                    : item.conversionRate,
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                  />
+                  <NumberField
+                    label="نرخ تبدیل"
+                    value={line.conversionRate}
+                    disabled={line.unitId === quickProductForm.baseUnitId}
+                    onChange={(value) =>
+                      setQuickProductUnitLines((current) =>
+                        current.map((item) =>
+                          item.id === line.id
+                            ? {
+                                ...item,
+                                conversionRate:
+                                  item.unitId === quickProductForm.baseUnitId
+                                    ? 1
+                                    : value,
+                                purchasePrice:
+                                  item.unitId === quickProductForm.baseUnitId
+                                    ? item.purchasePrice
+                                    : Number(
+                                        (
+                                          (current.find(
+                                            (base) =>
+                                              base.unitId ===
+                                              quickProductForm.baseUnitId,
+                                          )?.purchasePrice || 0) * value
+                                        ).toFixed(4),
+                                      ),
+                                salePrice:
+                                  item.unitId === quickProductForm.baseUnitId
+                                    ? item.salePrice
+                                    : Number(
+                                        (
+                                          (current.find(
+                                            (base) =>
+                                              base.unitId ===
+                                              quickProductForm.baseUnitId,
+                                          )?.salePrice || 0) * value
+                                        ).toFixed(4),
+                                      ),
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                  />
+                  <NumberField
+                    label="قیمت خرید"
+                    value={line.purchasePrice}
+                    onChange={(value) =>
+                      setQuickProductUnitLines((current) => {
+                        const next = current.map((item) =>
+                          item.id === line.id
+                            ? { ...item, purchasePrice: value }
+                            : item,
+                        );
+
+                        return line.unitId === quickProductForm.baseUnitId
+                          ? syncQuickProductUnitPrices(next, line.unitId, {
+                              purchasePrice: value,
+                            })
+                          : next;
+                      })
+                    }
+                  />
+                  <NumberField
+                    label="قیمت فروش"
+                    value={line.salePrice}
+                    onChange={(value) =>
+                      setQuickProductUnitLines((current) => {
+                        const next = current.map((item) =>
+                          item.id === line.id
+                            ? { ...item, salePrice: value }
+                            : item,
+                        );
+
+                        return line.unitId === quickProductForm.baseUnitId
+                          ? syncQuickProductUnitPrices(next, line.unitId, {
+                              salePrice: value,
+                            })
+                          : next;
+                      })
+                    }
+                  />
+                  <div className="flex items-end gap-1">
+                    <Button
+                      type="button"
+                      variant={line.isDefaultPurchase ? "default" : "outline"}
+                      size="sm"
+                      onClick={() =>
+                        setQuickProductUnitLines((current) =>
+                          current.map((item) => ({
+                            ...item,
+                            isDefaultPurchase: item.id === line.id,
+                          })),
+                        )
+                      }
+                    >
+                      خرید
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={line.isDefaultSale ? "default" : "outline"}
+                      size="sm"
+                      onClick={() =>
+                        setQuickProductUnitLines((current) =>
+                          current.map((item) => ({
+                            ...item,
+                            isDefaultSale: item.id === line.id,
+                          })),
+                        )
+                      }
+                    >
+                      فروش
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon-sm"
+                      disabled={quickProductUnitLines.length <= 1}
+                      onClick={() =>
+                        setQuickProductUnitLines((current) =>
+                          current.filter((item) => item.id !== line.id),
+                        )
+                      }
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setQuickProductDialogOpen(false)}
+              disabled={isSavingQuickProduct}
+            >
+              لغو
+            </Button>
+            <Button
+              type="button"
+              onClick={saveQuickPurchaseProduct}
+              disabled={isSavingQuickProduct}
+            >
+              {isSavingQuickProduct ? "در حال ثبت..." : "ثبت و انتخاب جنس"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -6374,18 +6948,7 @@ function parseAccountKey(value: string) {
 }
 
 function partyBalance(party: any, kind: "CUSTOMER" | "SUPPLIER") {
-  const accounts = Array.isArray(party?.accounts) ? party.accounts : [];
-  const debit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.debitBalance || 0),
-    0,
-  );
-  const credit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.creditBalance || 0),
-    0,
-  );
-  const balance = kind === "CUSTOMER" ? debit - credit : credit - debit;
-
-  return Math.max(0, balance);
+  return partyBalanceBase(party, kind);
 }
 
 function buildPaymentAccounts(cashData: any, bankData: any) {
@@ -6433,6 +6996,7 @@ function normalizeMoneyTransaction(
     isCancelRow ||
     cancelledKeys.has(rowKey) ||
     (item.referenceId && cancelledKeys.has(`REF:${item.referenceId}`));
+  const currencyCode = item.currency?.code || "AFN";
   const partyTransaction = item.partyTransaction;
   const party = partyTransaction?.party;
   const partyAccount = party?.accounts?.find(
@@ -6473,11 +7037,11 @@ function normalizeMoneyTransaction(
         ? "فروشنده"
         : "-",
     partyBalance:
-      partyBalance === null ? "-" : money(Math.max(0, partyBalance)),
+      partyBalance === null ? "-" : money(Math.max(0, partyBalance), currencyCode),
     type: item.type || "-",
     direction: item.direction === "IN" ? "ورودی" : "خروجی",
-    amount: money(item.amount || 0),
-    balanceAfter: money(item.balanceAfter || 0),
+    amount: money(item.amount || 0, currencyCode),
+    balanceAfter: money(item.balanceAfter || 0, currencyCode),
     status: isCancelled ? "ابطال" : "فعال",
     __canDelete: !isCancelled && item.type !== "ADJUSTMENT",
     user:
@@ -7976,7 +8540,7 @@ function reportRowsToDataRows(rows: DailyReportRow[]): DataRow[] {
 }
 
 function ReportsPage() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = kabulDateString();
   const [date, setDate] = useState(today);
   const [report, setReport] = useState<DailyCashierReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -9646,7 +10210,7 @@ function InventoryPage() {
       unitCost: Number(raw.unitCost || 0),
       currencyId: raw.currencyId || raw.lot?.currencyId || "",
       expiryDate: raw.lot?.expiryDate
-        ? new Date(raw.lot.expiryDate).toISOString().slice(0, 10)
+        ? kabulDateString(new Date(raw.lot.expiryDate))
         : "",
       note: raw.note || "",
     });
@@ -10595,6 +11159,7 @@ function LookupSelect({
   emptyLabel,
   onChange,
   onSearchChange,
+  emptyAction,
   fullWidth = false,
 }: {
   label: string;
@@ -10603,6 +11168,7 @@ function LookupSelect({
   emptyLabel?: string;
   onChange: (value: string) => void;
   onSearchChange?: (value: string) => void;
+  emptyAction?: ReactNode;
   fullWidth?: boolean;
 }) {
   return (
@@ -10615,6 +11181,7 @@ function LookupSelect({
         placeholder={emptyLabel || "انتخاب کنید"}
         onValueChange={onChange}
         onSearchChange={onSearchChange}
+        emptyAction={emptyAction}
         options={[
           ...(emptyLabel ? [{ value: "", label: emptyLabel }] : []),
           ...options.map((option) => ({
@@ -10899,15 +11466,8 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     };
   }
 
-  const accounts = Array.isArray(item.accounts) ? item.accounts : [];
-  const debit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.debitBalance || 0),
-    0,
-  );
-  const credit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.creditBalance || 0),
-    0,
-  );
+  const partyKind: "CUSTOMER" | "SUPPLIER" =
+    item.type === "SUPPLIER" ? "SUPPLIER" : "CUSTOMER";
 
   return {
     id: item.id,
@@ -10918,7 +11478,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     phone: item.phone || item.secondaryPhone || "-",
     city: item.city || "-",
     creditLimit: item.creditLimit ? money(item.creditLimit) : "-",
-    balance: debit || credit ? money(Math.abs(debit - credit)) : "-",
+    balance: formatPartyBalanceByCurrency(item, partyKind),
     status: item.isActive === false ? "غیرفعال" : "فعال",
     ...auditMeta,
   };

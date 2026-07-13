@@ -35,6 +35,7 @@ type DailyReportRow = {
   totalSales: number;
   paidSales: number;
   remainingSales: number;
+  discountTotal: number;
   moneyIn: number;
   moneyOut: number;
   cashIn: number;
@@ -48,6 +49,7 @@ type DailyCashierReport = {
     saleCount: number;
     transactionCount: number;
     totalSales: number;
+    discountTotal: number;
     paidSales: number;
     remainingSales: number;
     moneyIn: number;
@@ -79,6 +81,7 @@ type EmployeePerformanceReport = {
     employeeCount: number;
     saleCount: number;
     totalSales: number;
+    discountTotal: number;
     moneyIn: number;
     moneyOut: number;
     workedHours: number;
@@ -98,15 +101,28 @@ type ManagementReport = {
   incomeExpenses: Array<Record<string, unknown>>;
 };
 
+type CurrencyUsageReport = {
+  rows: Array<Record<string, unknown>>;
+  totalsByCurrency: Array<Record<string, unknown>>;
+};
+
+function kabulDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kabul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return kabulDateString();
 }
 
 function monthStart() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1)
-    .toISOString()
-    .slice(0, 10);
+  return `${today().slice(0, 8)}01`;
 }
 
 function formatDate(value: unknown) {
@@ -121,6 +137,22 @@ function n(value: unknown) {
   return Number(value || 0);
 }
 
+function currencyUsageTypeLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    SALE: "فروش",
+    PURCHASE: "خرید",
+    SALE_RETURN: "برگشت فروش",
+    PURCHASE_RETURN: "برگشت خرید",
+    MONEY_IN_RECEIPT: "دریافت",
+    MONEY_OUT_PAYMENT: "پرداخت",
+    MONEY_IN_INCOME: "عواید",
+    MONEY_OUT_EXPENSE: "مصارف",
+    MONEY_IN_TRANSFER: "انتقال ورودی",
+    MONEY_OUT_TRANSFER: "انتقال خروجی",
+  };
+  return labels[String(value)] || String(value || "-");
+}
+
 function reportRowsToDataRows(
   rows: DailyReportRow[],
   money: (value: number | string) => string,
@@ -132,6 +164,7 @@ function reportRowsToDataRows(
     totalSales: money(row.totalSales),
     paidSales: money(row.paidSales),
     remainingSales: money(row.remainingSales),
+    discountTotal: money(row.discountTotal),
     cashIn: money(row.cashIn),
     bankIn: money(row.bankIn),
     moneyOut: money(row.moneyOut),
@@ -148,30 +181,36 @@ export function ReportsPage() {
   const [dailyReport, setDailyReport] = useState<DailyCashierReport | null>(null);
   const [managementReport, setManagementReport] = useState<ManagementReport | null>(null);
   const [employeeReport, setEmployeeReport] = useState<EmployeePerformanceReport | null>(null);
+  const [currencyUsageReport, setCurrencyUsageReport] = useState<CurrencyUsageReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [company, setCompany] = useState<PrintCompany | null>(null);
 
   const loadReports = async () => {
     setIsLoading(true);
     try {
-      const [dailyRes, managementRes, employeeRes] = await Promise.all([
+      const [dailyRes, managementRes, employeeRes, currencyUsageRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/reports/daily-cashier?date=${to}`),
         fetch(`${API_BASE_URL}/api/reports/management?from=${from}&to=${to}`),
         fetch(`${API_BASE_URL}/api/reports/employee-performance?period=${employeePeriod}&date=${to}`),
+        fetch(`${API_BASE_URL}/api/reports/currency-usage?from=${from}&to=${to}`),
       ]);
-      const [dailyJson, managementJson, employeeJson] = await Promise.all([
+      const [dailyJson, managementJson, employeeJson, currencyUsageJson] = await Promise.all([
         dailyRes.json().catch(() => null),
         managementRes.json().catch(() => null),
         employeeRes.json().catch(() => null),
+        currencyUsageRes.json().catch(() => null),
       ]);
 
       if (!dailyRes.ok) throw new Error(dailyJson?.message || "خواندن گزارش روزانه ناکام شد");
       if (!managementRes.ok) throw new Error(managementJson?.message || "خواندن گزارش مدیریتی ناکام شد");
       if (!employeeRes.ok) throw new Error(employeeJson?.message || "خواندن گزارش کارکرد کارمند ناکام شد");
 
+      if (!currencyUsageRes.ok) throw new Error(currencyUsageJson?.message || "خواندن گزارش نرخ ارز ناکام شد");
+
       setDailyReport(dailyJson.data);
       setManagementReport(managementJson.data);
       setEmployeeReport(employeeJson.data);
+      setCurrencyUsageReport(currencyUsageJson.data);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "خواندن گزارش ناکام شد");
     } finally {
@@ -193,12 +232,47 @@ export function ReportsPage() {
   const summary = managementReport?.summary || {};
   const employeeSummary = employeeReport?.summary;
 
+  const currencyUsageTotalRows = useMemo<DataRow[]>(
+    () =>
+      (currencyUsageReport?.totalsByCurrency || []).map((item) => {
+        const code = String(item.currencyCode || "-");
+        return {
+          id: String(item.currencyId || code),
+          currency: code,
+          documentCount: n(item.documentCount),
+          originalAmount: formatMoney(n(item.originalAmount), code),
+          baseAmount: money(n(item.baseAmount)),
+        };
+      }),
+    [currencyUsageReport, money],
+  );
+
+  const currencyUsageRows = useMemo<DataRow[]>(
+    () =>
+      (currencyUsageReport?.rows || []).map((item, index) => {
+        const code = String(item.currencyCode || "-");
+        const rate = n(item.exchangeRate);
+        return {
+          id: `${item.currencyId || code}-${item.documentType || index}-${rate}`,
+          documentType: currencyUsageTypeLabel(item.documentType),
+          currency: code,
+          exchangeRate: rate.toLocaleString("fa-AF", { maximumFractionDigits: 8 }),
+          documentCount: n(item.documentCount),
+          originalAmount: formatMoney(n(item.originalAmount), code),
+          baseAmount: money(n(item.baseAmount)),
+          firstAt: formatDate(item.firstAt),
+          lastAt: formatDate(item.lastAt),
+        };
+      }),
+    [currencyUsageReport, money],
+  );
+
   const topProductRows = useMemo<DataRow[]>(
     () =>
       (managementReport?.topProducts || []).map((item) => ({
         id: String(item.id),
         name: String(item.name || "-"),
-        quantity: n(item.quantity),
+        quantity: `${n(item.quantity)} ${String(item.unit || "").trim()}`.trim(),
         totalSales: money(n(item.totalSales)),
         cogs: money(n(item.cogs)),
         profit: money(n(item.profit)),
@@ -306,6 +380,7 @@ export function ReportsPage() {
         totalSales: money(row.totalSales),
         paidSales: money(row.paidSales),
         remainingSales: money(row.remainingSales),
+        discountTotal: money(row.discountTotal),
         moneyIn: money(row.moneyIn),
         moneyOut: money(row.moneyOut),
         netCashFlow: money(row.netCashFlow),
@@ -396,6 +471,7 @@ export function ReportsPage() {
             <TabsTrigger value="sales">فروشات اخیر</TabsTrigger>
             <TabsTrigger value="purchases">خریدهای اخیر</TabsTrigger>
             <TabsTrigger value="incomeExpense">عواید و مصارف</TabsTrigger>
+            <TabsTrigger value="currencyUsage">نرخ معاملات</TabsTrigger>
           </TabsList>
 
           <TabsContent value="daily">
@@ -405,6 +481,7 @@ export function ReportsPage() {
                 { key: "name", label: "فروشنده" },
                 { key: "saleCount", label: "فاکتور" },
                 { key: "totalSales", label: "فروش" },
+                { key: "discountTotal", label: "تخفیف" },
                 { key: "paidSales", label: "دریافت فروش" },
                 { key: "remainingSales", label: "باقی" },
                 { key: "cashIn", label: "نقد" },
@@ -450,6 +527,7 @@ export function ReportsPage() {
                     { key: "position", label: "وظیفه" },
                     { key: "saleCount", label: "فاکتور" },
                     { key: "totalSales", label: "فروش" },
+                    { key: "discountTotal", label: "تخفیف" },
                     { key: "paidSales", label: "دریافت فروش" },
                     { key: "remainingSales", label: "باقی" },
                     { key: "moneyIn", label: "ورودی پول" },
@@ -577,6 +655,33 @@ export function ReportsPage() {
                 { key: "note", label: "یادداشت" },
               ]}
               rows={incomeExpenseRows}
+            />
+          </TabsContent>
+
+          <TabsContent value="currencyUsage" className="space-y-4">
+            <ReportTable
+              title="خلاصه معاملات بر اساس ارز"
+              columns={[
+                { key: "currency", label: "ارز" },
+                { key: "documentCount", label: "تعداد سند" },
+                { key: "originalAmount", label: "مبلغ همان ارز" },
+                { key: "baseAmount", label: `معادل ${baseCurrencyCode}` },
+              ]}
+              rows={currencyUsageTotalRows}
+            />
+            <ReportTable
+              title="جزئیات معاملات بر اساس نرخ"
+              columns={[
+                { key: "documentType", label: "نوع سند" },
+                { key: "currency", label: "ارز" },
+                { key: "exchangeRate", label: "نرخ به بیس" },
+                { key: "documentCount", label: "تعداد" },
+                { key: "originalAmount", label: "مبلغ همان ارز" },
+                { key: "baseAmount", label: `معادل ${baseCurrencyCode}` },
+                { key: "firstAt", label: "اولین معامله" },
+                { key: "lastAt", label: "آخرین معامله" },
+              ]}
+              rows={currencyUsageRows}
             />
           </TabsContent>
         </Tabs>

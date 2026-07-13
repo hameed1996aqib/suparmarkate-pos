@@ -11,6 +11,10 @@ import type {
   ProductSearchItem,
   Warehouse,
 } from "./types";
+import {
+  formatPartyBalanceByCurrency,
+  partyBalanceBase,
+} from "@/lib/party-balance";
 
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -240,15 +244,8 @@ function normalizeCustomer(item: any, source?: string): CustomerOption | null {
     type: item?.type || item?.personType || null,
     isActive: item?.isActive !== false,
     accountsCount: Array.isArray(item?.accounts) ? item.accounts.length : 0,
-    balance: Array.isArray(item?.accounts)
-      ? item.accounts.reduce((sum: number, account: any) => {
-          return (
-            sum +
-            Number(account?.debitBalance || 0) -
-            Number(account?.creditBalance || 0)
-          );
-        }, 0)
-      : 0,
+    balance: partyBalanceBase(item, "CUSTOMER"),
+    balanceSummary: formatPartyBalanceByCurrency(item, "CUSTOMER", ""),
     source: source || null,
   };
 }

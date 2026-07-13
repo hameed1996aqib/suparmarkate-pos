@@ -113,7 +113,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
     html,
     body {
-      margin: 0;
+      margin: 8px;
       padding: 0;
       background: white;
       color: #000;
@@ -147,8 +147,8 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
     }
 
     .muted {
-      color: #333;
-      font-size: ${widthMm === 58 ? "9px" : "10px"};
+      color: #000;
+      font-size: ${widthMm === 58 ? "9px" : "14px"};
     }
 
     .line {
@@ -210,7 +210,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
     .footer {
       margin-top: 8px;
       text-align: center;
-      font-size: ${widthMm === 58 ? "9px" : "10px"};
+      font-size: ${widthMm === 58 ? "14px" : "18px"};
     }
   </style>
 </head>
@@ -303,7 +303,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
   <div class="footer">
     <div>تشکر از خرید شما</div>
-    <div class="muted">Powered by Muhaseb POS</div>
+    <div class="">Powered by Muhaseb POS</div>
   </div>
 
   <script>

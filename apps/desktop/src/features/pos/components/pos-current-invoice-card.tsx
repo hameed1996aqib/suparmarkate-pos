@@ -155,6 +155,10 @@ function stockTone(item: ServerCartItem) {
 }
 
 function customerMeta(customer: CustomerOption) {
+  if (customer.balanceSummary) {
+    return customer.balanceSummary;
+  }
+
   const balance = Number(customer.balance || 0);
 
   if (!Number.isFinite(balance) || balance === 0) {
@@ -318,7 +322,7 @@ export function PosCurrentInvoiceCard({
             <Skeleton className="h-11 w-full" />
           </div>
         ) : (
-          <ScrollArea className="m-3 h-[326px] rounded-xl border border-border">
+          <ScrollArea className="m-3 h-81.5 rounded-xl border border-border">
             <Table className="text-sm">
               <TableHeader>
                 <TableRow>

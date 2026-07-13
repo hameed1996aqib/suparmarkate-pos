@@ -62,6 +62,7 @@ export type CustomerOption = {
   type?: string | null;
   isActive?: boolean;
   balance?: number;
+  balanceSummary?: string | null;
   accountsCount?: number;
   source?: string | null;
 };

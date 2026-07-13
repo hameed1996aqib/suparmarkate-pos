@@ -107,22 +107,70 @@ alertsRoute.get("/", async (c) => {
       FROM "StockLot" WHERE "remainingQuantity" > 0 AND "expiryDate" IS NOT NULL
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT p.id, p.name, p.type, p."creditLimit", pa."currencyId", c.code "currencyCode",
-        GREATEST(pa."debitBalance" - pa."creditBalance", 0) "customerExposure",
-        GREATEST(pa."creditBalance" - pa."debitBalance", 0) "supplierExposure",
-        pa."updatedAt"
-      FROM "Party" p JOIN "PartyAccount" pa ON pa."partyId" = p.id
-      JOIN "Currency" c ON c.id = pa."currencyId"
-      WHERE p."isActive" = true AND p."deletedAt" IS NULL AND p."creditLimit" > 0
-        AND ((p.type IN ('CUSTOMER', 'BOTH') AND pa."debitBalance" - pa."creditBalance" > p."creditLimit")
-          OR (p.type IN ('SUPPLIER', 'BOTH') AND pa."creditBalance" - pa."debitBalance" > p."creditLimit"))
-      ORDER BY p.name ASC LIMIT 500
+      WITH party_exposure AS (
+        SELECT p.id, p.name, p.type, p."creditLimit",
+          COALESCE(base.code, 'AFN') "currencyCode",
+          COALESCE(SUM(
+            GREATEST(pa."debitBalance" - pa."creditBalance", 0)
+            * COALESCE(CASE WHEN c."isBase" = true THEN 1 ELSE latest_rate."rateToBase" END, 1)
+          ), 0) "customerExposure",
+          COALESCE(SUM(
+            GREATEST(pa."creditBalance" - pa."debitBalance", 0)
+            * COALESCE(CASE WHEN c."isBase" = true THEN 1 ELSE latest_rate."rateToBase" END, 1)
+          ), 0) "supplierExposure",
+          MAX(pa."updatedAt") "updatedAt"
+        FROM "Party" p
+        JOIN "PartyAccount" pa ON pa."partyId" = p.id
+        JOIN "Currency" c ON c.id = pa."currencyId"
+        LEFT JOIN "Currency" base ON base."isBase" = true AND base."deletedAt" IS NULL
+        LEFT JOIN LATERAL (
+          SELECT cr."rateToBase"
+          FROM "CurrencyRate" cr
+          WHERE cr."currencyId" = pa."currencyId"
+            AND cr."deletedAt" IS NULL
+            AND cr."effectiveAt" <= NOW()
+          ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC
+          LIMIT 1
+        ) latest_rate ON true
+        WHERE p."isActive" = true AND p."deletedAt" IS NULL AND p."creditLimit" > 0
+        GROUP BY p.id, p.name, p.type, p."creditLimit", base.code
+      )
+      SELECT *
+      FROM party_exposure
+      WHERE (type IN ('CUSTOMER', 'BOTH') AND "customerExposure" > "creditLimit")
+        OR (type IN ('SUPPLIER', 'BOTH') AND "supplierExposure" > "creditLimit")
+      ORDER BY name ASC LIMIT 500
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT COUNT(*)::int count FROM "Party" p JOIN "PartyAccount" pa ON pa."partyId" = p.id
-      WHERE p."isActive" = true AND p."deletedAt" IS NULL AND p."creditLimit" > 0
-        AND ((p.type IN ('CUSTOMER', 'BOTH') AND pa."debitBalance" - pa."creditBalance" > p."creditLimit")
-          OR (p.type IN ('SUPPLIER', 'BOTH') AND pa."creditBalance" - pa."debitBalance" > p."creditLimit"))
+      WITH party_exposure AS (
+        SELECT p.id, p.type, p."creditLimit",
+          COALESCE(SUM(
+            GREATEST(pa."debitBalance" - pa."creditBalance", 0)
+            * COALESCE(CASE WHEN c."isBase" = true THEN 1 ELSE latest_rate."rateToBase" END, 1)
+          ), 0) "customerExposure",
+          COALESCE(SUM(
+            GREATEST(pa."creditBalance" - pa."debitBalance", 0)
+            * COALESCE(CASE WHEN c."isBase" = true THEN 1 ELSE latest_rate."rateToBase" END, 1)
+          ), 0) "supplierExposure"
+        FROM "Party" p
+        JOIN "PartyAccount" pa ON pa."partyId" = p.id
+        JOIN "Currency" c ON c.id = pa."currencyId"
+        LEFT JOIN LATERAL (
+          SELECT cr."rateToBase"
+          FROM "CurrencyRate" cr
+          WHERE cr."currencyId" = pa."currencyId"
+            AND cr."deletedAt" IS NULL
+            AND cr."effectiveAt" <= NOW()
+          ORDER BY cr."effectiveAt" DESC, cr."createdAt" DESC
+          LIMIT 1
+        ) latest_rate ON true
+        WHERE p."isActive" = true AND p."deletedAt" IS NULL AND p."creditLimit" > 0
+        GROUP BY p.id, p.type, p."creditLimit"
+      )
+      SELECT COUNT(*)::int count
+      FROM party_exposure
+      WHERE (type IN ('CUSTOMER', 'BOTH') AND "customerExposure" > "creditLimit")
+        OR (type IN ('SUPPLIER', 'BOTH') AND "supplierExposure" > "creditLimit")
     `)
   ]);
 
@@ -244,7 +292,7 @@ alertsRoute.get("/", async (c) => {
 
       if (isCustomer && customerExposure > creditLimit) {
         alerts.push({
-          id: `credit-customer-${party.id}-${party.currencyId}`,
+          id: `credit-customer-${party.id}`,
           category: "credit",
           type: "CUSTOMER_CREDIT_LIMIT",
           severity: "warning",
@@ -262,7 +310,7 @@ alertsRoute.get("/", async (c) => {
 
       if (isSupplier && supplierExposure > creditLimit) {
         alerts.push({
-          id: `credit-supplier-${party.id}-${party.currencyId}`,
+          id: `credit-supplier-${party.id}`,
           category: "credit",
           type: "SUPPLIER_CREDIT_LIMIT",
           severity: "warning",

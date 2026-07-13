@@ -38,6 +38,10 @@ import { MetricCard } from "@/features/admin/components/metric-card";
 import { money } from "@/features/admin/format";
 import type { DataRow } from "@/features/admin/types";
 import { API_BASE_URL } from "@/lib/api-config";
+import {
+  formatPartyBalanceByCurrency,
+  partyAccountExposure,
+} from "@/lib/party-balance";
 import { dateRangeQuery, recentDateRange } from "@/lib/recent-date-filter";
 
 type PartyKind = "CUSTOMER" | "SUPPLIER";
@@ -85,21 +89,6 @@ const emptyPartyForm: PartyForm = {
   isActive: true,
 };
 
-function partyBalance(party: any, kind: PartyKind) {
-  const accounts = Array.isArray(party?.accounts) ? party.accounts : [];
-  const debit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.debitBalance || 0),
-    0,
-  );
-  const credit = accounts.reduce(
-    (sum: number, account: any) => sum + Number(account.creditBalance || 0),
-    0,
-  );
-  const balance = kind === "CUSTOMER" ? debit - credit : credit - debit;
-
-  return Math.max(0, balance);
-}
-
 function partyToForm(party: any): PartyForm {
   return {
     id: party.id,
@@ -132,7 +121,7 @@ function normalizePartyRow(party: any, kind: PartyKind): DataRow {
     companyName: party.companyName || "-",
     phone: party.phone || party.secondaryPhone || "-",
     city: party.city || "-",
-    balance: money(partyBalance(party, kind)),
+    balance: formatPartyBalanceByCurrency(party, kind),
     status: party.isActive === false ? "غیرفعال" : "فعال",
   };
 }
@@ -548,14 +537,12 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
                     </Card>
                   ) : (
                     accounts.map((account) => {
-                      const debit = Number(account.debitBalance || 0);
-                      const credit = Number(account.creditBalance || 0);
-                      const balance = isCustomer ? debit - credit : credit - debit;
+                      const balance = partyAccountExposure(account, kind);
                       return (
                         <MetricCard
                           key={account.id}
                           label={`مانده ${account.currency?.code || ""}`}
-                          value={money(Math.max(0, balance))}
+                          value={money(balance, account.currency?.code || "AFN")}
                           icon={<CreditCard />}
                         />
                       );

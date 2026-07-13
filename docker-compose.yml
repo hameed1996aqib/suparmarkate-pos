@@ -63,6 +63,7 @@ services:
       BACKUP_UPLOADS_ENABLED: "true"
       PG_DUMP_PATH: pg_dump
       PG_RESTORE_PATH: pg_restore
+      PG_PSQL_PATH: psql
       PG_DOCKER_FALLBACK: "false"
       API_SLOW_REQUEST_MS: ${API_SLOW_REQUEST_MS:-750}
       DISK_WARNING_PERCENT: ${DISK_WARNING_PERCENT:-15}

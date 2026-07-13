@@ -65,6 +65,17 @@ function dockerContainer() {
   return process.env.PG_DOCKER_CONTAINER || "muhaseb_postgres";
 }
 
+async function executeSql(sql: string) {
+  const args = ["--dbname", databaseUrl(), "--command", sql];
+
+  try {
+    await execute(process.env.PG_PSQL_PATH || "psql", args);
+  } catch (error) {
+    if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
+    await execute("docker", ["exec", dockerContainer(), "psql", "--dbname", databaseUrl(), "--command", sql]);
+  }
+}
+
 async function createDump(filePath: string) {
   const args = [
     "--format=custom",
@@ -89,9 +100,18 @@ async function createDump(filePath: string) {
 }
 
 async function restoreDump(filePath: string) {
+  await executeSql(`
+    SELECT pg_terminate_backend(pid)
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid();
+  `);
+
   const args = [
     "--clean",
     "--if-exists",
+    "--single-transaction",
+    "--exit-on-error",
     "--no-owner",
     "--no-privileges",
     "--dbname",

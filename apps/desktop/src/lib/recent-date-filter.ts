@@ -1,11 +1,13 @@
+import { addDaysToIsoDate, kabulDateString } from "@/lib/kabul-date";
+
 export function toDateInput(date: Date) {
-  return date.toISOString().slice(0, 10);
+  return kabulDateString(date);
 }
 
 export function recentDateRange(days = 30) {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-  return { from: toDateInput(from), to: toDateInput(to) };
+  const to = kabulDateString();
+  const from = addDaysToIsoDate(to, -days);
+  return { from, to };
 }
 
 export function dateRangeQuery(from: string, to: string) {

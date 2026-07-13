@@ -107,6 +107,7 @@ const emptyRoleForm: RoleForm = {
 
 function permissionLabel(key: string) {
   const labels: Record<string, string> = {
+    "alerts.view": "دیدن هشدارها",
     "dashboard.view": "دیدن داشبورد",
     "pos.sell": "فروش در POS",
     "sales.view": "دیدن فروشات",

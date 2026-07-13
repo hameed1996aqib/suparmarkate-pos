@@ -1,6 +1,13 @@
 import { Check, ChevronsUpDown, Search } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +30,7 @@ type ComboboxProps = {
   placeholder?: string;
   searchPlaceholder?: string;
   emptyText?: string;
+  emptyAction?: ReactNode;
   onSearchChange?: (value: string) => void;
   onValueChange: (value: string) => void;
   className?: string;
@@ -72,6 +80,7 @@ export function Combobox({
   placeholder = "انتخاب کنید",
   searchPlaceholder = "جستجو...",
   emptyText = "موردی پیدا نشد",
+  emptyAction,
   onSearchChange,
   onValueChange,
   className,
@@ -258,8 +267,9 @@ export function Combobox({
                 })}
               </div>
             ) : (
-              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-                {emptyText}
+              <div className="px-3 py-5 text-center text-sm text-muted-foreground">
+                <div>{emptyText}</div>
+                {emptyAction ? <div className="mt-3">{emptyAction}</div> : null}
               </div>
             )}
           </div>

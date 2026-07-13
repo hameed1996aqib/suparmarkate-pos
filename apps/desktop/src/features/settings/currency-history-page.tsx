@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { API_BASE_URL } from "@/lib/api-config";
+import { kabulDateString } from "@/lib/kabul-date";
 
 type Currency = {
   id: string;
@@ -64,7 +65,7 @@ export function CurrencyHistoryPage() {
   const [form, setForm] = useState({
     currencyId: "",
     rateToBase: "1",
-    effectiveAt: new Date().toISOString().slice(0, 10),
+    effectiveAt: kabulDateString(),
     note: ""
   });
 
@@ -133,7 +134,7 @@ export function CurrencyHistoryPage() {
     setForm({
       currencyId: firstForeign?.id || "",
       rateToBase: firstForeign?.isBase ? "1" : "",
-      effectiveAt: new Date().toISOString().slice(0, 10),
+      effectiveAt: kabulDateString(),
       note: ""
     });
     setIsDialogOpen(true);

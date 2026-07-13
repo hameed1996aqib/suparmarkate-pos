@@ -107,6 +107,199 @@ function beforeLedgerLine(line: { id: string; createdAt: Date; journalEntry: { d
   };
 }
 
+type LedgerSourceLine = {
+  journalEntry: {
+    sourceType?: string | null;
+    sourceId?: string | null;
+  };
+};
+
+type LedgerDocumentInfo = {
+  id: string;
+  type: string;
+  number: string;
+  sourceType: string;
+  sourceId: string;
+  referenceType?: string | null;
+  referenceId?: string | null;
+};
+
+function ledgerSourceKey(sourceType?: string | null, sourceId?: string | null) {
+  return sourceType && sourceId ? `${sourceType}:${sourceId}` : "";
+}
+
+function unique(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter(Boolean) as string[]));
+}
+
+function documentFallback(sourceType?: string | null, sourceId?: string | null, entryNo?: string | null) {
+  return {
+    id: sourceId || entryNo || "-",
+    type: sourceType || "MANUAL",
+    number: sourceId || entryNo || "-",
+    sourceType: sourceType || "MANUAL",
+    sourceId: sourceId || ""
+  };
+}
+
+async function resolveLedgerDocuments(lines: LedgerSourceLine[]) {
+  const sourceRows = lines
+    .map((line) => line.journalEntry)
+    .filter((entry) => entry.sourceType && entry.sourceId);
+  const byKey = new Map<string, LedgerDocumentInfo>();
+
+  const sourceIdsByType = (types: string[]) =>
+    unique(
+      sourceRows
+        .filter((entry) => types.includes(entry.sourceType || ""))
+        .map((entry) => entry.sourceId)
+    );
+
+  const put = (
+    sourceType: string,
+    sourceId: string,
+    info: Omit<LedgerDocumentInfo, "sourceType" | "sourceId">
+  ) => {
+    byKey.set(ledgerSourceKey(sourceType, sourceId), {
+      ...info,
+      sourceType,
+      sourceId
+    });
+  };
+
+  const saleTypes = ["SALE", "POS_SALE", "POS_SALE_COGS", "SALE_CANCEL", "POS_SALE_COGS_CANCEL"];
+  const purchaseTypes = ["PURCHASE", "PURCHASE_CANCEL"];
+  const saleReturnTypes = ["SALE_RETURN", "SALE_RETURN_CANCEL"];
+  const purchaseReturnTypes = ["PURCHASE_RETURN", "PURCHASE_RETURN_CANCEL"];
+  const partyTransactionTypes = [
+    "SALE_PAYMENT",
+    "PURCHASE_PAYMENT",
+    "CUSTOMER_RECEIPT",
+    "CUSTOMER_PAYMENT",
+    "SUPPLIER_PAYMENT",
+    "SALE_PAYMENT_CANCEL",
+    "PURCHASE_PAYMENT_CANCEL",
+    "CUSTOMER_RECEIPT_CANCEL",
+    "CUSTOMER_PAYMENT_CANCEL",
+    "SUPPLIER_PAYMENT_CANCEL"
+  ];
+
+  const [sales, purchases, saleReturns, purchaseReturns, partyTransactions] = await Promise.all([
+    prisma.sale.findMany({
+      where: { id: { in: sourceIdsByType(saleTypes) } },
+      select: { id: true, invoiceNo: true }
+    }),
+    prisma.purchase.findMany({
+      where: { id: { in: sourceIdsByType(purchaseTypes) } },
+      select: { id: true, invoiceNo: true }
+    }),
+    prisma.saleReturn.findMany({
+      where: { id: { in: sourceIdsByType(saleReturnTypes) } },
+      select: { id: true, returnNo: true, saleId: true, sale: { select: { invoiceNo: true } } }
+    }),
+    prisma.purchaseReturn.findMany({
+      where: { id: { in: sourceIdsByType(purchaseReturnTypes) } },
+      select: { id: true, returnNo: true, purchaseId: true, purchase: { select: { invoiceNo: true } } }
+    }),
+    prisma.partyTransaction.findMany({
+      where: { id: { in: sourceIdsByType(partyTransactionTypes) } },
+      select: { id: true, type: true, referenceType: true, referenceId: true }
+    })
+  ]);
+
+  const salesById = new Map(sales.map((sale) => [sale.id, sale]));
+  const purchasesById = new Map(purchases.map((purchase) => [purchase.id, purchase]));
+
+  for (const sale of sales) {
+    for (const sourceType of saleTypes) {
+      put(sourceType, sale.id, {
+        id: sale.id,
+        type: sourceType.includes("COGS") ? "قیمت تمام‌شده فروش" : "فروش",
+        number: sale.invoiceNo || sale.id
+      });
+    }
+  }
+
+  for (const purchase of purchases) {
+    for (const sourceType of purchaseTypes) {
+      put(sourceType, purchase.id, {
+        id: purchase.id,
+        type: "خرید",
+        number: purchase.invoiceNo || purchase.id
+      });
+    }
+  }
+
+  for (const saleReturn of saleReturns) {
+    for (const sourceType of saleReturnTypes) {
+      put(sourceType, saleReturn.id, {
+        id: saleReturn.id,
+        type: "برگشت فروش",
+        number: saleReturn.returnNo || saleReturn.sale?.invoiceNo || saleReturn.id
+      });
+    }
+  }
+
+  for (const purchaseReturn of purchaseReturns) {
+    for (const sourceType of purchaseReturnTypes) {
+      put(sourceType, purchaseReturn.id, {
+        id: purchaseReturn.id,
+        type: "برگشت خرید",
+        number: purchaseReturn.returnNo || purchaseReturn.purchase?.invoiceNo || purchaseReturn.id
+      });
+    }
+  }
+
+  const linkedSaleIds = unique(
+    partyTransactions
+      .filter((transaction) => transaction.referenceType === "SALE_PAYMENT")
+      .map((transaction) => transaction.referenceId)
+  ).filter((id) => !salesById.has(id));
+  const linkedPurchaseIds = unique(
+    partyTransactions
+      .filter((transaction) => transaction.referenceType === "PURCHASE_PAYMENT")
+      .map((transaction) => transaction.referenceId)
+  ).filter((id) => !purchasesById.has(id));
+
+  const [linkedSales, linkedPurchases] = await Promise.all([
+    prisma.sale.findMany({ where: { id: { in: linkedSaleIds } }, select: { id: true, invoiceNo: true } }),
+    prisma.purchase.findMany({ where: { id: { in: linkedPurchaseIds } }, select: { id: true, invoiceNo: true } })
+  ]);
+
+  for (const sale of linkedSales) salesById.set(sale.id, sale);
+  for (const purchase of linkedPurchases) purchasesById.set(purchase.id, purchase);
+
+  for (const transaction of partyTransactions) {
+    const sale = transaction.referenceType === "SALE_PAYMENT" && transaction.referenceId
+      ? salesById.get(transaction.referenceId)
+      : null;
+    const purchase = transaction.referenceType === "PURCHASE_PAYMENT" && transaction.referenceId
+      ? purchasesById.get(transaction.referenceId)
+      : null;
+    const isSupplierPayment = String(transaction.type).includes("PAID") || String(transaction.referenceType || "").includes("SUPPLIER");
+    const type = sale
+      ? "دریافت فروش"
+      : purchase
+        ? "پرداخت خرید"
+        : isSupplierPayment
+          ? "پرداخت"
+          : "دریافت";
+    const number = sale?.invoiceNo || purchase?.invoiceNo || transaction.id;
+
+    for (const sourceType of partyTransactionTypes) {
+      put(sourceType, transaction.id, {
+        id: sale?.id || purchase?.id || transaction.id,
+        type,
+        number,
+        referenceType: transaction.referenceType,
+        referenceId: transaction.referenceId
+      });
+    }
+  }
+
+  return byKey;
+}
+
 const accountSchema = z.object({
   code: z.string().trim().min(1),
   name: z.string().trim().min(1),
@@ -1909,11 +2102,15 @@ accountingRoute.get("/account-period-ledger", async (c) => {
         })
       : { debit: 0, credit: 0 };
   let runningBalance = openingBalance + prefixSums.debit - prefixSums.credit;
+  const documents = await resolveLedgerDocuments(periodLines);
 
   const rows = periodLines.map((line) => {
     const debit = Number(line.baseDebit || line.debit || 0);
     const credit = Number(line.baseCredit || line.credit || 0);
     runningBalance += debit - credit;
+    const document =
+      documents.get(ledgerSourceKey(line.journalEntry.sourceType, line.journalEntry.sourceId)) ??
+      documentFallback(line.journalEntry.sourceType, line.journalEntry.sourceId, line.journalEntry.entryNo);
 
     return {
       id: line.id,
@@ -1922,6 +2119,9 @@ accountingRoute.get("/account-period-ledger", async (c) => {
       description: line.journalEntry.description,
       sourceType: line.journalEntry.sourceType,
       sourceId: line.journalEntry.sourceId,
+      document,
+      documentType: document.type,
+      documentNo: document.number,
       account: {
         id: line.account.id,
         code: line.account.code,
@@ -2069,11 +2269,15 @@ accountingRoute.get("/party-period-ledger", async (c) => {
         })
       : { debit: 0, credit: 0 };
   let runningBalance = openingBalance + prefixSums.debit - prefixSums.credit;
+  const documents = await resolveLedgerDocuments(periodLines);
 
   const rows = periodLines.map((line) => {
     const debit = Number(line.baseDebit || line.debit || 0);
     const credit = Number(line.baseCredit || line.credit || 0);
     runningBalance += debit - credit;
+    const document =
+      documents.get(ledgerSourceKey(line.journalEntry.sourceType, line.journalEntry.sourceId)) ??
+      documentFallback(line.journalEntry.sourceType, line.journalEntry.sourceId, line.journalEntry.entryNo);
 
     return {
       id: line.id,
@@ -2082,6 +2286,9 @@ accountingRoute.get("/party-period-ledger", async (c) => {
       description: line.journalEntry.description,
       sourceType: line.journalEntry.sourceType,
       sourceId: line.journalEntry.sourceId,
+      document,
+      documentType: document.type,
+      documentNo: document.number,
       account: {
         id: line.account.id,
         code: line.account.code,
@@ -2256,12 +2463,16 @@ accountingRoute.get("/party-ledger/:partyId", async (c) => {
         }
       ]
     : [];
+  const documents = await resolveLedgerDocuments(lines);
 
   const rows = lines.map((line) => {
     const debit = Number(line.baseDebit || line.debit || 0);
     const credit = Number(line.baseCredit || line.credit || 0);
 
     runningBalance += debit - credit;
+    const document =
+      documents.get(ledgerSourceKey(line.journalEntry.sourceType, line.journalEntry.sourceId)) ??
+      documentFallback(line.journalEntry.sourceType, line.journalEntry.sourceId, line.journalEntry.entryNo);
 
     return {
       id: line.id,
@@ -2270,6 +2481,9 @@ accountingRoute.get("/party-ledger/:partyId", async (c) => {
       description: line.journalEntry.description,
       sourceType: line.journalEntry.sourceType,
       sourceId: line.journalEntry.sourceId,
+      document,
+      documentType: document.type,
+      documentNo: document.number,
       account: line.account
         ? {
             id: line.account.id,

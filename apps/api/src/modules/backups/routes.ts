@@ -86,21 +86,35 @@ backupsRoute.post("/:filename/restore", async (c) => {
   if (body.mode !== "restore" || body.confirm !== "RESTORE") {
     return c.json({ message: "Backup validated", data: { filename, ...metadata, restoreMode: "preview" } });
   }
-  const safetyBackup = await createNativeBackup();
-  setMaintenanceMode(`restoring ${filename}`);
+
+  let safetyBackup: Awaited<ReturnType<typeof createNativeBackup>> | null = null;
   try {
+    safetyBackup = await createNativeBackup();
+    setMaintenanceMode(`restoring ${filename}`);
     await restoreNativeBackup(filePath);
-  } finally {
     setMaintenanceMode(null);
+    await writeAudit(c, {
+      action: "backup.restore",
+      entityType: "Backup",
+      entityId: filename,
+      description: "PostgreSQL backup restored",
+      metadata: { filename, safetyBackup: safetyBackup.filename }
+    });
+    return c.json({ message: "Backup restored successfully", data: { filename, safetyBackup: safetyBackup.filename, restoreMode: "restore" } });
+  } catch (error) {
+    setMaintenanceMode(null);
+    return c.json(
+      {
+        message: error instanceof Error ? error.message : "Backup restore failed",
+        data: {
+          filename,
+          safetyBackup: safetyBackup?.filename ?? null,
+          restoreMode: "failed"
+        }
+      },
+      500
+    );
   }
-  await writeAudit(c, {
-    action: "backup.restore",
-    entityType: "Backup",
-    entityId: filename,
-    description: "PostgreSQL backup restored",
-    metadata: { filename, safetyBackup: safetyBackup.filename }
-  });
-  return c.json({ message: "Backup restored successfully", data: { filename, safetyBackup: safetyBackup.filename, restoreMode: "restore" } });
 });
 
 backupsRoute.delete("/:filename", async (c) => {

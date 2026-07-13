@@ -9,7 +9,7 @@ type RouteRule = {
 
 const routeRules: RouteRule[] = [
   { prefix: "/api/dashboard", read: "dashboard.view" },
-  { prefix: "/api/alerts", read: "dashboard.view" },
+  { prefix: "/api/alerts", read: "alerts.view" },
   { prefix: "/api/pos", read: "pos.sell", write: "pos.sell" },
   { prefix: "/api/pos-cart", read: "pos.sell", write: "pos.sell" },
   { prefix: "/api/barcodes", read: "pos.sell", write: "products.manage" },

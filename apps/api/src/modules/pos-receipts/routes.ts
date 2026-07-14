@@ -27,14 +27,28 @@ function getCustomerLabel(sale: any) {
     return sale.customer.name;
   }
 
-  const note = String(sale.note || "");
-  const marker = "Customer:";
-
-  if (note.includes(marker)) {
-    return note.split(marker)[1]?.trim() || "مشتری نقدی";
-  }
+  const customerLabel = getNotePart(sale.note, "Customer");
+  if (customerLabel) return customerLabel;
 
   return "مشتری نقدی";
+}
+
+function getNotePart(note: unknown, marker: string) {
+  const text = String(note || "");
+  const prefix = `${marker}:`;
+  const part = text
+    .split(" | ")
+    .find((item) => item.trim().startsWith(prefix));
+
+  return part?.slice(prefix.length).trim() || null;
+}
+
+function getNoteNumber(note: unknown, marker: string) {
+  const rawValue = getNotePart(note, marker);
+  if (!rawValue) return null;
+
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? value : null;
 }
 
 posReceiptsRoute.get("/sales/:id/html", async (c) => {
@@ -73,8 +87,11 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
   const discount = Number((sale as any).discount || 0);
   const total = Number((sale as any).total || subtotal - discount);
-  const paidAmount = Number((sale as any).paidAmount || total);
-  const changeAmount = Math.max(0, paidAmount - total);
+  const salePaidAmount = Number((sale as any).paidAmount || total);
+  const tenderedAmount = getNoteNumber((sale as any).note, "TenderedAmount") ?? salePaidAmount;
+  const changeAmount =
+    getNoteNumber((sale as any).note, "ChangeAmount") ??
+    Math.max(0, tenderedAmount - total);
 
   const currencyLabel = sale.currency?.symbol || sale.currency?.code || "";
   const customerLabel = getCustomerLabel(sale);
@@ -292,7 +309,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
     <div class="row">
       <span>دریافت‌شده:</span>
-      <strong>${money(paidAmount)} ${safeText(currencyLabel)}</strong>
+      <strong>${money(tenderedAmount)} ${safeText(currencyLabel)}</strong>
     </div>
 
     <div class="row">

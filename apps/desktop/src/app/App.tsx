@@ -3884,10 +3884,18 @@ function SalesPage() {
   };
 
   const printSaleReceipt = async (row: DataRow) => {
-    const url = `${API_BASE_URL}/api/pos-receipts/sales/${row.id}/html?width=80`;
+    const receiptWidthMm = Number(localStorage.getItem("muhaseb_receipt_width_mm") || 80);
+    const safeReceiptWidthMm = receiptWidthMm === 58 ? 58 : 80;
+    const url = `${API_BASE_URL}/api/pos-receipts/sales/${row.id}/html?width=${safeReceiptWidthMm}`;
     try {
       if (window.electronAPI?.printReceipt) {
-        await window.electronAPI.printReceipt(url, { widthMm: 80 });
+        await window.electronAPI.printReceipt(url, {
+          widthMm: safeReceiptWidthMm,
+          marginLeftMm: Number(localStorage.getItem("muhaseb_receipt_margin_left_mm") || 1.5),
+          marginRightMm: Number(localStorage.getItem("muhaseb_receipt_margin_right_mm") || 1.5),
+          silent: localStorage.getItem("muhaseb_receipt_silent_print") === "true",
+          deviceName: localStorage.getItem("muhaseb_receipt_printer_name") || "",
+        });
         toast.success("رسید برای چاپ آماده شد");
         return;
       }

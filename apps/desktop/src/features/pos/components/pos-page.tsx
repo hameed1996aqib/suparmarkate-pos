@@ -20,6 +20,7 @@ export function PosPage() {
     },
     onHoldCart: () => pos.holdCurrentCart(),
     onSubmitSale: () => pos.submitSale(),
+    onSubmitSaleWithoutPrint: () => pos.submitSale({ printReceipt: false }),
     onPrintLastReceipt: () => pos.printLastReceipt(),
     onEscape: () => {
       productSearchRef.current?.clearBarcode();
@@ -28,34 +29,56 @@ export function PosPage() {
     },
   });
 
+  const metricOptions = [
+    {
+      id: "todaySales",
+      label: "فروش امروز",
+      value: pos.shiftStats.totalSales,
+      suffix: pos.currency?.code || "AFN",
+    },
+    {
+      id: "invoiceCount",
+      label: "تعداد فاکتورها",
+      value: pos.shiftStats.invoiceCount,
+    },
+    {
+      id: "creditSales",
+      label: "فروش نسیه",
+      value: pos.remainingAmount,
+      suffix: pos.currency?.code || "AFN",
+    },
+    {
+      id: "averageBasket",
+      label: "میانگین سبد",
+      value: pos.itemsCount ? Math.round(pos.subtotal / pos.itemsCount) : 0,
+      suffix: pos.currency?.code || "AFN",
+    },
+    {
+      id: "activeCashRegister",
+      label: "صندوق فعال",
+      value: pos.cashAccountId ? 1 : 0,
+      text: pos.cashAccountId ? "آماده" : "تنظیم نشده",
+    },
+  ];
+  const visibleMetricOptions = metricOptions.filter((metric) =>
+    pos.visibleMetricIds.includes(metric.id),
+  );
+
   return (
     <div dir="rtl" className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <PosStatusMetric
-          label="فروش امروز"
-          value={pos.shiftStats.totalSales}
-          suffix={pos.currency?.code || "AFN"}
-        />
-        <PosStatusMetric
-          label="تعداد فاکتورها"
-          value={pos.shiftStats.invoiceCount}
-        />
-        <PosStatusMetric
-          label="فروش نسیه"
-          value={pos.remainingAmount}
-          suffix={pos.currency?.code || "AFN"}
-        />
-        <PosStatusMetric
-          label="میانگین سبد"
-          value={pos.itemsCount ? Math.round(pos.subtotal / pos.itemsCount) : 0}
-          suffix={pos.currency?.code || "AFN"}
-        />
-        <PosStatusMetric
-          label="صندوق فعال"
-          value={pos.cashAccountId ? 1 : 0}
-          text={pos.cashAccountId ? "آماده" : "تنظیم نشده"}
-        />
-      </div>
+      {visibleMetricOptions.length ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          {visibleMetricOptions.map((metric) => (
+            <PosStatusMetric
+              key={metric.id}
+              label={metric.label}
+              value={metric.value}
+              suffix={metric.suffix}
+              text={metric.text}
+            />
+          ))}
+        </div>
+      ) : null}
 
       <div
         className="grid gap-4 2xl:grid-cols-[700px_1fr]"
@@ -64,6 +87,7 @@ export function PosPage() {
         <section dir="rtl" className="space-y-4">
           <PosCurrentInvoiceCard
             items={pos.cartItems}
+            highlightedItemKey={pos.highlightedCartItemKey}
             itemsCount={pos.itemsCount}
             currency={pos.currency}
             isBooting={pos.isBooting}
@@ -151,12 +175,26 @@ export function PosPage() {
         cashAccountId={pos.cashAccountId}
         bankAccountId={pos.bankAccountId}
         receiptWidthMm={pos.receiptWidthMm}
+        receiptPrinterName={pos.receiptPrinterName}
+        receiptSilentPrint={pos.receiptSilentPrint}
+        receiptMarginLeftMm={pos.receiptMarginLeftMm}
+        receiptMarginRightMm={pos.receiptMarginRightMm}
+        metricOptions={metricOptions.map((metric) => ({
+          id: metric.id,
+          label: metric.label,
+        }))}
+        visibleMetricIds={pos.visibleMetricIds}
         onApiBaseUrlOverrideChange={pos.setApiBaseUrlOverride}
         onCurrencyChange={pos.setCurrencyId}
         onWarehouseChange={pos.setWarehouseId}
         onCashAccountChange={pos.setCashAccountId}
         onBankAccountChange={pos.setBankAccountId}
         onReceiptWidthChange={pos.setReceiptWidthMm}
+        onReceiptPrinterNameChange={pos.setReceiptPrinterName}
+        onReceiptSilentPrintChange={pos.setReceiptSilentPrint}
+        onReceiptMarginLeftChange={pos.setReceiptMarginLeftMm}
+        onReceiptMarginRightChange={pos.setReceiptMarginRightMm}
+        onMetricVisibilityChange={pos.setMetricVisibility}
       />
     </div>
   );

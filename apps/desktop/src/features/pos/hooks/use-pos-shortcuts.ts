@@ -4,6 +4,7 @@ type UsePosShortcutsInput = {
   onFocusBarcode: () => void;
   onHoldCart: () => void;
   onSubmitSale: () => void;
+  onSubmitSaleWithoutPrint: () => void;
   onPrintLastReceipt: () => void;
   onEscape: () => void;
 };
@@ -12,6 +13,7 @@ export function usePosShortcuts({
   onFocusBarcode,
   onHoldCart,
   onSubmitSale,
+  onSubmitSaleWithoutPrint,
   onPrintLastReceipt,
   onEscape,
 }: UsePosShortcutsInput) {
@@ -49,6 +51,12 @@ export function usePosShortcuts({
         return;
       }
 
+      if (event.key === "F10") {
+        event.preventDefault();
+        onSubmitSaleWithoutPrint();
+        return;
+      }
+
       if (event.key === "Escape") {
         event.preventDefault();
         onEscape();
@@ -65,5 +73,12 @@ export function usePosShortcuts({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onFocusBarcode, onHoldCart, onPrintLastReceipt, onSubmitSale, onEscape]);
+  }, [
+    onEscape,
+    onFocusBarcode,
+    onHoldCart,
+    onPrintLastReceipt,
+    onSubmitSale,
+    onSubmitSaleWithoutPrint,
+  ]);
 }

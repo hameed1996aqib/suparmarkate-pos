@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     });
   },
 
+  listPrinters() {
+    return ipcRenderer.invoke("printers:list");
+  },
+
   minimizeWindow() {
     return windowControls.minimize();
   },

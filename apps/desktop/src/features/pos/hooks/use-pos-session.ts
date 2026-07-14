@@ -36,10 +36,23 @@ import type {
 } from "../types";
 import { getApiBaseUrl } from "../utils";
 
+type SubmitSaleOptions = {
+  printReceipt?: boolean;
+};
+
+const defaultVisiblePosMetricIds = [
+  "todaySales",
+  "invoiceCount",
+  "creditSales",
+  "averageBasket",
+  "activeCashRegister",
+];
+
 export function usePosSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const productRequestSeqRef = useRef(0);
+  const pendingScanBarcodeRef = useRef<string | null>(null);
 
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiBaseUrlOverride, setApiBaseUrlOverrideState] = useState(() => {
@@ -50,6 +63,7 @@ export function usePosSession() {
   const [status, setStatus] = useState("در حال آماده‌سازی صندوق فروش...");
 
   const [cart, setCart] = useState<ServerCart | null>(null);
+  const [highlightedCartItemKey, setHighlightedCartItemKey] = useState<string | null>(null);
   const [summary, setSummary] = useState<ServerCartSummary | null>(null);
   const [heldCarts, setHeldCarts] = useState<HeldCart[]>([]);
 
@@ -129,6 +143,32 @@ export function usePosSession() {
   const [receiptWidthMm, setReceiptWidthMmState] = useState<number>(() => {
     const saved = Number(localStorage.getItem("muhaseb_receipt_width_mm") || 80);
     return saved === 58 ? 58 : 80;
+  });
+  const [receiptPrinterName, setReceiptPrinterNameState] = useState(() => {
+    return localStorage.getItem("muhaseb_receipt_printer_name") || "";
+  });
+  const [receiptSilentPrint, setReceiptSilentPrintState] = useState(() => {
+    return localStorage.getItem("muhaseb_receipt_silent_print") === "true";
+  });
+  const [receiptMarginLeftMm, setReceiptMarginLeftMmState] = useState(() => {
+    return Number(localStorage.getItem("muhaseb_receipt_margin_left_mm") || 1.5);
+  });
+  const [receiptMarginRightMm, setReceiptMarginRightMmState] = useState(() => {
+    return Number(localStorage.getItem("muhaseb_receipt_margin_right_mm") || 1.5);
+  });
+  const [visibleMetricIds, setVisibleMetricIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem("muhaseb_pos_visible_metric_ids");
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed.map(String);
+      } catch {
+        // ignore invalid saved metric settings
+      }
+    }
+
+    return defaultVisiblePosMetricIds;
   });
 
   const cartItems = cart?.items || [];
@@ -291,8 +331,88 @@ export function usePosSession() {
     return `${protocol}//${api.hostname}:${port}?sessionId=${encodeURIComponent(sessionId)}&clientType=desktop`;
   }
 
-  function applyServerCart(payload?: Partial<CartPayload> | null) {
-    if (payload?.cart) setCart(payload.cart);
+  function normalizeCartBarcode(value?: string | null) {
+    const digitMap: Record<string, string> = {
+      "۰": "0",
+      "۱": "1",
+      "۲": "2",
+      "۳": "3",
+      "۴": "4",
+      "۵": "5",
+      "۶": "6",
+      "۷": "7",
+      "۸": "8",
+      "۹": "9",
+      "٠": "0",
+      "١": "1",
+      "٢": "2",
+      "٣": "3",
+      "٤": "4",
+      "٥": "5",
+      "٦": "6",
+      "٧": "7",
+      "٨": "8",
+      "٩": "9",
+    };
+
+    return String(value || "")
+      .trim()
+      .replace(/[۰-۹٠-٩]/g, (digit) => digitMap[digit] || digit)
+      .replace(/[\s\u200b\u200c\u200d\u2060-]/g, "")
+      .toLowerCase();
+  }
+
+  function findHighlightedCartItemKey(
+    nextCart: ServerCart,
+    previousCart?: ServerCart | null,
+    barcode?: string | null,
+  ) {
+    const normalizedBarcode = normalizeCartBarcode(barcode);
+
+    if (normalizedBarcode) {
+      const barcodeMatch = [...nextCart.items]
+        .reverse()
+        .find((item) => normalizeCartBarcode(item.barcode) === normalizedBarcode);
+
+      if (barcodeMatch) return barcodeMatch.key;
+    }
+
+    if (previousCart) {
+      const previousByKey = new Map(previousCart.items.map((item) => [item.key, item]));
+      const changedItem = nextCart.items.find((item) => {
+        const previousItem = previousByKey.get(item.key);
+        return !previousItem || Number(item.quantity || 0) > Number(previousItem.quantity || 0);
+      });
+
+      if (changedItem) return changedItem.key;
+    }
+
+    return nextCart.items.at(-1)?.key || null;
+  }
+
+  function applyServerCart(
+    payload?: Partial<CartPayload> | null,
+    options?: { highlightBarcode?: string | null; highlightChangedItem?: boolean },
+  ) {
+    if (payload?.cart) {
+      const nextCart = payload.cart;
+
+      setCart((previousCart) => {
+        if (!nextCart.items.length) {
+          setHighlightedCartItemKey(null);
+        } else if (options?.highlightChangedItem || options?.highlightBarcode) {
+          const key = findHighlightedCartItemKey(
+            nextCart,
+            previousCart,
+            options?.highlightBarcode,
+          );
+
+          if (key) setHighlightedCartItemKey(key);
+        }
+
+        return nextCart;
+      });
+    }
     if (payload?.summary) setSummary(payload.summary);
   }
 
@@ -371,6 +491,39 @@ export function usePosSession() {
     setReceiptWidthMmState(nextValue);
   }
 
+  function setReceiptPrinterName(value: string) {
+    localStorage.setItem("muhaseb_receipt_printer_name", value);
+    setReceiptPrinterNameState(value);
+  }
+
+  function setReceiptSilentPrint(value: boolean) {
+    localStorage.setItem("muhaseb_receipt_silent_print", String(value));
+    setReceiptSilentPrintState(value);
+  }
+
+  function setReceiptMarginLeftMm(value: number) {
+    const nextValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+    localStorage.setItem("muhaseb_receipt_margin_left_mm", String(nextValue));
+    setReceiptMarginLeftMmState(nextValue);
+  }
+
+  function setReceiptMarginRightMm(value: number) {
+    const nextValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+    localStorage.setItem("muhaseb_receipt_margin_right_mm", String(nextValue));
+    setReceiptMarginRightMmState(nextValue);
+  }
+
+  function setMetricVisibility(id: string, visible: boolean) {
+    setVisibleMetricIds((currentIds) => {
+      const nextIds = visible
+        ? Array.from(new Set([...currentIds, id]))
+        : currentIds.filter((item) => item !== id);
+
+      localStorage.setItem("muhaseb_pos_visible_metric_ids", JSON.stringify(nextIds));
+      return nextIds;
+    });
+  }
+
   function saveShift(nextShift: PosShiftSummary) {
     localStorage.setItem("muhaseb_pos_shift_v1", JSON.stringify(nextShift));
     setShift(nextShift);
@@ -447,7 +600,12 @@ export function usePosSession() {
         const message = JSON.parse(event.data);
 
         if (message.type === "CART_UPDATED") {
-          applyServerCart(message.payload);
+          const highlightBarcode = pendingScanBarcodeRef.current;
+          applyServerCart(message.payload, {
+            highlightBarcode,
+            highlightChangedItem: Boolean(highlightBarcode),
+          });
+          pendingScanBarcodeRef.current = null;
           setStatus("سبد فروش بروزرسانی شد");
           return;
         }
@@ -465,6 +623,7 @@ export function usePosSession() {
         }
 
         if (message.type === "SCAN_ERROR") {
+          pendingScanBarcodeRef.current = null;
           const msg = message.payload?.message || "خطا در اسکن بارکود";
           setStatus(msg);
           toast.error(msg);
@@ -742,6 +901,8 @@ export function usePosSession() {
 
     setStatus(`در حال افزودن بارکود: ${barcode}`);
 
+    pendingScanBarcodeRef.current = barcode;
+
     if (sendWsMessage({
       type: "SCAN_BARCODE",
       barcode,
@@ -749,6 +910,8 @@ export function usePosSession() {
     })) {
       return;
     }
+
+    pendingScanBarcodeRef.current = null;
 
     try {
       const res = await scanPosBarcode({
@@ -762,6 +925,9 @@ export function usePosSession() {
         applyServerCart({
           cart: res.data.cart,
           summary: res.data.cartSummary,
+        }, {
+          highlightBarcode: barcode,
+          highlightChangedItem: true,
         });
       }
 
@@ -1011,7 +1177,13 @@ export function usePosSession() {
 
     try {
       if (window.electronAPI?.printReceipt) {
-        await window.electronAPI.printReceipt(url, { widthMm: receiptWidthMm });
+        await window.electronAPI.printReceipt(url, {
+          widthMm: receiptWidthMm,
+          marginLeftMm: receiptMarginLeftMm,
+          marginRightMm: receiptMarginRightMm,
+          silent: receiptSilentPrint,
+          deviceName: receiptPrinterName,
+        });
         toast.success("رسید برای چاپ آماده شد");
         return;
       }
@@ -1134,13 +1306,28 @@ export function usePosSession() {
     await printReceiptUrl(url);
   }
 
-  async function submitSale() {
+  async function submitSale(options: SubmitSaleOptions = {}) {
     if (!canSubmitSale) {
       toast.error(saleDisabledReason || "صندوق آماده ثبت فروش نیست");
       return;
     }
 
-    const finalPaidAmount = paidAmount > 0 ? paidAmount : payableTotal;
+    const requestedPaidAmount =
+      paymentMethod === "SPLIT"
+        ? Number(splitCashAmount || 0) + Number(splitCardAmount || 0)
+        : paidAmount > 0
+          ? paidAmount
+          : payableTotal;
+    const finalPaidAmount = Math.min(requestedPaidAmount, payableTotal);
+    const cashTenderedAmount =
+      paymentMethod === "SPLIT"
+        ? Number(splitCashAmount || 0)
+        : paymentMethod === "CASH"
+          ? requestedPaidAmount
+          : 0;
+    const receiptChangeAmount = Math.max(0, cashTenderedAmount - payableTotal);
+    const receiptTenderedAmount = finalPaidAmount + receiptChangeAmount;
+    const shouldPrintReceipt = options.printReceipt !== false;
     const paymentAccountType = paymentMethod === "CARD" ? "BANK" : "CASH";
     const paymentAccountId = paymentAccountType === "BANK" ? bankAccountId : cashAccountId;
     const paymentMethodLabel =
@@ -1174,29 +1361,37 @@ export function usePosSession() {
       return;
     }
 
-    const paymentLines =
+    let remainingPaymentAllocation = payableTotal;
+    const requestedPaymentLines =
       paymentMethod === "SPLIT"
-        ? [
+        ? ([
             splitCashAmount > 0
               ? {
                   paymentAccountType: "CASH" as const,
                   paymentAccountId: cashAccountId,
-                  amount: splitCashAmount
+                  amount: splitCashAmount,
                 }
               : null,
             splitCardAmount > 0
               ? {
                   paymentAccountType: "BANK" as const,
                   paymentAccountId: bankAccountId,
-                  amount: splitCardAmount
+                  amount: splitCardAmount,
                 }
-              : null
+              : null,
           ].filter(Boolean) as Array<{
             paymentAccountType: "CASH" | "BANK";
             paymentAccountId: string;
             amount: number;
-          }>
+          }>)
         : undefined;
+    const paymentLines = requestedPaymentLines
+      ?.map((line) => {
+        const amount = Math.min(Number(line.amount || 0), remainingPaymentAllocation);
+        remainingPaymentAllocation = Math.max(0, remainingPaymentAllocation - amount);
+        return { ...line, amount };
+      })
+      .filter((line) => line.amount > 0);
 
     try {
       setStatus("در حال ثبت فروش...");
@@ -1214,6 +1409,8 @@ export function usePosSession() {
         subtotal,
         invoiceDiscount: finalInvoiceDiscount,
         paidAmount: finalPaidAmount,
+        tenderedAmount: receiptTenderedAmount,
+        changeAmount: receiptChangeAmount,
         customerId: selectedCustomerPartyId,
         customerLabel: customerLabel.trim() || undefined,
         saleNote: saleNote.trim() || undefined,
@@ -1291,8 +1488,8 @@ export function usePosSession() {
           invoiceNo,
           receiptUrl,
           total: payableTotal,
-          paidAmount: finalPaidAmount,
-          changeAmount: Math.max(0, finalPaidAmount - payableTotal),
+          paidAmount: receiptTenderedAmount,
+          changeAmount: receiptChangeAmount,
         });
       }
 
@@ -1314,7 +1511,9 @@ export function usePosSession() {
         setLastReceiptUrl(receiptUrl);
         localStorage.setItem("muhaseb_last_receipt_url", receiptUrl);
 
-        await printReceiptUrl(receiptUrl);
+        if (shouldPrintReceipt) {
+          await printReceiptUrl(receiptUrl);
+        }
       }
     } catch (error: any) {
       setStatus(error?.message || "ثبت فروش ناکام شد");
@@ -1366,6 +1565,7 @@ export function usePosSession() {
     cart,
     summary,
     cartItems,
+    highlightedCartItemKey,
 
     heldCarts,
     holdCurrentCart,
@@ -1444,6 +1644,16 @@ export function usePosSession() {
 
     receiptWidthMm,
     setReceiptWidthMm,
+    receiptPrinterName,
+    setReceiptPrinterName,
+    receiptSilentPrint,
+    setReceiptSilentPrint,
+    receiptMarginLeftMm,
+    setReceiptMarginLeftMm,
+    receiptMarginRightMm,
+    setReceiptMarginRightMm,
+    visibleMetricIds,
+    setMetricVisibility,
 
     isBooting,
     subtotal,

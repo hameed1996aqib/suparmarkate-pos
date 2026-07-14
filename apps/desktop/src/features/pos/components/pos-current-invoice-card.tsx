@@ -51,6 +51,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 import type {
   Currency,
@@ -65,6 +66,7 @@ import { normalizePosQuantity, PosQuantityInput } from "./pos-quantity-input";
 
 type PosCurrentInvoiceCardProps = {
   items: ServerCartItem[];
+  highlightedItemKey?: string | null;
   itemsCount: number;
   currency: Currency | null;
   isBooting: boolean;
@@ -120,13 +122,19 @@ type PosCurrentInvoiceCardProps = {
 };
 
 function quickAmounts(payableTotal: number) {
+  if (payableTotal <= 0) return [];
+
   return Array.from(
     new Set([
       payableTotal,
       Math.ceil(payableTotal / 50) * 50,
       Math.ceil(payableTotal / 100) * 100,
+      500,
+      1000,
     ]),
-  ).filter((value) => Number.isFinite(value) && value > 0);
+  )
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
 }
 
 function stockTone(item: ServerCartItem) {
@@ -170,6 +178,7 @@ function customerMeta(customer: CustomerOption) {
 
 export function PosCurrentInvoiceCard({
   items,
+  highlightedItemKey,
   itemsCount,
   currency,
   isBooting,
@@ -226,8 +235,8 @@ export function PosCurrentInvoiceCard({
   );
 
   return (
-    <Card className="overflow-hidden border-border bg-card shadow-sm">
-      <CardHeader className="flex flex-row items-center justify-between border-b border-border px-4 py-3">
+    <Card className="overflow-hidden border-border bg-card shadow-sm gap-0">
+      <CardHeader className="flex flex-row items-center justify-between border-b border-border px-4 py-0 ">
         <DropdownMenu>
           <DropdownMenuTrigger>
             <Button size="icon-sm" variant="secondary">
@@ -297,7 +306,7 @@ export function PosCurrentInvoiceCard({
         <div className="flex items-center gap-3">
           <div className="text-end">
             <CardTitle className="text-base">فاکتور جاری</CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground" dir="ltr">
+            <p className="mt-0 text-xs text-muted-foreground" dir="ltr">
               {invoiceNo}
             </p>
           </div>
@@ -309,7 +318,7 @@ export function PosCurrentInvoiceCard({
 
       <CardContent className="p-0">
         {hasStockIssue ? (
-          <div className="mx-3 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="mx-3 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-0 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4" />
             مقدار بعضی اقلام از موجودی قابل فروش بیشتر است.
           </div>
@@ -322,7 +331,7 @@ export function PosCurrentInvoiceCard({
             <Skeleton className="h-11 w-full" />
           </div>
         ) : (
-          <ScrollArea className="m-3 h-81.5 rounded-xl border border-border">
+          <ScrollArea className="m-3 h-81.5 rounded-xl border border-border ">
             <Table className="text-sm">
               <TableHeader>
                 <TableRow>
@@ -342,13 +351,13 @@ export function PosCurrentInvoiceCard({
                     return (
                       <TableRow
                         key={item.key}
-                        className={
+                        className={cn(
                           Number(item.quantity || 0) *
                             Number(item.conversionRate || 1) >
-                          Number(item.totalStock || 0)
-                            ? "bg-destructive/5"
-                            : ""
-                        }
+                            Number(item.totalStock || 0) && "bg-destructive/5",
+                          item.key === highlightedItemKey &&
+                            "bg-primary/15 ring-1 ring-inset ring-primary/30",
+                        )}
                       >
                         <TableCell className="py-2">
                           <div className="flex items-center gap-2">
@@ -510,60 +519,66 @@ export function PosCurrentInvoiceCard({
           </ScrollArea>
         )}
 
-        <div className=" p-2  pt-0">
-          <div className="grid grid-cols-[1fr_auto] gap-2 rounded-xl border border-border bg-secondary/40 p-2">
-            <Input
-              value={invoiceDiscount}
-              type="number"
-              min={0}
-              max={subtotal}
-              onChange={(event) =>
-                onInvoiceDiscountChange(Number(event.target.value))
-              }
-              placeholder="کد تخفیف یا مبلغ تخفیف"
-              className="h-9 border-border bg-background"
-            />
-            <Button variant="secondary" className="h-9">
-              اعمال
-            </Button>
-          </div>
-        </div>
-
-        <div className="space-y-2  px-2 py-3">
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-            <Combobox
-              value={selectedCustomer?.id || ""}
-              options={filteredCustomers.map((customer) => ({
-                value: customer.id,
-                label: customer.name,
-                description: [
-                  customer.code ? `کد: ${customer.code}` : null,
-                  customer.phone || null,
-                ]
-                  .filter(Boolean)
-                  .join(" · "),
-                meta: customerMeta(customer),
-              }))}
-              placeholder="انتخاب مشتری نسیه از حساب‌های ثبت‌شده"
-              searchPlaceholder="جستجوی مشتری با نام، کد یا شماره..."
-              emptyText="مشتری دارای حساب پیدا نشد"
-              onSearchChange={onCustomerSearchChange}
-              onValueChange={(value) => {
-                const customer = filteredCustomers.find(
-                  (item) => item.id === value,
-                );
-
-                if (customer) {
-                  onCustomerSelect(customer);
+        <div className="space-y-2  px-2 py-1">
+          <div className="grid gap-2 sm:grid-cols-[1fr_2fr] ">
+            <div className=" p-2  pt-0">
+              {/* <div className="grid grid-cols-[1fr_auto] gap-2 rounded-xl border border-border items-center bg-secondary/40 p-2"> */}
+              <label className="p-2">تخفیف</label>
+              <Input
+                value={invoiceDiscount}
+                type="number"
+                min={0}
+                max={subtotal}
+                onChange={(event) =>
+                  onInvoiceDiscountChange(Number(event.target.value))
                 }
-              }}
-            />
+                placeholder="کد تخفیف یا مبلغ تخفیف"
+                className="h-10 border-border bg-background w-full"
+              />
+              {/* </div> */}
+            </div>
+            <div className="flex flex-row gap-2  justify-center items-start ">
+              <div className="w-full ">
+                <label className="p-2">مشتری</label>
+                <Combobox
+                  value={selectedCustomer?.id || ""}
+                  options={filteredCustomers.map((customer) => ({
+                    value: customer.id,
+                    label: customer.name,
+                    description: [
+                      customer.code ? `کد: ${customer.code}` : null,
+                      customer.phone || null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · "),
+                    meta: customerMeta(customer),
+                  }))}
+                  placeholder="انتخاب مشتری نسیه از حساب‌های ثبت‌شده"
+                  searchPlaceholder="جستجوی مشتری با نام، کد یا شماره..."
+                  emptyText="مشتری دارای حساب پیدا نشد"
+                  onSearchChange={onCustomerSearchChange}
+                  onValueChange={(value) => {
+                    const customer = filteredCustomers.find(
+                      (item) => item.id === value,
+                    );
 
-            {selectedCustomer ? (
-              <Button variant="secondary" onClick={onCustomerClear}>
-                حذف مشتری
-              </Button>
-            ) : null}
+                    if (customer) {
+                      onCustomerSelect(customer);
+                    }
+                  }}
+                />
+              </div>
+
+              {selectedCustomer ? (
+                <Button
+                  variant="secondary"
+                  className={"mt-5 h-10"}
+                  onClick={onCustomerClear}
+                >
+                  حذف مشتری
+                </Button>
+              ) : null}
+            </div>
           </div>
 
           <textarea
@@ -571,7 +586,7 @@ export function PosCurrentInvoiceCard({
             onChange={(event) => onSaleNoteChange(event.target.value)}
             placeholder="یادداشت فاکتور، اختیاری"
             rows={3}
-            className="min-h-20 w-full  rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+            className="h-10 w-full  rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
           />
         </div>
 
@@ -585,10 +600,6 @@ export function PosCurrentInvoiceCard({
             <span className="text-primary">
               ({money(invoiceDiscount, currency)})
             </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">مالیات</span>
-            <span>{money(0, currency)}</span>
           </div>
           <div className="flex items-center justify-between border-t border-border pt-3">
             <span>مجموع قابل پرداخت</span>
@@ -651,12 +662,13 @@ export function PosCurrentInvoiceCard({
           )}
 
           {quickAmounts(payableTotal).length ? (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-5 gap-1">
               {quickAmounts(payableTotal).map((amount) => (
                 <Button
                   key={amount}
                   variant={paidAmount === amount ? "default" : "secondary"}
                   onClick={() => onPaidAmountChange(amount)}
+                  className="h-8 px-1 text-[11px] leading-none"
                 >
                   {money(amount, currency)}
                 </Button>

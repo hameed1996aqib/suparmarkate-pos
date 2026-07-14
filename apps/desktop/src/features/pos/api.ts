@@ -355,6 +355,8 @@ export async function submitPosSale(input: {
   subtotal: number;
   invoiceDiscount: number;
   paidAmount: number;
+  tenderedAmount?: number;
+  changeAmount?: number;
   customerId?: string | null;
   customerLabel?: string;
   saleNote?: string;
@@ -380,6 +382,14 @@ export async function submitPosSale(input: {
 
   if (input.paymentMethodLabel?.trim()) {
     noteParts.push(`Payment: ${input.paymentMethodLabel.trim()}`);
+  }
+
+  if (input.tenderedAmount !== undefined) {
+    noteParts.push(`TenderedAmount: ${Number(input.tenderedAmount || 0)}`);
+  }
+
+  if (input.changeAmount !== undefined) {
+    noteParts.push(`ChangeAmount: ${Number(input.changeAmount || 0)}`);
   }
 
   return fetchJson<any>(`${input.baseUrl}/api/sales`, {

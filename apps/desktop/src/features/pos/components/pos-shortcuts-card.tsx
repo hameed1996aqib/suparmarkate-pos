@@ -12,6 +12,8 @@ const shortcuts = [
   { key: "Esc", label: "پاک‌کردن ورودی‌ها" },
 ];
 
+shortcuts.splice(5, 0, { key: "F10", label: "ثبت بدون چاپ" });
+
 export function PosShortcutsCard() {
   return (
     <Card className="border-border bg-card">

@@ -316,7 +316,7 @@ export const PosProductSearchCard = forwardRef<
       <CardContent>
         <div
           ref={productListRef}
-          className="h-[96.5vh] overflow-auto rounded-xl"
+          className="h-[70.5vh] overflow-auto rounded-xl"
         >
           {isLoading ? (
             <div className="rounded-xl border border-border bg-muted/20 py-12 text-center text-sm text-muted-foreground">

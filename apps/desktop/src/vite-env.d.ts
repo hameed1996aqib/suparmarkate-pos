@@ -7,8 +7,21 @@ interface Window {
       url: string,
       options?: {
         widthMm?: number;
+        marginLeftMm?: number;
+        marginRightMm?: number;
+        silent?: boolean;
+        deviceName?: string;
       }
     ) => Promise<boolean>;
+    listPrinters?: () => Promise<
+      Array<{
+        name: string;
+        displayName?: string;
+        description?: string;
+        status?: number;
+        isDefault?: boolean;
+      }>
+    >;
     minimizeWindow?: () => Promise<void>;
     toggleMaximizeWindow?: () => Promise<boolean>;
     isWindowMaximized?: () => Promise<boolean>;

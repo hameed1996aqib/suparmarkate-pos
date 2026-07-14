@@ -67,6 +67,10 @@ async function printReceipt(payload) {
 
   const widthMm = Number(options.widthMm || 80);
   const widthMicrons = Math.round(widthMm * 1000);
+  const marginLeftMm = Math.max(0, Number(options.marginLeftMm || 0));
+  const marginRightMm = Math.max(0, Number(options.marginRightMm || 0));
+  const silent = Boolean(options.silent);
+  const deviceName = typeof options.deviceName === "string" ? options.deviceName.trim() : "";
 
   return new Promise((resolve, reject) => {
     const printWindow = new BrowserWindow({
@@ -100,6 +104,17 @@ async function printReceipt(payload) {
           body {
             width: ${widthMm}mm !important;
             max-width: ${widthMm}mm !important;
+            box-sizing: border-box !important;
+            padding-left: ${marginLeftMm}mm !important;
+            padding-right: ${marginRightMm}mm !important;
+          }
+
+          .receipt {
+            box-sizing: border-box !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
           }
 
           * {
@@ -110,8 +125,9 @@ async function printReceipt(payload) {
 
         printWindow.webContents.print(
           {
-            silent: false,
+            silent,
             printBackground: true,
+            ...(deviceName ? { deviceName } : {}),
             margins: {
               marginType: "none"
             },
@@ -147,6 +163,18 @@ async function printReceipt(payload) {
 ipcMain.handle("print-receipt", async (_event, payload) => {
   await printReceipt(payload);
   return true;
+});
+
+ipcMain.handle("printers:list", async (event) => {
+  const printers = await event.sender.getPrintersAsync();
+  return printers.map((printer) => ({
+    name: printer.name,
+    displayName: printer.displayName || printer.name,
+    description: printer.description || "",
+    status: printer.status || 0,
+    isDefault: Boolean(printer.isDefault),
+    options: printer.options || {}
+  }));
 });
 
 ipcMain.on("system:get-lan-api-base-url", (event, port = 4000) => {

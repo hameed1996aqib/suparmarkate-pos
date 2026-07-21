@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Gauge,
   PackageX,
+  Printer,
   RefreshCcw,
   Search,
   ShieldAlert,
@@ -33,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { MetricCard } from "@/features/admin/components/metric-card";
+import { CompanyPrintHeader, type PrintCompany } from "@/features/printing/company-print-header";
 import { API_BASE_URL } from "@/lib/api-config";
 
 type AlertSeverity = "critical" | "warning" | "info";
@@ -169,6 +171,7 @@ function filterByTab(alert: SystemAlert, tab: string) {
 export function AlertsPage() {
   const [data, setData] = useState<AlertsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [company, setCompany] = useState<PrintCompany | null>(null);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("all");
 
@@ -197,6 +200,13 @@ export function AlertsPage() {
     loadAlerts();
   }, []);
 
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/settings/company`)
+      .then((response) => response.json())
+      .then((json) => setCompany(json.data || null))
+      .catch(() => setCompany(null));
+  }, []);
+
   const alerts = data?.alerts || [];
   const counts = data?.counts || defaultCounts;
   const normalizedQuery = query.trim().toLowerCase();
@@ -223,7 +233,8 @@ export function AlertsPage() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="app-print-page space-y-4">
+      <CompanyPrintHeader company={company} title="گزارش هشدارهای سیستم" />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           title="کل هشدارها"
@@ -268,7 +279,7 @@ export function AlertsPage() {
               ناموجودی، کمبود موجودی، موجودی زیاد، تاریخ انقضا و کریدیت لیمیت در یک صفحه.
             </CardDescription>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 print:hidden">
             <div className="relative min-w-64">
               <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -282,12 +293,16 @@ export function AlertsPage() {
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
+            <Button variant="outline" onClick={() => window.print()} disabled={isLoading}>
+              <Printer className="size-4" />
+              چاپ / PDF
+            </Button>
           </div>
         </CardHeader>
 
         <CardContent>
           <Tabs value={tab} onValueChange={setTab} className="space-y-4">
-            <TabsList className="flex h-auto flex-wrap justify-start gap-2 bg-muted/50 p-1">
+            <TabsList className="flex h-auto flex-wrap justify-start gap-2 bg-muted/50 p-1 print:hidden">
               <TabsTrigger value="all">همه ({number(counts.total)})</TabsTrigger>
               <TabsTrigger value="critical">
                 بحرانی ({number(counts.critical)})

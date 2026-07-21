@@ -106,6 +106,12 @@ type CurrencyUsageReport = {
   totalsByCurrency: Array<Record<string, unknown>>;
 };
 
+type LossSalesReport = {
+  summary: Record<string, number>;
+  categories: Array<Record<string, unknown>>;
+  products: Array<Record<string, unknown>>;
+};
+
 function kabulDateString(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kabul",
@@ -182,23 +188,27 @@ export function ReportsPage() {
   const [managementReport, setManagementReport] = useState<ManagementReport | null>(null);
   const [employeeReport, setEmployeeReport] = useState<EmployeePerformanceReport | null>(null);
   const [currencyUsageReport, setCurrencyUsageReport] = useState<CurrencyUsageReport | null>(null);
+  const [lossSalesReport, setLossSalesReport] = useState<LossSalesReport | null>(null);
+  const [selectedLossCategoryId, setSelectedLossCategoryId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [company, setCompany] = useState<PrintCompany | null>(null);
 
   const loadReports = async () => {
     setIsLoading(true);
     try {
-      const [dailyRes, managementRes, employeeRes, currencyUsageRes] = await Promise.all([
+      const [dailyRes, managementRes, employeeRes, currencyUsageRes, lossSalesRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/reports/daily-cashier?date=${to}`),
         fetch(`${API_BASE_URL}/api/reports/management?from=${from}&to=${to}`),
         fetch(`${API_BASE_URL}/api/reports/employee-performance?period=${employeePeriod}&date=${to}`),
         fetch(`${API_BASE_URL}/api/reports/currency-usage?from=${from}&to=${to}`),
+        fetch(`${API_BASE_URL}/api/reports/loss-sales?from=${from}&to=${to}`),
       ]);
-      const [dailyJson, managementJson, employeeJson, currencyUsageJson] = await Promise.all([
+      const [dailyJson, managementJson, employeeJson, currencyUsageJson, lossSalesJson] = await Promise.all([
         dailyRes.json().catch(() => null),
         managementRes.json().catch(() => null),
         employeeRes.json().catch(() => null),
         currencyUsageRes.json().catch(() => null),
+        lossSalesRes.json().catch(() => null),
       ]);
 
       if (!dailyRes.ok) throw new Error(dailyJson?.message || "خواندن گزارش روزانه ناکام شد");
@@ -206,11 +216,13 @@ export function ReportsPage() {
       if (!employeeRes.ok) throw new Error(employeeJson?.message || "خواندن گزارش کارکرد کارمند ناکام شد");
 
       if (!currencyUsageRes.ok) throw new Error(currencyUsageJson?.message || "خواندن گزارش نرخ ارز ناکام شد");
+      if (!lossSalesRes.ok) throw new Error(lossSalesJson?.message || "خواندن گزارش فروش زیر قیمت تمام‌شده ناکام شد");
 
       setDailyReport(dailyJson.data);
       setManagementReport(managementJson.data);
       setEmployeeReport(employeeJson.data);
       setCurrencyUsageReport(currencyUsageJson.data);
+      setLossSalesReport(lossSalesJson.data);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "خواندن گزارش ناکام شد");
     } finally {
@@ -231,6 +243,19 @@ export function ReportsPage() {
 
   const summary = managementReport?.summary || {};
   const employeeSummary = employeeReport?.summary;
+  const lossSummary = lossSalesReport?.summary || {};
+
+  useEffect(() => {
+    const categories = lossSalesReport?.categories || [];
+    if (!categories.length) {
+      setSelectedLossCategoryId("");
+      return;
+    }
+
+    if (!categories.some((item) => String(item.categoryId) === selectedLossCategoryId)) {
+      setSelectedLossCategoryId(String(categories[0]?.categoryId || ""));
+    }
+  }, [lossSalesReport, selectedLossCategoryId]);
 
   const currencyUsageTotalRows = useMemo<DataRow[]>(
     () =>
@@ -265,6 +290,48 @@ export function ReportsPage() {
         };
       }),
     [currencyUsageReport, money],
+  );
+
+  const lossCategoryRows = useMemo<DataRow[]>(
+    () =>
+      (lossSalesReport?.categories || []).map((item) => ({
+        id: String(item.categoryId || "uncategorized"),
+        categoryName: String(item.categoryName || "بدون کتگوری"),
+        productCount: n(item.productCount),
+        invoiceCount: n(item.invoiceCount),
+        lineCount: n(item.lineCount),
+        quantityBase: n(item.quantityBase),
+        salesBase: money(n(item.salesBase)),
+        costBase: money(n(item.costBase)),
+        lossBase: money(n(item.lossBase)),
+      })),
+    [lossSalesReport, money],
+  );
+
+  const selectedLossCategory = useMemo(
+    () =>
+      (lossSalesReport?.categories || []).find(
+        (item) => String(item.categoryId) === selectedLossCategoryId,
+      ),
+    [lossSalesReport, selectedLossCategoryId],
+  );
+
+  const lossProductRows = useMemo<DataRow[]>(
+    () =>
+      (lossSalesReport?.products || [])
+        .filter((item) => String(item.categoryId || "uncategorized") === selectedLossCategoryId)
+        .map((item) => ({
+          id: String(item.productId),
+          productName: String(item.productName || "-"),
+          barcode: String(item.barcode || "-"),
+          invoiceCount: n(item.invoiceCount),
+          lineCount: n(item.lineCount),
+          quantityBase: `${n(item.quantityBase)} ${String(item.unitName || "").trim()}`.trim(),
+          salesBase: money(n(item.salesBase)),
+          costBase: money(n(item.costBase)),
+          lossBase: money(n(item.lossBase)),
+        })),
+    [lossSalesReport, selectedLossCategoryId, money],
   );
 
   const topProductRows = useMemo<DataRow[]>(
@@ -464,6 +531,7 @@ export function ReportsPage() {
             <TabsTrigger value="daily">کارکرد روزانه فروشنده</TabsTrigger>
             <TabsTrigger value="employee">کارکرد کارمند</TabsTrigger>
             <TabsTrigger value="top">پرفروش‌ترین</TabsTrigger>
+            <TabsTrigger value="lossSales">فروش زیر قیمت</TabsTrigger>
             <TabsTrigger value="receivables">طلب</TabsTrigger>
             <TabsTrigger value="payables">بدهی</TabsTrigger>
             <TabsTrigger value="lowStock">کمبود موجودی</TabsTrigger>
@@ -558,6 +626,61 @@ export function ReportsPage() {
                 { key: "profit", label: "مفاد" },
               ]}
               rows={topProductRows}
+            />
+          </TabsContent>
+
+          <TabsContent value="lossSales" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                label="کتگوری‌های دارای ضرر"
+                value={`${n(lossSummary.categoryCount)}`}
+                icon={<AlertTriangle />}
+              />
+              <MetricCard
+                label="اجناس زیر قیمت"
+                value={`${n(lossSummary.productCount)}`}
+                icon={<Package />}
+              />
+              <MetricCard
+                label="فروش این اجناس"
+                value={money(n(lossSummary.salesBase))}
+                icon={<ShoppingBag />}
+              />
+              <MetricCard
+                label="ضرر مجموعی"
+                value={money(n(lossSummary.lossBase))}
+                icon={<TrendingDown />}
+              />
+            </div>
+            <ReportTable
+              title="کتگوری‌هایی که در آن جنس زیر قیمت تمام‌شده فروش شده"
+              columns={[
+                { key: "categoryName", label: "کتگوری" },
+                { key: "productCount", label: "تعداد جنس" },
+                { key: "invoiceCount", label: "تعداد فاکتور" },
+                { key: "lineCount", label: "تعداد فروش" },
+                { key: "quantityBase", label: "مقدار مجموعی" },
+                { key: "salesBase", label: "مجموع فروش" },
+                { key: "costBase", label: "مجموع تمام‌شده" },
+                { key: "lossBase", label: "مجموع ضرر" },
+              ]}
+              rows={lossCategoryRows}
+              onEdit={(row) => setSelectedLossCategoryId(String(row.id || ""))}
+              editLabel="دیدن اجناس"
+            />
+            <ReportTable
+              title={`اجناس زیر قیمت در ${String(selectedLossCategory?.categoryName || "کتگوری انتخاب‌شده")}`}
+              columns={[
+                { key: "productName", label: "جنس" },
+                { key: "barcode", label: "بارکود" },
+                { key: "invoiceCount", label: "تعداد فاکتور" },
+                { key: "lineCount", label: "تعداد فروش" },
+                { key: "quantityBase", label: "مقدار فروش‌شده" },
+                { key: "salesBase", label: "مجموع فروش" },
+                { key: "costBase", label: "مجموع تمام‌شده" },
+                { key: "lossBase", label: "ضرر" },
+              ]}
+              rows={lossProductRows}
             />
           </TabsContent>
 
@@ -694,10 +817,14 @@ function ReportTable({
   title,
   columns,
   rows,
+  onEdit,
+  editLabel,
 }: {
   title: string;
   columns: Array<{ key: string; label: string }>;
   rows: DataRow[];
+  onEdit?: (row: DataRow) => void;
+  editLabel?: string;
 }) {
   return (
     <Card className="border-border bg-card">
@@ -705,7 +832,12 @@ function ReportTable({
         <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <DenseTable columns={columns} rows={rows} />
+        <DenseTable
+          columns={columns}
+          rows={rows}
+          onEdit={onEdit}
+          editLabel={editLabel}
+        />
       </CardContent>
     </Card>
   );

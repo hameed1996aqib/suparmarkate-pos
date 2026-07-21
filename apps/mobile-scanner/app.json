@@ -17,11 +17,12 @@
     ],
     "android": {
       "package": "com.muhaseb.posscanner",
-      "usesCleartextTraffic": true,
       "permissions": [
         "CAMERA",
         "VIBRATE",
-        "ACCESS_NETWORK_STATE"
+        "ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/app-icon.png",
@@ -34,6 +35,12 @@
     },
     "plugins": [
       [
+        "./plugins/with-cleartext",
+        {
+          "enabled": true
+        }
+      ],
+      [
         "expo-camera",
         {
           "cameraPermission": "Allow Muhaseb to access your camera",
@@ -44,7 +51,10 @@
       "expo-font"
     ],
     "extra": {
-      "appRole": "pos-mobile-scanner"
+      "appRole": "pos-mobile-scanner",
+      "eas": {
+        "projectId": "ad2d4e20-7488-4c92-97d2-eb16b5f706b0"
+      }
     }
   }
 }

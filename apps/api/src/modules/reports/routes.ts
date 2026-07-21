@@ -709,6 +709,162 @@ reportsRoute.get("/currency-usage", async (c) => {
   });
 });
 
+reportsRoute.get("/loss-sales", async (c) => {
+  const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+  const cacheKey = `reports:loss-sales:v1:${from}:${to}`;
+  const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
+  if (cached) return c.json({ data: cached, cache: "hit" });
+
+  const productRows = await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH sale_lines AS (
+      SELECT
+        s.id "saleId",
+        si.id "saleItemId",
+        p.id "productId",
+        p.name "productName",
+        p.barcode,
+        COALESCE(pc.id, 'uncategorized') "categoryId",
+        COALESCE(pc.name, 'بدون کتگوری') "categoryName",
+        COALESCE(u."shortName", u.name, '') "unitName",
+        COALESCE(si."quantityBase", 0) "quantityBase",
+        (
+          COALESCE(si."totalPrice", 0)
+          - CASE
+              WHEN COALESCE(s.subtotal, 0) > 0
+                THEN COALESCE(s.discount, 0) * (COALESCE(si."totalPrice", 0) / s.subtotal)
+              ELSE 0
+            END
+        ) * COALESCE(s."exchangeRate", 1) "saleBase",
+        COALESCE(si."baseTotalCost", si."totalCost", 0) "costBase"
+      FROM "SaleItem" si
+      JOIN "Sale" s ON s.id = si."saleId"
+      JOIN "Product" p ON p.id = si."productId"
+      LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
+      LEFT JOIN "Unit" u ON u.id = p."baseUnitId"
+      WHERE s."saleDate" >= ${start}
+        AND s."saleDate" < ${end}
+        AND s.status <> 'CANCELLED'
+    ),
+    return_lines AS (
+      SELECT
+        sri."saleItemId",
+        COALESCE(SUM(sri."quantityBase"), 0) "returnedQuantityBase",
+        COALESCE(SUM(sri."totalPrice" * COALESCE(sr."exchangeRate", 1)), 0) "returnedSaleBase",
+        COALESCE(SUM(COALESCE(sri."baseTotalCost", sri."totalCost", 0)), 0) "returnedCostBase"
+      FROM "SaleReturnItem" sri
+      JOIN "SaleReturn" sr ON sr.id = sri."saleReturnId"
+      WHERE sr."createdAt" >= ${start}
+        AND sr."createdAt" < ${end}
+        AND sr."cancelledAt" IS NULL
+      GROUP BY sri."saleItemId"
+    ),
+    net_lines AS (
+      SELECT
+        sl.*,
+        GREATEST(sl."quantityBase" - COALESCE(rl."returnedQuantityBase", 0), 0) "netQuantityBase",
+        sl."saleBase" - COALESCE(rl."returnedSaleBase", 0) "netSaleBase",
+        GREATEST(sl."costBase" - COALESCE(rl."returnedCostBase", 0), 0) "netCostBase"
+      FROM sale_lines sl
+      LEFT JOIN return_lines rl ON rl."saleItemId" = sl."saleItemId"
+    ),
+    loss_lines AS (
+      SELECT
+        *,
+        "netCostBase" - "netSaleBase" "lossBase"
+      FROM net_lines
+      WHERE "netQuantityBase" > 0
+        AND "netCostBase" - "netSaleBase" > 0.0001
+    )
+    SELECT
+      "categoryId",
+      "categoryName",
+      "productId",
+      "productName",
+      barcode,
+      "unitName",
+      COUNT(DISTINCT "saleId")::int "invoiceCount",
+      COUNT(*)::int "lineCount",
+      COALESCE(SUM("netQuantityBase"), 0) "quantityBase",
+      COALESCE(SUM("netSaleBase"), 0) "salesBase",
+      COALESCE(SUM("netCostBase"), 0) "costBase",
+      COALESCE(SUM("lossBase"), 0) "lossBase"
+    FROM loss_lines
+    GROUP BY "categoryId", "categoryName", "productId", "productName", barcode, "unitName"
+    ORDER BY "categoryName" ASC, "lossBase" DESC, "productName" ASC
+  `);
+
+  const categories = new Map<string, {
+    categoryId: string;
+    categoryName: string;
+    productCount: number;
+    invoiceCount: number;
+    lineCount: number;
+    quantityBase: number;
+    salesBase: number;
+    costBase: number;
+    lossBase: number;
+  }>();
+
+  const products = productRows.map((row) => {
+    const product = {
+      categoryId: String(row.categoryId || "uncategorized"),
+      categoryName: String(row.categoryName || "بدون کتگوری"),
+      productId: String(row.productId),
+      productName: String(row.productName || "-"),
+      barcode: row.barcode ? String(row.barcode) : null,
+      unitName: String(row.unitName || ""),
+      invoiceCount: toNumber(row.invoiceCount),
+      lineCount: toNumber(row.lineCount),
+      quantityBase: toNumber(row.quantityBase),
+      salesBase: toNumber(row.salesBase),
+      costBase: toNumber(row.costBase),
+      lossBase: toNumber(row.lossBase)
+    };
+
+    const existing = categories.get(product.categoryId) || {
+      categoryId: product.categoryId,
+      categoryName: product.categoryName,
+      productCount: 0,
+      invoiceCount: 0,
+      lineCount: 0,
+      quantityBase: 0,
+      salesBase: 0,
+      costBase: 0,
+      lossBase: 0
+    };
+
+    existing.productCount += 1;
+    existing.invoiceCount += product.invoiceCount;
+    existing.lineCount += product.lineCount;
+    existing.quantityBase += product.quantityBase;
+    existing.salesBase += product.salesBase;
+    existing.costBase += product.costBase;
+    existing.lossBase += product.lossBase;
+    categories.set(product.categoryId, existing);
+
+    return product;
+  });
+
+  const data = {
+    range: { from, to, start, end },
+    summary: {
+      categoryCount: categories.size,
+      productCount: products.length,
+      invoiceCount: Array.from(categories.values()).reduce((sum, row) => sum + row.invoiceCount, 0),
+      lineCount: Array.from(categories.values()).reduce((sum, row) => sum + row.lineCount, 0),
+      quantityBase: Array.from(categories.values()).reduce((sum, row) => sum + row.quantityBase, 0),
+      salesBase: Array.from(categories.values()).reduce((sum, row) => sum + row.salesBase, 0),
+      costBase: Array.from(categories.values()).reduce((sum, row) => sum + row.costBase, 0),
+      lossBase: Array.from(categories.values()).reduce((sum, row) => sum + row.lossBase, 0)
+    },
+    categories: Array.from(categories.values()).sort((a, b) => b.lossBase - a.lossBase),
+    products
+  };
+
+  await cacheSetJson(cacheKey, data, 30);
+  return c.json({ data, cache: "miss" });
+});
+
 reportsRoute.get("/management-legacy", async (c) => {
   return c.json({ message: "Legacy management report is disabled" }, 410);
   /*

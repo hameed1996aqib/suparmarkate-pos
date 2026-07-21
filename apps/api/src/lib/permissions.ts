@@ -59,7 +59,21 @@ export async function permissionMiddleware(c: Context, next: Next) {
     return;
   }
 
-  const permission = requiredPermission(new URL(c.req.url).pathname, c.req.method);
+  const path = new URL(c.req.url).pathname;
+
+  if (
+    c.req.method === "POST" &&
+    path === "/api/accounting/post-sale-cogs"
+  ) {
+    if (hasPermission(user, "pos.sell") || hasPermission(user, "accounting.manage")) {
+      await next();
+      return;
+    }
+
+    return c.json({ message: "Permission required: pos.sell" }, 403);
+  }
+
+  const permission = requiredPermission(path, c.req.method);
 
   if (permission && !hasPermission(user, permission)) {
     return c.json({ message: `Permission required: ${permission}` }, 403);

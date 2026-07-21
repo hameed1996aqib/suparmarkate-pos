@@ -9017,7 +9017,7 @@ function ProductsPage() {
               productId,
               warehouseId: form.defaultWarehouseId,
               quantity: form.openingQuantity,
-              unitCost: basePurchasePrice,
+              unitCost: openingUnitCost,
               currencyId: form.openingCurrencyId,
               expiryDate: form.hasExpiry
                 ? form.openingExpiryDate || null
@@ -9081,6 +9081,12 @@ function ProductsPage() {
     (line) => line.unitId === form.baseUnitId,
   );
   const basePurchasePrice = baseProductUnit?.purchasePrice || 0;
+  const openingCurrency = currencies.find(
+    (item) => item.id === form.openingCurrencyId,
+  );
+  const openingUnitCost = basePriceInCurrency(basePurchasePrice, openingCurrency);
+  const openingCurrencyCode =
+    openingCurrency?.code || openingCurrency?.name || "AFN";
   const syncPricesFromBaseUnit = (
     lines: ProductUnitForm[],
     patch: Partial<Pick<ProductUnitForm, "purchasePrice" | "salePrice">>,
@@ -9639,8 +9645,8 @@ function ProductsPage() {
                     }
                   />
                   <NumberField
-                    label="قیمت تمام‌شده واحد"
-                    value={basePurchasePrice}
+                    label={`قیمت تمام‌شده واحد (${openingCurrencyCode})`}
+                    value={openingUnitCost}
                     onChange={() => undefined}
                     disabled
                   />
@@ -9674,7 +9680,8 @@ function ProductsPage() {
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   قیمت تمام‌شده موجودی اولیه از قیمت خرید واحد پایه محصول گرفته
-                  می‌شود.
+                  می‌شود و براساس کرنسی انتخاب‌شده تبدیل می‌گردد. معادل پایه:{" "}
+                  {money(basePurchasePrice)}
                 </p>
               </div>
             )}
@@ -10839,10 +10846,26 @@ function InventoryPage() {
                   name: item.code || item.name,
                 }))}
                 onChange={(value) =>
-                  setOpeningEditForm((current) => ({
-                    ...current,
-                    currencyId: value,
-                  }))
+                  setOpeningEditForm((current) => {
+                    const fromCurrency = currencies.find(
+                      (item) => item.id === current.currencyId,
+                    );
+                    const toCurrency = currencies.find(
+                      (item) => item.id === value,
+                    );
+
+                    return {
+                      ...current,
+                      currencyId: value,
+                      unitCost: Number(
+                        convertCurrencyAmount(
+                          current.unitCost,
+                          fromCurrency,
+                          toCurrency,
+                        ).toFixed(4),
+                      ),
+                    };
+                  })
                 }
               />
               {productHasExpiry(

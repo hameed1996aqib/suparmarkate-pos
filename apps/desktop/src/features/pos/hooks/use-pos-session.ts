@@ -13,7 +13,6 @@ import {
   loadProducts,
   removeCartItem,
   restoreHeldCart,
-  postSaleJournal,
   postSaleCogsJournal,
   scanPosBarcode,
   submitPosSale,
@@ -1434,43 +1433,32 @@ export function usePosSession() {
 
       if (saleId) {
         try {
-          await postSaleJournal({
+          const cogsRes = await postSaleCogsJournal({
             baseUrl: apiBaseUrl,
             saleId,
             invoiceNo,
-            subtotal,
-            discount: finalInvoiceDiscount,
-            paidAmount: finalPaidAmount,
-            partyId: selectedCustomerPartyId,
+            items: cartItems.map((item) => ({
+              productId: item.productId,
+              warehouseId: item.warehouseId || null,
+              lotId: item.lotId || null,
+              quantity: item.quantity,
+            })),
           });
 
-          try {
-            const cogsRes = await postSaleCogsJournal({
-              baseUrl: apiBaseUrl,
-              saleId,
-              invoiceNo,
-              items: cartItems.map((item) => ({
-                productId: item.productId,
-                warehouseId: item.warehouseId || null,
-                lotId: item.lotId || null,
-                quantity: item.quantity,
-              })),
+          if (cogsRes.skipped) {
+            setLastCogsStatus({
+              status: "skipped",
+              message: cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست",
+              total: 0,
             });
-
-            if (cogsRes.skipped) {
-              setLastCogsStatus({
-                status: "skipped",
-                message: cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست",
-                total: 0,
-              });
-              toast.error(cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست");
-            } else {
-              setLastCogsStatus({
-                status: "posted",
-                message: "COGS حسابداری ثبت شد",
-                total: Number(cogsRes.cogs?.total || 0),
-              });
-            }
+            toast.error(cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست");
+          } else {
+            setLastCogsStatus({
+              status: "posted",
+              message: "COGS حسابداری ثبت شد",
+              total: Number(cogsRes.cogs?.total || 0),
+            });
+          }
           } catch (error: any) {
             setLastCogsStatus({
               status: "error",
@@ -1478,9 +1466,6 @@ export function usePosSession() {
               total: 0,
             });
             toast.error(error?.message || "ثبت COGS ناکام شد");
-          }
-        } catch (error: any) {
-          toast.error(error?.message || "سند حسابداری فروش ساخته نشد");
         }
 
         recordShiftSale({

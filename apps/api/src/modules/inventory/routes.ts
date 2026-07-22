@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { Prisma } from "../../generated/prisma/client";
+import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
@@ -171,6 +171,7 @@ inventoryRoute.get("/stock", async (c) => {
   const search = c.req.query("search");
   const sortBy = c.req.query("sortBy");
   const sortOrder = c.req.query("sortOrder") === "asc" ? "asc" : "desc";
+  const costAboveSale = c.req.query("costAboveSale") === "true";
   const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 100 });
   const where = {
     quantityBase: { gt: 0 },
@@ -185,13 +186,118 @@ inventoryRoute.get("/stock", async (c) => {
         ? [{ valueBase: sortOrder }, { product: { name: "asc" } }]
         : [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }];
 
+  if (costAboveSale) {
+    const rawSearch = (search || "").trim();
+    const barcodeSearch = normalizeBarcodeText(rawSearch);
+    const rawSearchLike = `%${rawSearch}%`;
+    const barcodeSearchLike = `%${barcodeSearch}%`;
+    const productFilter = productId
+      ? Prisma.sql`AND sb."productId" = ${productId}`
+      : Prisma.empty;
+    const warehouseFilter = warehouseId
+      ? Prisma.sql`AND sb."warehouseId" = ${warehouseId}`
+      : Prisma.empty;
+    const searchFilter = rawSearch
+      ? Prisma.sql`
+          AND (
+            p."name" ILIKE ${rawSearchLike}
+            OR p."sku" ILIKE ${rawSearchLike}
+            OR p."barcode" = ${rawSearch}
+            OR p."barcode" ILIKE ${rawSearchLike}
+            OR w."name" ILIKE ${rawSearchLike}
+            ${
+              barcodeSearch
+                ? Prisma.sql`
+                    OR p."barcode" = ${barcodeSearch}
+                    OR p."barcodeNormalized" = ${barcodeSearch}
+                    OR p."barcode" ILIKE ${barcodeSearchLike}
+                    OR p."barcodeNormalized" ILIKE ${barcodeSearchLike}
+                    OR p."sku" ILIKE ${barcodeSearchLike}
+                  `
+                : Prisma.empty
+            }
+          )
+        `
+      : Prisma.empty;
+    const orderBySql =
+      sortBy === "quantity"
+        ? Prisma.raw(`sb."quantityBase" ${sortOrder.toUpperCase()}, p."name" ASC`)
+        : sortBy === "value"
+          ? Prisma.raw(`sb."valueBase" ${sortOrder.toUpperCase()}, p."name" ASC`)
+          : Prisma.raw(`p."name" ASC, w."name" ASC`);
+    const baseWhere = Prisma.sql`
+      FROM "StockBalance" sb
+      JOIN "Product" p ON p.id = sb."productId"
+      JOIN "Warehouse" w ON w.id = sb."warehouseId"
+      LEFT JOIN "Unit" bu ON bu.id = p."baseUnitId"
+      LEFT JOIN "ProductUnit" pu ON pu."productId" = p.id AND pu."unitId" = p."baseUnitId"
+      WHERE sb."quantityBase" > 0
+        ${productFilter}
+        ${warehouseFilter}
+        ${searchFilter}
+        AND COALESCE(pu."salePrice", 0) > 0
+        AND (sb."valueBase" / NULLIF(sb."quantityBase", 0)) > COALESCE(pu."salePrice", 0)
+    `;
+
+    const [balances, totalRows] = await Promise.all([
+      prisma.$queryRaw<any[]>(Prisma.sql`
+        SELECT
+          sb."productId",
+          p."name" AS "productName",
+          p."barcode",
+          sb."warehouseId",
+          w."name" AS "warehouseName",
+          bu."name" AS "baseUnitName",
+          bu."shortName" AS "baseUnitShortName",
+          sb."quantityBase" AS "totalQuantity",
+          sb."valueBase",
+          sb."earliestExpiryAt",
+          COALESCE(sb."valueBase" / NULLIF(sb."quantityBase", 0), 0) AS "baseUnitCost",
+          COALESCE(pu."purchasePrice", 0) AS "basePurchasePrice",
+          COALESCE(pu."salePrice", 0) AS "baseSalePrice",
+          true AS "isCostAboveSale"
+        ${baseWhere}
+        ORDER BY ${orderBySql}
+        OFFSET ${pagination.skip}
+        LIMIT ${pagination.limit}
+      `),
+      prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+        SELECT COUNT(*)::int AS count
+        ${baseWhere}
+      `)
+    ]);
+
+    const total = Number(totalRows[0]?.count || 0);
+    return c.json({
+      data: balances.map((balance) => ({
+        productId: balance.productId,
+        productName: balance.productName,
+        barcode: balance.barcode,
+        warehouseId: balance.warehouseId,
+        warehouseName: balance.warehouseName,
+        baseUnitName:
+          balance.baseUnitShortName || balance.baseUnitName || "base",
+        totalQuantity: Number(balance.totalQuantity),
+        valueBase: Number(balance.valueBase),
+        earliestExpiryAt: balance.earliestExpiryAt,
+        baseUnitCost: Number(balance.baseUnitCost),
+        basePurchasePrice: Number(balance.basePurchasePrice),
+        baseSalePrice: Number(balance.baseSalePrice),
+        isCostAboveSale: Boolean(balance.isCostAboveSale),
+        lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []
+      })),
+      pagination: createPaginationMeta({ ...pagination, total })
+    });
+  }
+
   const [balances, total] = await Promise.all([
     prisma.stockBalance.findMany({
     where,
     include: {
       product: {
         include: {
-          baseUnit: true
+          baseUnit: true,
+          units: true
         }
       },
       warehouse: true
@@ -204,20 +310,35 @@ inventoryRoute.get("/stock", async (c) => {
   ]);
 
   return c.json({
-    data: balances.map((balance) => ({
-      productId: balance.productId,
-      productName: balance.product.name,
-      barcode: balance.product.barcode,
-      warehouseId: balance.warehouseId,
-      warehouseName: balance.warehouse.name,
-      baseUnitName: balance.product.baseUnit.name,
-      totalQuantity: Number(balance.quantityBase),
-      valueBase: Number(balance.valueBase),
-      earliestExpiryAt: balance.earliestExpiryAt,
-      // Kept for compatibility with the existing inventory table. Full lot detail
-      // is loaded only when the user opens the lot view.
-      lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []
-    })),
+    data: balances.map((balance) => {
+      const baseProductUnit = balance.product.units.find(
+        (unit) => unit.unitId === balance.product.baseUnitId
+      );
+      const totalQuantity = Number(balance.quantityBase);
+      const valueBase = Number(balance.valueBase);
+      const baseUnitCost = totalQuantity > 0 ? valueBase / totalQuantity : 0;
+      const baseSalePrice = Number(baseProductUnit?.salePrice || 0);
+
+      return {
+        productId: balance.productId,
+        productName: balance.product.name,
+        barcode: balance.product.barcode,
+        warehouseId: balance.warehouseId,
+        warehouseName: balance.warehouse.name,
+        baseUnitName:
+          balance.product.baseUnit.shortName || balance.product.baseUnit.name,
+        totalQuantity,
+        valueBase,
+        earliestExpiryAt: balance.earliestExpiryAt,
+        baseUnitCost,
+        basePurchasePrice: Number(baseProductUnit?.purchasePrice || 0),
+        baseSalePrice,
+        isCostAboveSale: baseSalePrice > 0 && baseUnitCost > baseSalePrice,
+        // Kept for compatibility with the existing inventory table. Full lot detail
+        // is loaded only when the user opens the lot view.
+        lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []
+      };
+    }),
     pagination: createPaginationMeta({ ...pagination, total })
   });
 });

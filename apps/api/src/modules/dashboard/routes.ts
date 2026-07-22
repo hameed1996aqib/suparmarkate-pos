@@ -86,7 +86,7 @@ function dateBucket(period: DashboardPeriod, column: string) {
 dashboardRoute.get("/summary", async (c) => {
   const period = parsePeriod(c.req.query("period"));
   const currencyId = c.req.query("currencyId")?.trim() || undefined;
-  const cacheKey = `dashboard:summary:v3:${kabulDateString()}:${period}:${currencyId || "base"}`;
+  const cacheKey = `dashboard:summary:v4:${kabulDateString()}:${period}:${currencyId || "base"}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
   if (cached) return c.json({ data: cached, cache: "hit" });
 
@@ -127,6 +127,11 @@ dashboardRoute.get("/summary", async (c) => {
     currencyId
       ? `COALESCE(i."baseTotalCost", i."totalCost") / COALESCE(NULLIF(sr."exchangeRate", 0), 1)`
       : `COALESCE(i."baseTotalCost", i."totalCost")`
+  );
+  const saleReturnCategoryCogsValue = Prisma.raw(
+    currencyId
+      ? `COALESCE(sri."baseTotalCost", sri."totalCost") / COALESCE(NULLIF(sr."exchangeRate", 0), 1)`
+      : `COALESCE(sri."baseTotalCost", sri."totalCost")`
   );
   const saleReturnSubtotal = Prisma.raw(
     currencyId
@@ -236,17 +241,19 @@ dashboardRoute.get("/summary", async (c) => {
       ) cashier GROUP BY id, name ORDER BY sales DESC
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT name, SUM(quantity) quantity, SUM(sales) sales FROM (
-        SELECT COALESCE(pc.name, 'بدون کتگوری') name, SUM(si."quantityBase") quantity, SUM(${saleItemValue}) sales
+      SELECT name, SUM(quantity) quantity, SUM(sales) sales, SUM(cogs) cogs, SUM(sales) - SUM(cogs) profit FROM (
+        SELECT COALESCE(pc.name, 'بدون کتگوری') name, SUM(si."quantityBase") quantity, SUM(${saleItemValue}) sales,
+          SUM(${saleCogsValue}) cogs
         FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
         LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
         WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s."status" <> 'CANCELLED' ${saleCurrencyFilter} GROUP BY pc.name
         UNION ALL
-        SELECT COALESCE(pc.name, 'بدون کتگوری'), -SUM(sri."quantityBase"), -SUM(${saleReturnItemValue})
+        SELECT COALESCE(pc.name, 'بدون کتگوری'), -SUM(sri."quantityBase"), -SUM(${saleReturnItemValue}),
+          -SUM(${saleReturnCategoryCogsValue})
         FROM "SaleReturnItem" sri JOIN "SaleReturn" sr ON sr.id = sri."saleReturnId"
         JOIN "Product" p ON p.id = sri."productId" LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
         WHERE sr."createdAt" >= ${start} AND sr."createdAt" < ${end} AND sr."cancelledAt" IS NULL ${saleReturnCurrencyFilter} GROUP BY pc.name
-      ) category GROUP BY name HAVING SUM(sales) > 0 ORDER BY sales DESC LIMIT 8
+      ) category GROUP BY name HAVING SUM(sales) > 0 ORDER BY sales DESC
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT id, name, SUM(quantity) quantity, SUM(sales) sales FROM (
@@ -317,7 +324,13 @@ dashboardRoute.get("/summary", async (c) => {
     cashFlow: { moneyIn: number(money.moneyIn), moneyOut: number(money.moneyOut), net: number(money.moneyIn) - number(money.moneyOut) },
     salesByCashier: cashierRows.map((row) => ({ ...row, invoices: number(row.invoices), sales: number(row.sales) })),
     salesPurchasesTrend: trend,
-    salesByCategory: categoryRows.map((row) => ({ ...row, quantity: number(row.quantity), sales: number(row.sales) })),
+    salesByCategory: categoryRows.map((row) => ({
+      ...row,
+      quantity: number(row.quantity),
+      sales: number(row.sales),
+      cogs: number(row.cogs),
+      profit: number(row.profit)
+    })),
     topProducts: productRows.map((row) => ({ ...row, quantity: number(row.quantity), sales: number(row.sales) })),
     recentActivities: auditLogs.map((row) => ({
       id: row.id, action: row.action, entityType: row.entityType,

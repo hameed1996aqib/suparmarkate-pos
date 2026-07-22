@@ -9866,6 +9866,7 @@ function InventoryPage() {
   const [query, setQuery] = useState("");
   const [stockSortBy, setStockSortBy] = useState("");
   const [stockSortOrder, setStockSortOrder] = useState<"asc" | "desc">("desc");
+  const [stockCostFilter, setStockCostFilter] = useState("");
   const [movementQueries, setMovementQueries] = useState({
     opening: "",
     increase: "",
@@ -9960,6 +9961,9 @@ function InventoryPage() {
       if (stockSortBy) {
         stockParams.set("sortBy", stockSortBy);
         stockParams.set("sortOrder", stockSortOrder);
+      }
+      if (stockCostFilter === "costAboveSale") {
+        stockParams.set("costAboveSale", "true");
       }
 
       const [
@@ -10106,7 +10110,7 @@ function InventoryPage() {
     return () => window.clearTimeout(timer);
     // loadInventoryData intentionally stays local to keep this page compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, stockSortBy, stockSortOrder]);
+  }, [query, stockSortBy, stockSortOrder, stockCostFilter]);
 
   useEffect(() => {
     if (!didMountMovementQueryRef.current) {
@@ -10501,6 +10505,17 @@ function InventoryPage() {
                   <option value="">مرتب‌سازی پیش‌فرض</option>
                   <option value="quantity">بر اساس مقدار</option>
                   <option value="value">بر اساس ارزش موجودی</option>
+                </select>
+                <select
+                  value={stockCostFilter}
+                  onChange={(event) => {
+                    setMovementPages((current) => ({ ...current, stock: 1 }));
+                    setStockCostFilter(event.target.value);
+                  }}
+                  className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">همه قیمت‌ها</option>
+                  <option value="costAboveSale">آمد بالاتر از فروش</option>
                 </select>
                 <select
                   value={stockSortOrder}
@@ -11367,18 +11382,33 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
   }
 
   if (pageTitle === "موجودی و گدام") {
+    const baseUnitName = item.baseUnitName || "";
+    const baseUnitCost = Number(item.baseUnitCost || 0);
+    const baseSalePrice = Number(item.baseSalePrice || 0);
+    const basePurchasePrice = Number(item.basePurchasePrice || 0);
+    const isCostAboveSale = Boolean(item.isCostAboveSale);
+
     return {
       id: `${item.productId}-${item.warehouseId}`,
       name: item.productName || "-",
       barcode: item.barcode || "-",
       warehouse: item.warehouseName || "-",
-      quantity: `${new Intl.NumberFormat("en-US").format(Number(item.totalQuantity || 0))} ${item.baseUnitName || ""}`,
+      quantity: `${new Intl.NumberFormat("en-US").format(Number(item.totalQuantity || 0))} ${baseUnitName}`,
       value: money(Number(item.valueBase || 0)),
       expiry:
         Array.isArray(item.lots) && item.lots[0]?.expiryDate
           ? new Date(item.lots[0].expiryDate).toLocaleDateString("fa-AF")
           : "-",
-      status: Number(item.totalQuantity || 0) > 0 ? "موجود" : "تمام شده",
+      status: isCostAboveSale
+        ? "آمد بالاتر از فروش"
+        : Number(item.totalQuantity || 0) > 0
+          ? "موجود"
+          : "تمام شده",
+      "واحد پایه": baseUnitName || "-",
+      "قیمت آمد واحد پایه": `${money(baseUnitCost)} / ${baseUnitName || "واحد"}`,
+      "قیمت فروش واحد پایه": `${money(baseSalePrice)} / ${baseUnitName || "واحد"}`,
+      "قیمت خرید ثبت‌شده واحد پایه": `${money(basePurchasePrice)} / ${baseUnitName || "واحد"}`,
+      "تفاوت آمد و فروش": `${money(baseSalePrice - baseUnitCost)} / ${baseUnitName || "واحد"}`,
       ...auditMeta,
     };
   }

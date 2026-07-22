@@ -44,7 +44,10 @@ function defaultBadgeClass(value: unknown) {
     text.includes("مصرف") ||
     text.includes("باطل") ||
     text.includes("ابطال") ||
-    text.includes("خارج")
+    text.includes("خارج") ||
+    text.includes("ضرر") ||
+    text.includes("زیر قیمت") ||
+    text.includes("آمد بالاتر از فروش")
   ) {
     return "bg-destructive/15 text-destructive";
   }

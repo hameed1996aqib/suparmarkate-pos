@@ -27,7 +27,7 @@ export type DashboardSummary = {
   cashFlow: { moneyIn: number; moneyOut: number; net: number };
   salesByCashier: Array<{ id: string; name: string; sales: number; invoices: number }>;
   salesPurchasesTrend: Array<{ key: string; label: string; sales: number; purchases: number }>;
-  salesByCategory: Array<{ name: string; sales: number; quantity: number }>;
+  salesByCategory: Array<{ name: string; sales: number; quantity: number; cogs?: number; profit?: number }>;
   topProducts: Array<{ id: string; name: string; sales: number; quantity: number }>;
   recentActivities: Array<{ id: string; action: string; entityType?: string | null; user: string; createdAt: string }>;
 };

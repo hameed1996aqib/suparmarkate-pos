@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -15,6 +15,7 @@ import {
 import { ChartColumn, CircleDollarSign, TrendingUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -360,14 +361,16 @@ export function CategorySalesChart({
   rows,
   currencyCode,
 }: {
-  rows: Array<{ name: string; sales: number }>;
+  rows: Array<{ name: string; sales: number; profit?: number }>;
   currencyCode: string;
 }) {
+  const [showAll, setShowAll] = useState(false);
   const isEmpty = !hasAmount(rows as unknown as Array<Record<string, unknown>>, [
     "sales",
   ]);
-  const data = (rows.length
-    ? rows.slice(0, 6)
+  const visibleRows = showAll ? rows : rows.slice(0, 6);
+  const data = (visibleRows.length
+    ? visibleRows
     : [{ name: "بدون فروش", sales: 0 }]
   ).map((item, index) => ({
     ...item,
@@ -375,7 +378,7 @@ export function CategorySalesChart({
     color: `var(--chart-${(index % 5) + 1})`,
     fill: `var(--color-category${index + 1})`,
   }));
-  const total = data.reduce((sum, item) => sum + item.sales, 0);
+  const total = rows.reduce((sum, item) => sum + item.sales, 0);
   const topCategory = data.reduce(
     (top, item) => (item.sales > top.sales ? item : top),
     data[0] || { name: "-", sales: 0 }
@@ -540,12 +543,30 @@ export function CategorySalesChart({
                 </div>
               </div>
               <div className="text-left text-sm font-bold text-primary">
-                {formatMoney(topCategory.sales || 0, currencyCode)}
+                <div>{formatMoney(topCategory.sales || 0, currencyCode)}</div>
+                <div className="mt-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                  مفاد: {formatMoney(Number(topCategory.profit || 0), currencyCode)}
+                </div>
               </div>
             </div>
           </div>
 
           <div className="space-y-2">
+            {rows.length > 6 ? (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {showAll ? `همه ${rows.length} کتگوری` : "۶ کتگوری پرفروش"}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowAll((current) => !current)}
+                >
+                  {showAll ? "نمایش کمتر" : "دیدن همه"}
+                </Button>
+              </div>
+            ) : null}
             {data.map((item) => {
               const percent = total > 0 ? (item.sales / total) * 100 : 0;
 
@@ -579,6 +600,10 @@ export function CategorySalesChart({
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground">
                     {formatMoney(item.sales, currencyCode)}
+                    <span className="mx-2">•</span>
+                    <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                      مفاد: {formatMoney(Number(item.profit || 0), currencyCode)}
+                    </span>
                   </div>
                 </div>
               );

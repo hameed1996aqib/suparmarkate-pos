@@ -78,6 +78,7 @@ export type ProductSearchItem = {
   minStock?: string | number | null;
   totalStock?: string | number | null;
   categoryId?: string | null;
+  baseUnitId?: string | null;
   category?: {
     id: string;
     name: string;
@@ -90,7 +91,10 @@ export type ProductSearchItem = {
   units?: Array<{
     id: string;
     unitId: string;
+    conversionRate?: string | number | null;
+    purchasePrice?: string | number | null;
     salePrice?: string | number | null;
+    isDefaultPurchase?: boolean;
     isDefaultSale?: boolean;
     unit?: {
       name: string;

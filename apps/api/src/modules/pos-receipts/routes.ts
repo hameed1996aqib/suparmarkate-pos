@@ -51,6 +51,44 @@ function getNoteNumber(note: unknown, marker: string) {
   return Number.isFinite(value) ? value : null;
 }
 
+function receiptItemGroupKey(item: any) {
+  return [
+    item.productId || item.product?.id || "",
+    item.unitId || item.unit?.id || "",
+    Number(item.unitPrice || 0).toFixed(4),
+  ].join("::");
+}
+
+function groupReceiptItems(items: any[]) {
+  const grouped = new Map<string, any>();
+
+  for (const item of items) {
+    const key = receiptItemGroupKey(item);
+    const quantity = Number(item.quantity || 0);
+    const discount = Number(item.discount || 0);
+    const totalPrice = Number(
+      item.totalPrice ?? Math.max(0, quantity * Number(item.unitPrice || 0) - discount),
+    );
+    const existing = grouped.get(key);
+
+    if (!existing) {
+      grouped.set(key, {
+        ...item,
+        quantity,
+        discount,
+        totalPrice,
+      });
+      continue;
+    }
+
+    existing.quantity += quantity;
+    existing.discount += discount;
+    existing.totalPrice += totalPrice;
+  }
+
+  return Array.from(grouped.values());
+}
+
 posReceiptsRoute.get("/sales/:id/html", async (c) => {
   const id = c.req.param("id");
   const widthMm = getReceiptWidth(c.req.query("width") || null);
@@ -80,8 +118,9 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
   const phone = setting?.phone || "";
   const address = setting?.address || "";
   const logoImage = setting?.logoImage || "";
+  const receiptItems = groupReceiptItems(sale.items);
 
-  const subtotal = sale.items.reduce((sum, item) => {
+  const subtotal = receiptItems.reduce((sum, item) => {
     return sum + Number(item.quantity || 0) * Number(item.unitPrice || 0);
   }, 0);
 
@@ -268,12 +307,14 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
       </tr>
     </thead>
     <tbody>
-      ${sale.items
+      ${receiptItems
         .map((item) => {
           const qty = Number(item.quantity || 0);
           const price = Number(item.unitPrice || 0);
           const itemDiscount = Number((item as any).discount || 0);
-          const lineTotal = Math.max(0, qty * price - itemDiscount);
+          const lineTotal = Number(
+            (item as any).totalPrice ?? Math.max(0, qty * price - itemDiscount),
+          );
 
           return `
             <tr>

@@ -6,6 +6,7 @@ import {
   type PosProductSearchCardRef,
 } from "@/features/pos/components/pos-product-search-card";
 import { PosSettingsSheet } from "@/features/pos/components/pos-settings-sheet";
+import { PosStockIncreaseDialog } from "@/features/pos/components/pos-stock-increase-dialog";
 import { usePosSession } from "@/features/pos/hooks/use-pos-session";
 import { usePosShortcuts } from "@/features/pos/hooks/use-pos-shortcuts";
 
@@ -13,6 +14,7 @@ export function PosPage() {
   const pos = usePosSession();
   const productSearchRef = useRef<PosProductSearchCardRef | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [stockIncreaseOpen, setStockIncreaseOpen] = useState(false);
 
   usePosShortcuts({
     onFocusBarcode: () => {
@@ -114,6 +116,7 @@ export function PosPage() {
             onPrintShiftReport={pos.printShiftReport}
             onStartNewShift={pos.startNewShift}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenStockIncrease={() => setStockIncreaseOpen(true)}
             onHoldCart={() => pos.holdCurrentCart()}
             onRestoreHeldCart={pos.restoreHeldCartById}
             onClearCart={pos.clearCart}
@@ -195,6 +198,15 @@ export function PosPage() {
         onReceiptMarginLeftChange={pos.setReceiptMarginLeftMm}
         onReceiptMarginRightChange={pos.setReceiptMarginRightMm}
         onMetricVisibilityChange={pos.setMetricVisibility}
+      />
+      <PosStockIncreaseDialog
+        open={stockIncreaseOpen}
+        onOpenChange={setStockIncreaseOpen}
+        apiBaseUrl={pos.apiBaseUrl}
+        warehouse={pos.warehouse}
+        currency={pos.currency}
+        initialProducts={pos.filteredProducts}
+        onStockIncreased={pos.refreshPosData}
       />
     </div>
   );

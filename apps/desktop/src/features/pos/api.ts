@@ -221,6 +221,36 @@ export async function loadProducts(
   );
 }
 
+export async function increaseInventoryFromPos(input: {
+  baseUrl: string;
+  productId: string;
+  warehouseId: string;
+  unitId?: string | null;
+  quantity: number;
+  unitCost: number;
+  currencyId?: string | null;
+  expiryDate?: string | null;
+  note?: string | null;
+}) {
+  return fetchJson<any>(`${input.baseUrl}/api/inventory/adjustments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      type: "ADJUSTMENT_IN",
+      productId: input.productId,
+      warehouseId: input.warehouseId,
+      unitId: input.unitId || null,
+      quantity: input.quantity,
+      unitCost: input.unitCost,
+      currencyId: input.currencyId || null,
+      expiryDate: input.expiryDate || null,
+      note: input.note || null,
+    }),
+  });
+}
+
 function normalizeCustomer(item: any, source?: string): CustomerOption | null {
   const id = item?.id || item?.personId || item?.customerId;
 

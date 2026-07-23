@@ -8,6 +8,7 @@ import {
   Link2,
   MoreHorizontal,
   Minus,
+  PackagePlus,
   Plus,
   Printer,
   QrCode,
@@ -95,6 +96,7 @@ type PosCurrentInvoiceCardProps = {
   onPrintShiftReport: () => void;
   onStartNewShift: () => void;
   onOpenSettings: () => void;
+  onOpenStockIncrease: () => void;
   onHoldCart: () => void;
   onRestoreHeldCart: (heldCartId: string) => void;
   onClearCart: () => void;
@@ -207,6 +209,7 @@ export function PosCurrentInvoiceCard({
   onPrintShiftReport,
   onStartNewShift,
   onOpenSettings,
+  onOpenStockIncrease,
   onHoldCart,
   onRestoreHeldCart,
   onClearCart,
@@ -256,6 +259,10 @@ export function PosCurrentInvoiceCard({
             <DropdownMenuItem onClick={onRefreshData}>
               <RefreshCcw className="size-4" />
               بروزرسانی دیتا
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onOpenStockIncrease}>
+              <PackagePlus className="size-4" />
+              افزایش موجودی جنس
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setMobileDialogOpen(true)}>
               <QrCode className="size-4" />

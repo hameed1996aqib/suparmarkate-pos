@@ -171,7 +171,14 @@ inventoryRoute.get("/stock", async (c) => {
   const search = c.req.query("search");
   const sortBy = c.req.query("sortBy");
   const sortOrder = c.req.query("sortOrder") === "asc" ? "asc" : "desc";
-  const costAboveSale = c.req.query("costAboveSale") === "true";
+  const requestedCostFilter = c.req.query("costFilter");
+  const costFilter =
+    requestedCostFilter === "costBelowHalfSale"
+      ? "costBelowHalfSale"
+      : requestedCostFilter === "costAboveSale" ||
+          c.req.query("costAboveSale") === "true"
+        ? "costAboveSale"
+        : null;
   const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 100 });
   const where = {
     quantityBase: { gt: 0 },
@@ -186,7 +193,7 @@ inventoryRoute.get("/stock", async (c) => {
         ? [{ valueBase: sortOrder }, { product: { name: "asc" } }]
         : [{ product: { name: "asc" } }, { warehouse: { name: "asc" } }];
 
-  if (costAboveSale) {
+  if (costFilter) {
     const rawSearch = (search || "").trim();
     const barcodeSearch = normalizeBarcodeText(rawSearch);
     const rawSearchLike = `%${rawSearch}%`;
@@ -225,6 +232,14 @@ inventoryRoute.get("/stock", async (c) => {
         : sortBy === "value"
           ? Prisma.raw(`sb."valueBase" ${sortOrder.toUpperCase()}, p."name" ASC`)
           : Prisma.raw(`p."name" ASC, w."name" ASC`);
+    const costFilterSql =
+      costFilter === "costAboveSale"
+        ? Prisma.sql`
+            AND (sb."valueBase" / NULLIF(sb."quantityBase", 0)) > COALESCE(pu."salePrice", 0)
+          `
+        : Prisma.sql`
+            AND (sb."valueBase" / NULLIF(sb."quantityBase", 0)) < (COALESCE(pu."salePrice", 0) * 0.5)
+          `;
     const baseWhere = Prisma.sql`
       FROM "StockBalance" sb
       JOIN "Product" p ON p.id = sb."productId"
@@ -236,7 +251,7 @@ inventoryRoute.get("/stock", async (c) => {
         ${warehouseFilter}
         ${searchFilter}
         AND COALESCE(pu."salePrice", 0) > 0
-        AND (sb."valueBase" / NULLIF(sb."quantityBase", 0)) > COALESCE(pu."salePrice", 0)
+        ${costFilterSql}
     `;
 
     const [balances, totalRows] = await Promise.all([
@@ -255,7 +270,15 @@ inventoryRoute.get("/stock", async (c) => {
           COALESCE(sb."valueBase" / NULLIF(sb."quantityBase", 0), 0) AS "baseUnitCost",
           COALESCE(pu."purchasePrice", 0) AS "basePurchasePrice",
           COALESCE(pu."salePrice", 0) AS "baseSalePrice",
-          true AS "isCostAboveSale"
+          (
+            COALESCE(sb."valueBase" / NULLIF(sb."quantityBase", 0), 0) >
+            COALESCE(pu."salePrice", 0)
+          ) AS "isCostAboveSale",
+          (
+            COALESCE(pu."salePrice", 0) > 0 AND
+            COALESCE(sb."valueBase" / NULLIF(sb."quantityBase", 0), 0) <
+              (COALESCE(pu."salePrice", 0) * 0.5)
+          ) AS "isCostBelowHalfSale"
         ${baseWhere}
         ORDER BY ${orderBySql}
         OFFSET ${pagination.skip}
@@ -284,6 +307,7 @@ inventoryRoute.get("/stock", async (c) => {
         basePurchasePrice: Number(balance.basePurchasePrice),
         baseSalePrice: Number(balance.baseSalePrice),
         isCostAboveSale: Boolean(balance.isCostAboveSale),
+        isCostBelowHalfSale: Boolean(balance.isCostBelowHalfSale),
         lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []
       })),
       pagination: createPaginationMeta({ ...pagination, total })
@@ -334,6 +358,8 @@ inventoryRoute.get("/stock", async (c) => {
         basePurchasePrice: Number(baseProductUnit?.purchasePrice || 0),
         baseSalePrice,
         isCostAboveSale: baseSalePrice > 0 && baseUnitCost > baseSalePrice,
+        isCostBelowHalfSale:
+          baseSalePrice > 0 && baseUnitCost < baseSalePrice * 0.5,
         // Kept for compatibility with the existing inventory table. Full lot detail
         // is loaded only when the user opens the lot view.
         lots: balance.earliestExpiryAt ? [{ expiryDate: balance.earliestExpiryAt }] : []

@@ -12,7 +12,7 @@ export type DashboardSummary = {
   };
   overview: {
     sales: number; purchases: number; grossProfit: number; netProfit: number;
-    income: number; expenses: number; treasury: number; receivables: number;
+    cogs?: number; income: number; expenses: number; treasury: number; receivables: number;
     payables: number; inventoryValue: number; wasteValue: number;
   };
   documents: {
@@ -25,6 +25,12 @@ export type DashboardSummary = {
     lowStock: number; highStock: number; expired: number; expiringSoon: number;
   };
   cashFlow: { moneyIn: number; moneyOut: number; net: number };
+  dataQuality?: {
+    missingCostInvoiceCount: number;
+    missingCostLineCount: number;
+    missingCostProductCount: number;
+    missingCostSales: number;
+  };
   salesByCashier: Array<{ id: string; name: string; sales: number; invoices: number }>;
   salesPurchasesTrend: Array<{ key: string; label: string; sales: number; purchases: number }>;
   salesByCategory: Array<{ name: string; sales: number; quantity: number; cogs?: number; profit?: number }>;

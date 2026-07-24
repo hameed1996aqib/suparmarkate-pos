@@ -3336,6 +3336,8 @@ function SalesPage() {
   const [detailsSale, setDetailsSale] = useState<any | null>(null);
   const [cancelSale, setCancelSale] = useState<any | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [duplicateSale, setDuplicateSale] = useState<DataRow | null>(null);
+  const [isDuplicatingSale, setIsDuplicatingSale] = useState(false);
   const [detailsSaleReturn, setDetailsSaleReturn] = useState<any | null>(null);
   const [cancelSaleReturn, setCancelSaleReturn] = useState<any | null>(null);
   const [cancelSaleReturnReason, setCancelSaleReturnReason] = useState("");
@@ -3672,6 +3674,12 @@ function SalesPage() {
     remainingSaleDiscount = Number(
       (remainingSaleDiscount - generalDiscount).toFixed(4),
     );
+    const unitInfo = productUnitInfo(products, line.productId, line.unitId);
+    const baseQuantity = line.quantity * unitInfo.conversionRate;
+    const baseSalePrice =
+      unitInfo.conversionRate > 0
+        ? line.unitPrice / unitInfo.conversionRate
+        : line.unitPrice;
 
     return {
       id: line.id,
@@ -3683,6 +3691,11 @@ function SalesPage() {
       discount: line.discount,
       generalDiscount,
       netTotal: Math.max(0, lineNetBeforeGeneral - generalDiscount),
+      baseQuantity,
+      baseUnit: unitInfo.baseUnitName,
+      baseUnitAmount: baseSalePrice,
+      salePrice: line.unitPrice,
+      baseSalePrice,
       total: lineNetBeforeGeneral,
     };
   });
@@ -3852,6 +3865,164 @@ function SalesPage() {
       toast.error(
         error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد",
       );
+    }
+  };
+
+  const openSaleDuplicate = (row: DataRow) => {
+    setDuplicateSale(row);
+  };
+
+  const submitSaleDuplicate = async () => {
+    if (!duplicateSale) return;
+
+    setIsDuplicatingSale(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/sales/${duplicateSale.id}`);
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(json?.message || "خواندن فاکتور فروش ناکام شد");
+      }
+
+      const sale = json.data;
+
+      if (sale?.status === "CANCELLED") {
+        throw new Error("فروش ابطال‌شده قابل دوپلیکیت نیست");
+      }
+
+      const sourceItems = Array.isArray(sale?.items) ? sale.items : [];
+
+      if (sourceItems.length === 0) {
+        throw new Error("این فاکتور قلمی برای دوپلیکیت ندارد");
+      }
+
+      const productOptions = await Promise.all(
+        sourceItems.map(async (item: any) => {
+          const currentProduct = products.find(
+            (product) => product.id === item.productId,
+          );
+
+          if (currentProduct?.units?.length) return currentProduct;
+
+          const searchText =
+            item.product?.barcode ||
+            item.product?.barcodeNormalized ||
+            item.product?.sku ||
+            item.product?.name ||
+            "";
+
+          if (String(searchText).trim().length >= 2) {
+            try {
+              const options = await searchProductLookupOptions(
+                String(searchText),
+              );
+              const matched = options.find(
+                (product: any) => product.id === item.productId,
+              );
+              if (matched) return matched;
+            } catch {
+              // A minimal product option below keeps the duplicate draft usable.
+            }
+          }
+
+          return item.product
+            ? {
+                ...item.product,
+                baseUnit:
+                  item.product.baseUnitId === item.unitId
+                    ? item.unit || null
+                    : item.product.baseUnit || null,
+                units: [
+                  {
+                    unitId: item.unitId,
+                    unit: item.unit,
+                    conversionRate: item.conversionRate || 1,
+                    salePrice: item.unitPrice || 0,
+                    isDefaultSale: true,
+                  },
+                ],
+              }
+            : null;
+        }),
+      );
+
+      setProducts((current) =>
+        mergeById(
+          current,
+          productOptions.filter(Boolean) as Array<{ id: string }>,
+        ),
+      );
+
+      const groupedLines = new Map<string, SaleLineForm>();
+
+      for (const item of sourceItems) {
+        const key = [
+          item.productId,
+          item.warehouseId,
+          item.unitId,
+          Number(item.unitPrice || 0).toFixed(4),
+        ].join("|");
+        const existing = groupedLines.get(key);
+
+        if (existing) {
+          groupedLines.set(key, {
+            ...existing,
+            quantity: Number(
+              (existing.quantity + Number(item.quantity || 0)).toFixed(4),
+            ),
+            discount: Number(
+              (existing.discount + Number(item.discount || 0)).toFixed(4),
+            ),
+          });
+        } else {
+          groupedLines.set(key, {
+            id: createClientId(),
+            productId: item.productId,
+            warehouseId: item.warehouseId,
+            unitId: item.unitId,
+            quantity: Number(item.quantity || 0),
+            unitPrice: Number(item.unitPrice || 0),
+            discount: Number(item.discount || 0),
+          });
+        }
+      }
+
+      const paidAmount = Number(sale.paidAmount || 0);
+      const account = paymentAccounts.find(
+        (item) => item.currencyId === sale.currencyId,
+      );
+
+      setForm({
+        ...emptySaleForm,
+        invoiceNo: `INV-${Date.now()}`,
+        customerId: sale.customerId || "",
+        currencyId: sale.currencyId || "",
+        paymentAccountKey:
+          paidAmount > 0 && account ? `${account.type}:${account.id}` : "",
+        discount: Number(sale.discount || 0),
+        paidAmount,
+        note: sale.invoiceNo
+          ? `دوپلیکیت از فاکتور ${sale.invoiceNo}`
+          : "دوپلیکیت از فاکتور فروش",
+      });
+      setSaleLines(Array.from(groupedLines.values()));
+      setEditingSaleLineId(null);
+      setSaleLineDraft(emptySaleLineDraft);
+      setSaleItemDialogOpen(false);
+      setDialogOpen(true);
+      setDuplicateSale(null);
+
+      if (paidAmount > 0 && !account) {
+        toast.warning("برای ثبت نسخه دوپلیکیت، حساب دریافت را انتخاب کنید");
+      } else {
+        toast.success("نسخه دوپلیکیت فروش آماده ثبت شد");
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "دوپلیکیت فروش ناکام شد",
+      );
+    } finally {
+      setIsDuplicatingSale(false);
     }
   };
 
@@ -4128,6 +4299,12 @@ function SalesPage() {
               onDelete={openSaleCancel}
               secondaryLabel="پرداخت"
               extraActions={[
+                {
+                  label: "دوپلیکیت فروش",
+                  icon: <Copy className="size-4" />,
+                  onClick: openSaleDuplicate,
+                  isVisible: (row) => row.__canDelete !== false,
+                },
                 {
                   label: "چاپ دوباره رسید",
                   icon: <FileText className="size-4" />,
@@ -4690,6 +4867,47 @@ function SalesPage() {
               لغو
             </Button>
             <Button onClick={submitSalePayment}>ثبت پرداخت</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(duplicateSale)}
+        onOpenChange={(open) => {
+          if (!open && !isDuplicatingSale) setDuplicateSale(null);
+        }}
+      >
+        <DialogContent dir="rtl" className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>دوپلیکیت فاکتور فروش</DialogTitle>
+            <DialogDescription>
+              یک نسخه جدید از این فروش در مودال ثبت فروش آماده می‌شود. تا وقتی
+              ثبت فاکتور را نزنید، موجودی، صندوق/بانک و حسابداری تغییر نمی‌کند.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <TextField
+              label="فاکتور مبدا"
+              value={String(duplicateSale?.name || "")}
+              onChange={() => undefined}
+            />
+            <TextField
+              label="مشتری"
+              value={String(duplicateSale?.party || "")}
+              onChange={() => undefined}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDuplicateSale(null)}
+              disabled={isDuplicatingSale}
+            >
+              لغو
+            </Button>
+            <Button onClick={submitSaleDuplicate} disabled={isDuplicatingSale}>
+              {isDuplicatingSale ? "در حال آماده‌سازی..." : "آماده‌سازی نسخه جدید"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -8982,7 +9200,6 @@ function ProductsPage() {
       );
       const productJson = await productRes.json().catch(() => null);
 
-      console.log("productRes", productRes, productJson);
       if (!productRes.ok) {
         throw new Error(productJson?.message || "ثبت محصول ناکام شد");
       }
@@ -9879,6 +10096,7 @@ function InventoryPage() {
     emptyInventoryActionForm,
   );
   const [isLoading, setIsLoading] = useState(true);
+  const inventoryLoadSeqRef = useRef(0);
   const inventoryProductSearchSeqRef = useRef(0);
   const didMountMovementQueryRef = useRef(false);
   const [openingEdit, setOpeningEdit] = useState<DataRow | null>(null);
@@ -9950,7 +10168,23 @@ function InventoryPage() {
     pages = movementPages,
     queries = movementQueries,
   ) => {
+    const requestSeq = inventoryLoadSeqRef.current + 1;
+    inventoryLoadSeqRef.current = requestSeq;
     setIsLoading(true);
+
+    const loadJson = async (url: string) => {
+      const response = await fetch(url);
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          json?.message || json?.error?.message || "خواندن اطلاعات ناکام شد",
+        );
+      }
+
+      return json;
+    };
+
     try {
       const stockParams = new URLSearchParams({
         page: String(pages.stock),
@@ -9962,8 +10196,8 @@ function InventoryPage() {
         stockParams.set("sortBy", stockSortBy);
         stockParams.set("sortOrder", stockSortOrder);
       }
-      if (stockCostFilter === "costAboveSale") {
-        stockParams.set("costAboveSale", "true");
+      if (stockCostFilter) {
+        stockParams.set("costFilter", stockCostFilter);
       }
 
       const [
@@ -9977,30 +10211,30 @@ function InventoryPage() {
         damageRes,
         transferRes,
       ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`).then((res) =>
-          res.json(),
+        loadJson(
+          `${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`,
         ),
-        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
-          res.json(),
-        ),
-        fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
-        fetch(
+        loadJson(`${API_BASE_URL}/api/products/lookup?limit=50`),
+        loadJson(`${API_BASE_URL}/api/warehouses`),
+        loadJson(`${API_BASE_URL}/api/currencies`),
+        loadJson(
           `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.opening, queries.opening, "OPENING_STOCK")}`,
-        ).then((res) => res.json()),
-        fetch(
+        ),
+        loadJson(
           `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.increase, queries.increase, "ADJUSTMENT_IN")}`,
-        ).then((res) => res.json()),
-        fetch(
+        ),
+        loadJson(
           `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.decrease, queries.decrease, "ADJUSTMENT_OUT")}`,
-        ).then((res) => res.json()),
-        fetch(
+        ),
+        loadJson(
           `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.damage, queries.damage, "DAMAGE")}`,
-        ).then((res) => res.json()),
-        fetch(
+        ),
+        loadJson(
           `${API_BASE_URL}/api/inventory/transfer-reports?${movementRequestQuery(pages.transfer, queries.transfer)}`,
-        ).then((res) => res.json()),
+        ),
       ]);
+
+      if (requestSeq !== inventoryLoadSeqRef.current) return;
 
       setStockRows(
         Array.isArray(stockRes?.data)
@@ -10072,20 +10306,25 @@ function InventoryPage() {
             )
           : [],
       );
-    } catch {
-      toast.warning("داده موجودی از API خوانده نشد");
-      setStockRows([
-        {
-          id: "i1",
-          name: "روغن آفتابگردان ۱.۵ لیتر",
-          warehouse: "گدام مرکزی",
-          quantity: 73,
-          expiry: "۱۴۰۴/۰۶/۱۰",
-          status: "موجود",
-        },
-      ]);
+    } catch (error) {
+      if (requestSeq !== inventoryLoadSeqRef.current) return;
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "داده موجودی از API خوانده نشد",
+      );
+      setStockRows([]);
+      setOpeningRows([]);
+      setIncreaseRows([]);
+      setDecreaseRows([]);
+      setDamageRows([]);
+      setTransferRows([]);
+      setMovementPagination({});
     } finally {
-      setIsLoading(false);
+      if (requestSeq === inventoryLoadSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -10306,10 +10545,30 @@ function InventoryPage() {
     );
   };
 
+  const inventoryUnitCost = (
+    productId: string,
+    unitId: string,
+    currencyId = form.currencyId,
+  ) => {
+    const product: any = products.find((item) => item.id === productId);
+    const unit =
+      product?.units?.find((item: any) => item.unitId === unitId) ||
+      product?.units?.find((item: any) => item.isDefaultPurchase) ||
+      product?.units?.[0];
+    const currency = currencies.find((item) => item.id === currencyId);
+
+    return Number(
+      basePriceInCurrency(Number(unit?.purchasePrice || 0), currency).toFixed(
+        4,
+      ),
+    );
+  };
+
   const openAction = (type: InventoryActionForm["type"]) => {
     const baseCurrency =
       currencies.find((item) => item.isBase) || currencies[0];
     const firstProductId = products[0]?.id || "";
+    const unitId = defaultInventoryUnitId(firstProductId);
     setForm({
       ...emptyInventoryActionForm,
       type,
@@ -10317,7 +10576,11 @@ function InventoryPage() {
       warehouseId: warehouses[0]?.id || "",
       toWarehouseId: warehouses[1]?.id || "",
       lotId: "",
-      unitId: defaultInventoryUnitId(firstProductId),
+      unitId,
+      unitCost:
+        type === "ADJUSTMENT_IN"
+          ? inventoryUnitCost(firstProductId, unitId, baseCurrency?.id || "")
+          : 0,
       currencyId: baseCurrency?.id || "",
     });
     setLotOptions([]);
@@ -10516,6 +10779,9 @@ function InventoryPage() {
                 >
                   <option value="">همه قیمت‌ها</option>
                   <option value="costAboveSale">آمد بالاتر از فروش</option>
+                  <option value="costBelowHalfSale">
+                    آمد کمتر از نصف فروش
+                  </option>
                 </select>
                 <select
                   value={stockSortOrder}
@@ -10684,15 +10950,23 @@ function InventoryPage() {
               options={products}
               onSearchChange={searchInventoryProducts}
               onChange={(value) =>
-                setForm((current) => ({
-                  ...current,
-                  productId: value,
-                  lotId: "",
-                  unitId: defaultInventoryUnitId(value),
-                  expiryDate: productHasExpiry(products, value)
-                    ? current.expiryDate
-                    : "",
-                }))
+                setForm((current) => {
+                  const unitId = defaultInventoryUnitId(value);
+
+                  return {
+                    ...current,
+                    productId: value,
+                    lotId: "",
+                    unitId,
+                    unitCost:
+                      current.type === "ADJUSTMENT_IN"
+                        ? inventoryUnitCost(value, unitId, current.currencyId)
+                        : current.unitCost,
+                    expiryDate: productHasExpiry(products, value)
+                      ? current.expiryDate
+                      : "",
+                  };
+                })
               }
             />
             <LookupSelect
@@ -10734,7 +11008,18 @@ function InventoryPage() {
                 value={form.unitId}
                 options={inventoryUnitOptions(form.productId)}
                 onChange={(value) =>
-                  setForm((current) => ({ ...current, unitId: value }))
+                  setForm((current) => ({
+                    ...current,
+                    unitId: value,
+                    unitCost:
+                      current.type === "ADJUSTMENT_IN"
+                        ? inventoryUnitCost(
+                            current.productId,
+                            value,
+                            current.currencyId,
+                          )
+                        : current.unitCost,
+                  }))
                 }
               />
             )}
@@ -10778,7 +11063,15 @@ function InventoryPage() {
                     name: item.code || item.name,
                   }))}
                   onChange={(value) =>
-                    setForm((current) => ({ ...current, currencyId: value }))
+                    setForm((current) => ({
+                      ...current,
+                      currencyId: value,
+                      unitCost: inventoryUnitCost(
+                        current.productId,
+                        current.unitId,
+                        value,
+                      ),
+                    }))
                   }
                 />
                 {productHasExpiry(products, form.productId) ? (
@@ -11387,6 +11680,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     const baseSalePrice = Number(item.baseSalePrice || 0);
     const basePurchasePrice = Number(item.basePurchasePrice || 0);
     const isCostAboveSale = Boolean(item.isCostAboveSale);
+    const isCostBelowHalfSale = Boolean(item.isCostBelowHalfSale);
 
     return {
       id: `${item.productId}-${item.warehouseId}`,
@@ -11401,9 +11695,11 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
           : "-",
       status: isCostAboveSale
         ? "آمد بالاتر از فروش"
-        : Number(item.totalQuantity || 0) > 0
-          ? "موجود"
-          : "تمام شده",
+        : isCostBelowHalfSale
+          ? "آمد کمتر از نصف فروش"
+          : Number(item.totalQuantity || 0) > 0
+            ? "موجود"
+            : "تمام شده",
       "واحد پایه": baseUnitName || "-",
       "قیمت آمد واحد پایه": `${money(baseUnitCost)} / ${baseUnitName || "واحد"}`,
       "قیمت فروش واحد پایه": `${money(baseSalePrice)} / ${baseUnitName || "واحد"}`,

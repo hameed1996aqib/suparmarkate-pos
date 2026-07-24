@@ -139,6 +139,7 @@ export function DashboardPage() {
   }
 
   const { overview, documents, inventory, cashFlow } = summary;
+  const dataQuality = summary.dataQuality;
 
   return (
     <div className="space-y-4">
@@ -205,7 +206,7 @@ export function DashboardPage() {
         <MetricCard
           title="مفاد خالص دوره"
           value={money(overview.netProfit)}
-          trend={`عواید ${money(overview.income)}`}
+          trend={`ناخالص ${money(overview.grossProfit)} / ضایعات ${money(overview.wasteValue)}`}
           icon={<CircleDollarSign />}
         />
         <MetricCard
@@ -313,6 +314,11 @@ export function DashboardPage() {
               ["تاریخ‌گذشته", inventory.expired, "destructive"],
               ["موجودی خیلی زیاد", inventory.highStock, "outline"],
               ["ضایعات", money(overview.wasteValue), "outline"],
+              [
+                "فروش بدون قیمت تمام‌شده",
+                dataQuality?.missingCostLineCount || 0,
+                dataQuality?.missingCostLineCount ? "destructive" : "outline",
+              ],
             ].map(([label, value, variant]) => (
               <div
                 key={String(label)}

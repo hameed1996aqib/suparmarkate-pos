@@ -112,6 +112,12 @@ type LossSalesReport = {
   products: Array<Record<string, unknown>>;
 };
 
+type MissingCostSalesReport = {
+  summary: Record<string, number>;
+  products: Array<Record<string, unknown>>;
+  items: Array<Record<string, unknown>>;
+};
+
 function kabulDateString(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kabul",
@@ -189,6 +195,7 @@ export function ReportsPage() {
   const [employeeReport, setEmployeeReport] = useState<EmployeePerformanceReport | null>(null);
   const [currencyUsageReport, setCurrencyUsageReport] = useState<CurrencyUsageReport | null>(null);
   const [lossSalesReport, setLossSalesReport] = useState<LossSalesReport | null>(null);
+  const [missingCostReport, setMissingCostReport] = useState<MissingCostSalesReport | null>(null);
   const [selectedLossCategoryId, setSelectedLossCategoryId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [company, setCompany] = useState<PrintCompany | null>(null);
@@ -196,19 +203,21 @@ export function ReportsPage() {
   const loadReports = async () => {
     setIsLoading(true);
     try {
-      const [dailyRes, managementRes, employeeRes, currencyUsageRes, lossSalesRes] = await Promise.all([
+      const [dailyRes, managementRes, employeeRes, currencyUsageRes, lossSalesRes, missingCostRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/reports/daily-cashier?date=${to}`),
         fetch(`${API_BASE_URL}/api/reports/management?from=${from}&to=${to}`),
         fetch(`${API_BASE_URL}/api/reports/employee-performance?period=${employeePeriod}&date=${to}`),
         fetch(`${API_BASE_URL}/api/reports/currency-usage?from=${from}&to=${to}`),
         fetch(`${API_BASE_URL}/api/reports/loss-sales?from=${from}&to=${to}`),
+        fetch(`${API_BASE_URL}/api/reports/missing-cost-sales?from=${from}&to=${to}`),
       ]);
-      const [dailyJson, managementJson, employeeJson, currencyUsageJson, lossSalesJson] = await Promise.all([
+      const [dailyJson, managementJson, employeeJson, currencyUsageJson, lossSalesJson, missingCostJson] = await Promise.all([
         dailyRes.json().catch(() => null),
         managementRes.json().catch(() => null),
         employeeRes.json().catch(() => null),
         currencyUsageRes.json().catch(() => null),
         lossSalesRes.json().catch(() => null),
+        missingCostRes.json().catch(() => null),
       ]);
 
       if (!dailyRes.ok) throw new Error(dailyJson?.message || "خواندن گزارش روزانه ناکام شد");
@@ -217,12 +226,14 @@ export function ReportsPage() {
 
       if (!currencyUsageRes.ok) throw new Error(currencyUsageJson?.message || "خواندن گزارش نرخ ارز ناکام شد");
       if (!lossSalesRes.ok) throw new Error(lossSalesJson?.message || "خواندن گزارش فروش زیر قیمت تمام‌شده ناکام شد");
+      if (!missingCostRes.ok) throw new Error(missingCostJson?.message || "خواندن گزارش کیفیت مفاد ناکام شد");
 
       setDailyReport(dailyJson.data);
       setManagementReport(managementJson.data);
       setEmployeeReport(employeeJson.data);
       setCurrencyUsageReport(currencyUsageJson.data);
       setLossSalesReport(lossSalesJson.data);
+      setMissingCostReport(missingCostJson.data);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "خواندن گزارش ناکام شد");
     } finally {
@@ -244,6 +255,7 @@ export function ReportsPage() {
   const summary = managementReport?.summary || {};
   const employeeSummary = employeeReport?.summary;
   const lossSummary = lossSalesReport?.summary || {};
+  const missingCostSummary = missingCostReport?.summary || {};
 
   useEffect(() => {
     const categories = lossSalesReport?.categories || [];
@@ -332,6 +344,38 @@ export function ReportsPage() {
           lossBase: money(n(item.lossBase)),
         })),
     [lossSalesReport, selectedLossCategoryId, money],
+  );
+
+  const missingCostProductRows = useMemo<DataRow[]>(
+    () =>
+      (missingCostReport?.products || []).map((item) => ({
+        id: String(item.productId),
+        productName: String(item.productName || "-"),
+        barcode: String(item.barcode || "-"),
+        categoryName: String(item.categoryName || "-"),
+        invoiceCount: n(item.invoiceCount),
+        lineCount: n(item.lineCount),
+        quantityBase: `${n(item.quantityBase)} ${String(item.unitName || "").trim()}`.trim(),
+        salesBase: money(n(item.salesBase)),
+      })),
+    [missingCostReport, money],
+  );
+
+  const missingCostItemRows = useMemo<DataRow[]>(
+    () =>
+      (missingCostReport?.items || []).map((item) => ({
+        id: String(item.saleItemId),
+        invoiceNo: String(item.invoiceNo || "-"),
+        saleDate: formatDate(item.saleDate),
+        cashierName: String(item.cashierName || "-"),
+        productName: String(item.productName || "-"),
+        barcode: String(item.barcode || "-"),
+        categoryName: String(item.categoryName || "-"),
+        quantityBase: `${n(item.quantityBase)} ${String(item.unitName || "").trim()}`.trim(),
+        salesBase: money(n(item.salesBase)),
+        status: "قیمت تمام‌شده ثبت نشده",
+      })),
+    [missingCostReport, money],
   );
 
   const topProductRows = useMemo<DataRow[]>(
@@ -508,6 +552,7 @@ export function ReportsPage() {
           <MetricCard label="طلب فعلی مشتریان" value={money(n(summary.receivables))} icon={<WalletCards />} />
           <MetricCard label="بدهی فعلی فروشندگان" value={money(n(summary.payables))} icon={<WalletCards />} />
           <MetricCard label="هشدار فعلی موجودی" value={`${lowStockRows.length + expiringRows.length}`} icon={<AlertTriangle />} />
+          <MetricCard label="فروش بدون قیمت تمام‌شده" value={`${n(missingCostSummary.lineCount)}`} icon={<AlertTriangle />} />
         </div>
       </section>
 
@@ -532,6 +577,7 @@ export function ReportsPage() {
             <TabsTrigger value="employee">کارکرد کارمند</TabsTrigger>
             <TabsTrigger value="top">پرفروش‌ترین</TabsTrigger>
             <TabsTrigger value="lossSales">فروش زیر قیمت</TabsTrigger>
+            <TabsTrigger value="missingCost">کیفیت مفاد</TabsTrigger>
             <TabsTrigger value="receivables">طلب</TabsTrigger>
             <TabsTrigger value="payables">بدهی</TabsTrigger>
             <TabsTrigger value="lowStock">کمبود موجودی</TabsTrigger>
@@ -681,6 +727,65 @@ export function ReportsPage() {
                 { key: "lossBase", label: "ضرر" },
               ]}
               rows={lossProductRows}
+            />
+          </TabsContent>
+
+          <TabsContent value="missingCost" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                label="فاکتورهای مشکوک"
+                value={`${n(missingCostSummary.invoiceCount)}`}
+                icon={<AlertTriangle />}
+              />
+              <MetricCard
+                label="خطوط بدون قیمت تمام‌شده"
+                value={`${n(missingCostSummary.lineCount)}`}
+                icon={<FileBarChart />}
+              />
+              <MetricCard
+                label="اجناس متاثر"
+                value={`${n(missingCostSummary.productCount)}`}
+                icon={<Package />}
+              />
+              <MetricCard
+                label="فروش متاثر"
+                value={money(n(missingCostSummary.salesBase))}
+                icon={<ShoppingBag />}
+              />
+            </div>
+            <Card className="border-destructive/30 bg-destructive/5">
+              <CardContent className="py-3 text-sm text-destructive">
+                این گزارش فروش‌هایی را نشان می‌دهد که قیمت تمام‌شده ندارند یا صفر ثبت شده‌اند؛
+                تا زمان ترمیم این ردیف‌ها، مفاد داشبورد می‌تواند بیشتر از واقعیت نمایش داده شود.
+              </CardContent>
+            </Card>
+            <ReportTable
+              title="خلاصه اجناس بدون قیمت تمام‌شده"
+              columns={[
+                { key: "productName", label: "جنس" },
+                { key: "barcode", label: "بارکود" },
+                { key: "categoryName", label: "کتگوری" },
+                { key: "invoiceCount", label: "فاکتور" },
+                { key: "lineCount", label: "خط فروش" },
+                { key: "quantityBase", label: "مقدار" },
+                { key: "salesBase", label: "فروش متاثر" },
+              ]}
+              rows={missingCostProductRows}
+            />
+            <ReportTable
+              title="جزئیات فاکتورهای مشکوک"
+              columns={[
+                { key: "invoiceNo", label: "فاکتور" },
+                { key: "saleDate", label: "تاریخ" },
+                { key: "cashierName", label: "فروشنده" },
+                { key: "productName", label: "جنس" },
+                { key: "barcode", label: "بارکود" },
+                { key: "categoryName", label: "کتگوری" },
+                { key: "quantityBase", label: "مقدار" },
+                { key: "salesBase", label: "فروش متاثر" },
+                { key: "status", label: "حالت" },
+              ]}
+              rows={missingCostItemRows}
             />
           </TabsContent>
 

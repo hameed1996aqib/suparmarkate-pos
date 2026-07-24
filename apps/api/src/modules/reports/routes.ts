@@ -865,6 +865,163 @@ reportsRoute.get("/loss-sales", async (c) => {
   return c.json({ data, cache: "miss" });
 });
 
+reportsRoute.get("/missing-cost-sales", async (c) => {
+  const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+  const cacheKey = `reports:missing-cost-sales:v1:${from}:${to}`;
+  const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
+  if (cached) return c.json({ data: cached, cache: "hit" });
+
+  const rows = await prisma.$queryRaw<any[]>(Prisma.sql`
+    WITH sale_lines AS (
+      SELECT
+        s.id "saleId",
+        COALESCE(s."invoiceNo", s.id) "invoiceNo",
+        s."saleDate",
+        COALESCE(u."displayName", u.username, 'بدون کاربر') "cashierName",
+        si.id "saleItemId",
+        p.id "productId",
+        p.name "productName",
+        p.barcode,
+        COALESCE(pc.id, 'uncategorized') "categoryId",
+        COALESCE(pc.name, 'بدون کتگوری') "categoryName",
+        COALESCE(unit."shortName", unit.name, '') "unitName",
+        COALESCE(si."quantityBase", 0) "quantityBase",
+        (
+          COALESCE(si."totalPrice", 0)
+          - CASE
+              WHEN COALESCE(s.subtotal, 0) > 0
+                THEN COALESCE(s.discount, 0) * (COALESCE(si."totalPrice", 0) / s.subtotal)
+              ELSE 0
+            END
+        ) * COALESCE(s."exchangeRate", 1) "saleBase"
+      FROM "SaleItem" si
+      JOIN "Sale" s ON s.id = si."saleId"
+      JOIN "Product" p ON p.id = si."productId"
+      LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
+      LEFT JOIN "Unit" unit ON unit.id = p."baseUnitId"
+      LEFT JOIN "User" u ON u.id = s."cashierId"
+      WHERE s."saleDate" >= ${start}
+        AND s."saleDate" < ${end}
+        AND s.status <> 'CANCELLED'
+        AND COALESCE(si."quantityBase", 0) > 0
+        AND COALESCE(si."totalPrice", 0) > 0
+        AND COALESCE(si."baseTotalCost", si."totalCost", 0) <= 0
+    ),
+    return_lines AS (
+      SELECT
+        sri."saleItemId",
+        COALESCE(SUM(sri."quantityBase"), 0) "returnedQuantityBase"
+      FROM "SaleReturnItem" sri
+      JOIN "SaleReturn" sr ON sr.id = sri."saleReturnId"
+      WHERE sr."cancelledAt" IS NULL
+      GROUP BY sri."saleItemId"
+    ),
+    net_lines AS (
+      SELECT
+        sl.*,
+        GREATEST(sl."quantityBase" - COALESCE(rl."returnedQuantityBase", 0), 0) "netQuantityBase",
+        CASE
+          WHEN sl."quantityBase" > 0
+            THEN sl."saleBase" * (
+              GREATEST(sl."quantityBase" - COALESCE(rl."returnedQuantityBase", 0), 0)
+              / sl."quantityBase"
+            )
+          ELSE 0
+        END "netSaleBase"
+      FROM sale_lines sl
+      LEFT JOIN return_lines rl ON rl."saleItemId" = sl."saleItemId"
+    )
+    SELECT *
+    FROM net_lines
+    WHERE "netQuantityBase" > 0
+      AND "netSaleBase" > 0
+    ORDER BY "saleDate" DESC, "invoiceNo" ASC, "productName" ASC
+    LIMIT 500
+  `);
+
+  const productMap = new Map<string, {
+    productId: string;
+    productName: string;
+    barcode: string | null;
+    categoryId: string;
+    categoryName: string;
+    unitName: string;
+    invoiceCount: number;
+    lineCount: number;
+    quantityBase: number;
+    salesBase: number;
+  }>();
+  const invoiceIds = new Set<string>();
+  const productInvoiceIds = new Map<string, Set<string>>();
+
+  const items = rows.map((row) => {
+    const item = {
+      saleId: String(row.saleId),
+      saleItemId: String(row.saleItemId),
+      invoiceNo: String(row.invoiceNo || "-"),
+      saleDate: row.saleDate,
+      cashierName: String(row.cashierName || "-"),
+      productId: String(row.productId),
+      productName: String(row.productName || "-"),
+      barcode: row.barcode ? String(row.barcode) : null,
+      categoryId: String(row.categoryId || "uncategorized"),
+      categoryName: String(row.categoryName || "بدون کتگوری"),
+      unitName: String(row.unitName || ""),
+      quantityBase: toNumber(row.netQuantityBase),
+      salesBase: toNumber(row.netSaleBase)
+    };
+
+    invoiceIds.add(item.saleId);
+    const currentProductInvoiceIds =
+      productInvoiceIds.get(item.productId) || new Set<string>();
+    currentProductInvoiceIds.add(item.saleId);
+    productInvoiceIds.set(item.productId, currentProductInvoiceIds);
+    const existing = productMap.get(item.productId) || {
+      productId: item.productId,
+      productName: item.productName,
+      barcode: item.barcode,
+      categoryId: item.categoryId,
+      categoryName: item.categoryName,
+      unitName: item.unitName,
+      invoiceCount: 0,
+      lineCount: 0,
+      quantityBase: 0,
+      salesBase: 0
+    };
+
+    existing.lineCount += 1;
+    existing.quantityBase += item.quantityBase;
+    existing.salesBase += item.salesBase;
+    productMap.set(item.productId, existing);
+
+    return item;
+  });
+
+  const products = Array.from(productMap.values())
+    .map((item) => ({
+      ...item,
+      invoiceCount: productInvoiceIds.get(item.productId)?.size || 0
+    }))
+    .sort(
+      (a, b) => b.salesBase - a.salesBase || a.productName.localeCompare(b.productName)
+    );
+  const data = {
+    range: { from, to, start, end },
+    summary: {
+      invoiceCount: invoiceIds.size,
+      lineCount: items.length,
+      productCount: products.length,
+      quantityBase: items.reduce((sum, item) => sum + item.quantityBase, 0),
+      salesBase: items.reduce((sum, item) => sum + item.salesBase, 0)
+    },
+    products,
+    items
+  };
+
+  await cacheSetJson(cacheKey, data, 30);
+  return c.json({ data, cache: "miss" });
+});
+
 reportsRoute.get("/management-legacy", async (c) => {
   return c.json({ message: "Legacy management report is disabled" }, 410);
   /*

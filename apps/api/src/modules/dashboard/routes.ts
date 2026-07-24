@@ -86,7 +86,7 @@ function dateBucket(period: DashboardPeriod, column: string) {
 dashboardRoute.get("/summary", async (c) => {
   const period = parsePeriod(c.req.query("period"));
   const currencyId = c.req.query("currencyId")?.trim() || undefined;
-  const cacheKey = `dashboard:summary:v4:${kabulDateString()}:${period}:${currencyId || "base"}`;
+  const cacheKey = `dashboard:summary:v5:${kabulDateString()}:${period}:${currencyId || "base"}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
   if (cached) return c.json({ data: cached, cache: "hit" });
 
@@ -116,7 +116,11 @@ dashboardRoute.get("/summary", async (c) => {
   const purchaseTotal = Prisma.raw(currencyId ? `p."total"` : `COALESCE(NULLIF(p."baseTotal", 0), p."total" * COALESCE(p."exchangeRate", 1))`);
   const saleReturnTotal = Prisma.raw(currencyId ? `sr."subtotal"` : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`);
   const purchaseReturnTotal = Prisma.raw(currencyId ? `pr."subtotal"` : `COALESCE(NULLIF(pr."baseSubtotal", 0), pr."subtotal" * COALESCE(pr."exchangeRate", 1))`);
-  const saleItemValue = Prisma.raw(currencyId ? `si."totalPrice"` : `si."totalPrice" * s."exchangeRate"`);
+  const saleItemNetValue = Prisma.raw(
+    currencyId
+      ? `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END)`
+      : `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END) * COALESCE(s."exchangeRate", 1)`
+  );
   const saleReturnItemValue = Prisma.raw(currencyId ? `sri."totalPrice"` : `sri."totalPrice" * sr."exchangeRate"`);
   const saleCogsValue = Prisma.raw(
     currencyId
@@ -148,7 +152,8 @@ dashboardRoute.get("/summary", async (c) => {
     salesRows, purchaseRows, saleReturnRows, purchaseReturnRows, cogsRows,
     moneyRows, damageRows, stockRows, trendRows, cashierRows, categoryRows,
     productRows, expired, expiringSoon, auditLogs, cashAccounts, bankAccounts,
-    customerAccounts, supplierAccounts, customers, suppliers, outstandingSalesRows, outstandingPurchaseRows
+    customerAccounts, supplierAccounts, customers, suppliers, outstandingSalesRows,
+    outstandingPurchaseRows, missingCostRows
   ] = await Promise.all([
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT COUNT(*)::int count, COALESCE(SUM(${totalColumn}), 0) total,
@@ -242,7 +247,7 @@ dashboardRoute.get("/summary", async (c) => {
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT name, SUM(quantity) quantity, SUM(sales) sales, SUM(cogs) cogs, SUM(sales) - SUM(cogs) profit FROM (
-        SELECT COALESCE(pc.name, 'بدون کتگوری') name, SUM(si."quantityBase") quantity, SUM(${saleItemValue}) sales,
+        SELECT COALESCE(pc.name, 'بدون کتگوری') name, SUM(si."quantityBase") quantity, SUM(${saleItemNetValue}) sales,
           SUM(${saleCogsValue}) cogs
         FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
         LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
@@ -257,7 +262,7 @@ dashboardRoute.get("/summary", async (c) => {
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT id, name, SUM(quantity) quantity, SUM(sales) sales FROM (
-        SELECT p.id, p.name, SUM(si."quantityBase") quantity, SUM(${saleItemValue}) sales
+        SELECT p.id, p.name, SUM(si."quantityBase") quantity, SUM(${saleItemNetValue}) sales
         FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
         WHERE s."saleDate" >= ${start} AND s."saleDate" < ${end} AND s."status" <> 'CANCELLED' ${saleCurrencyFilter} GROUP BY p.id, p.name
         UNION ALL
@@ -282,6 +287,22 @@ dashboardRoute.get("/summary", async (c) => {
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT COUNT(*)::int count FROM "Purchase"
       WHERE "status" <> 'CANCELLED' AND "baseRemainingAmount" > 0
+    `),
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT
+        COUNT(DISTINCT s.id)::int "invoiceCount",
+        COUNT(*)::int "lineCount",
+        COUNT(DISTINCT si."productId")::int "productCount",
+        COALESCE(SUM(${saleItemNetValue}), 0) "sales"
+      FROM "SaleItem" si
+      JOIN "Sale" s ON s.id = si."saleId"
+      WHERE s."saleDate" >= ${start}
+        AND s."saleDate" < ${end}
+        AND s."status" <> 'CANCELLED'
+        ${saleCurrencyFilter}
+        AND COALESCE(si."quantityBase", 0) > 0
+        AND COALESCE(si."totalPrice", 0) > 0
+        AND COALESCE(si."baseTotalCost", si."totalCost", 0) <= 0
     `)
   ]);
 
@@ -289,6 +310,10 @@ dashboardRoute.get("/summary", async (c) => {
   const purchaseReturns = purchaseReturnRows[0], money = moneyRows[0], stock = stockRows[0];
   const netSales = number(sales.total) - number(saleReturns.total);
   const cogs = number(cogsRows[0].total) - number(saleReturns.cogs);
+  const wasteValue = number(damageRows[0].total);
+  const grossProfit = netSales - cogs;
+  const netProfit =
+    grossProfit + number(money.income) - number(money.expenses) - wasteValue;
   const accountBalance = (amount: number, row: { currencyId: string }) =>
     currencyId ? amount : amount * (rates.get(row.currencyId) || 1);
   const receivables = customerAccounts.reduce((sum, row) => sum + accountBalance(Math.max(0, number(row.debitBalance) - number(row.creditBalance)), row), 0);
@@ -309,9 +334,11 @@ dashboardRoute.get("/summary", async (c) => {
     },
     overview: {
       sales: netSales, purchases: number(purchases.total) - number(purchaseReturns.total),
-      grossProfit: netSales - cogs, netProfit: netSales - cogs + number(money.income) - number(money.expenses),
+      cogs,
+      grossProfit,
+      netProfit,
       income: number(money.income), expenses: number(money.expenses), treasury, receivables, payables,
-      inventoryValue: number(stock.value), wasteValue: number(damageRows[0].total)
+      inventoryValue: number(stock.value), wasteValue
     },
     documents: {
       sales: number(sales.count), purchases: number(purchases.count), pendingSales: number(outstandingSalesRows[0]?.count),
@@ -322,6 +349,12 @@ dashboardRoute.get("/summary", async (c) => {
     inventory: { products: number(stock.products), inventoryValue: number(stock.value), value: number(stock.value),
       outOfStock: number(stock.outOfStock), lowStock: number(stock.lowStock), highStock: number(stock.highStock), expired, expiringSoon },
     cashFlow: { moneyIn: number(money.moneyIn), moneyOut: number(money.moneyOut), net: number(money.moneyIn) - number(money.moneyOut) },
+    dataQuality: {
+      missingCostInvoiceCount: number(missingCostRows[0]?.invoiceCount),
+      missingCostLineCount: number(missingCostRows[0]?.lineCount),
+      missingCostProductCount: number(missingCostRows[0]?.productCount),
+      missingCostSales: number(missingCostRows[0]?.sales)
+    },
     salesByCashier: cashierRows.map((row) => ({ ...row, invoices: number(row.invoices), sales: number(row.sales) })),
     salesPurchasesTrend: trend,
     salesByCategory: categoryRows.map((row) => ({

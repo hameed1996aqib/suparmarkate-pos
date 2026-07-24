@@ -1,11 +1,49 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, session } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
+const { fileURLToPath } = require("node:url");
 
 const isDev = !app.isPackaged;
 const appIconPath = isDev
   ? path.join(__dirname, "../build/icon.png")
   : path.join(process.resourcesPath, "icon.png");
+const rendererRoot = path.resolve(__dirname, "../dist");
+
+function isExternalWebUrl(url) {
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedRendererUrl(url) {
+  try {
+    const parsed = new URL(url);
+
+    if (isDev) {
+      return parsed.origin === "http://localhost:5173";
+    }
+
+    if (parsed.protocol !== "file:") return false;
+
+    const targetPath = path.resolve(fileURLToPath(parsed));
+    return (
+      targetPath === path.join(rendererRoot, "index.html") ||
+      targetPath.startsWith(`${rendererRoot}${path.sep}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function configureSessionSecurity() {
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => callback(false)
+  );
+}
 
 function getLanIp() {
   const interfaces = os.networkInterfaces();
@@ -51,8 +89,18 @@ function createWindow() {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 
+  const guardNavigation = (event, url) => {
+    if (isTrustedRendererUrl(url)) return;
+
+    event.preventDefault();
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
+  };
+
+  win.webContents.on("will-navigate", guardNavigation);
+  win.webContents.on("will-redirect", guardNavigation);
+
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
 }
@@ -225,6 +273,8 @@ ipcMain.handle("window:close", (event) => {
 });
 
 app.whenReady().then(() => {
+  configureSessionSecurity();
+
   if (process.platform === "win32") {
     app.setAppUserModelId("af.muhaseb.desktop");
   }

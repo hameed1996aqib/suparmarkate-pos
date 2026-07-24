@@ -40,6 +40,9 @@ function displayValue(value: unknown) {
 
 function defaultBadgeClass(value: unknown) {
   const text = String(value || "");
+  if (text.includes("آمد کمتر از نصف فروش")) {
+    return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+  }
   if (
     text.includes("مصرف") ||
     text.includes("باطل") ||

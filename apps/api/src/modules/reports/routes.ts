@@ -5,6 +5,7 @@ import { MoneyDirection, MoneyTransactionType, PartyType } from "../../generated
 import { Prisma } from "../../generated/prisma/client";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
 import { kabulDateRange, kabulDayRange } from "../../lib/kabul-date";
+import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 
 export const reportsRoute = new Hono();
 
@@ -26,23 +27,56 @@ function saleDiscountBase(sale: Record<string, unknown> & { items?: Array<Record
 }
 
 function parseReportDate(value?: string) {
-  return kabulDayRange(value);
+  const range = kabulDayRange(value);
+  return {
+    ...range,
+    end: new Date(range.end.getTime() + 1)
+  };
 }
 
 function parseReportRange(from?: string, to?: string) {
-  return kabulDateRange(from, to);
+  const range = kabulDateRange(from, to);
+  return {
+    ...range,
+    end: new Date(range.end.getTime() + 1)
+  };
 }
 
-function parseEmployeePerformanceRange(period?: string, date?: string) {
-  const day = kabulDayRange(date);
+function parseEmployeePerformanceRange(
+  period?: string,
+  date?: string,
+  from?: string,
+  to?: string
+) {
+  if (from || to) {
+    const range = parseReportRange(from || to, to || from);
+    return {
+      key: "range",
+      date: range.to,
+      from: range.from,
+      to: range.to,
+      start: range.start,
+      end: range.end
+    };
+  }
+
+  const day = parseReportDate(date);
   const source = day.source;
-  const end = new Date(day.end.getTime() + 1);
+  const end = day.end;
   const start = new Date(end);
 
   if (period === "week") {
     start.setDate(start.getDate() - 7);
   } else if (period === "month") {
-    start.setDate(1);
+    const monthRange = parseReportRange(`${source.slice(0, 8)}01`, source);
+    return {
+      key: "month",
+      date: source,
+      from: monthRange.from,
+      to: monthRange.to,
+      start: monthRange.start,
+      end: monthRange.end
+    };
   } else {
     start.setDate(start.getDate() - 1);
   }
@@ -50,6 +84,8 @@ function parseEmployeePerformanceRange(period?: string, date?: string) {
   return {
     key: period === "week" || period === "month" ? period : "day",
     date: source,
+    from: source,
+    to: source,
     start,
     end
   };
@@ -73,7 +109,14 @@ function emptyReportRow(id: string, name: string) {
 }
 
 reportsRoute.get("/daily-cashier", async (c) => {
-  const { source, start, end } = parseReportDate(c.req.query("date"));
+  const requestedFrom = c.req.query("from");
+  const requestedTo = c.req.query("to");
+  const requestedDate = c.req.query("date");
+  const range =
+    requestedFrom || requestedTo
+      ? parseReportRange(requestedFrom || requestedTo, requestedTo || requestedFrom)
+      : parseReportRange(requestedDate, requestedDate);
+  const { from, to, start, end } = range;
 
   const [sales, moneyTransactions] = await Promise.all([
     prisma.sale.findMany({
@@ -197,8 +240,10 @@ reportsRoute.get("/daily-cashier", async (c) => {
 
   return c.json({
     data: {
-      date: source,
+      date: to,
       range: {
+        from,
+        to,
         start,
         end
       },
@@ -244,7 +289,12 @@ reportsRoute.get("/daily-cashier", async (c) => {
 });
 
 reportsRoute.get("/employee-performance", async (c) => {
-  const range = parseEmployeePerformanceRange(c.req.query("period"), c.req.query("date"));
+  const range = parseEmployeePerformanceRange(
+    c.req.query("period"),
+    c.req.query("date"),
+    c.req.query("from"),
+    c.req.query("to")
+  );
 
   const [employees, sales, moneyTransactions, attendanceRecords] = await Promise.all([
     prisma.employee.findMany({
@@ -383,7 +433,12 @@ reportsRoute.get("/employee-performance", async (c) => {
     data: {
       period: range.key,
       date: range.date,
-      range: { start: range.start, end: range.end },
+      range: {
+        from: range.from,
+        to: range.to,
+        start: range.start,
+        end: range.end
+      },
       summary: {
         employeeCount: dataRows.length,
         saleCount: dataRows.reduce((sum, row) => sum + row.saleCount, 0),
@@ -395,6 +450,163 @@ reportsRoute.get("/employee-performance", async (c) => {
       },
       rows: dataRows.sort((a, b) => b.totalSales - a.totalSales)
     }
+  });
+});
+
+reportsRoute.get("/activity", async (c) => {
+  const kind = c.req.query("kind");
+  if (!kind || !["sales", "purchases", "income-expenses"].includes(kind)) {
+    return c.json({ message: "نوع جدول گزارش معتبر نیست" }, 400);
+  }
+
+  const { from, to, start, end } = parseReportRange(
+    c.req.query("from"),
+    c.req.query("to")
+  );
+  const pagination = getPagePagination(c, {
+    defaultLimit: 20,
+    maxLimit: 100
+  });
+
+  if (kind === "sales") {
+    const where = {
+      saleDate: { gte: start, lt: end },
+      status: { not: "CANCELLED" as const }
+    };
+    const [items, total] = await Promise.all([
+      prisma.sale.findMany({
+        where,
+        include: { cashier: true, customer: true },
+        orderBy: { saleDate: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit
+      }),
+      prisma.sale.count({ where })
+    ]);
+
+    return c.json({
+      data: items.map((sale) => ({
+        id: sale.id,
+        invoiceNo: sale.invoiceNo,
+        date: sale.saleDate,
+        customer: sale.customer?.name || "-",
+        cashier:
+          sale.cashier?.displayName || sale.cashier?.username || "-",
+        total: baseMoney(
+          sale as unknown as Record<string, unknown>,
+          "baseTotal",
+          "total"
+        ),
+        paid: baseMoney(
+          sale as unknown as Record<string, unknown>,
+          "basePaidAmount",
+          "paidAmount"
+        ),
+        remaining: baseMoney(
+          sale as unknown as Record<string, unknown>,
+          "baseRemainingAmount",
+          "remainingAmount"
+        )
+      })),
+      range: { from, to, start, end },
+      pagination: createPaginationMeta({ ...pagination, total })
+    });
+  }
+
+  if (kind === "purchases") {
+    const where = {
+      purchaseDate: { gte: start, lt: end },
+      status: { not: "CANCELLED" as const }
+    };
+    const [items, total] = await Promise.all([
+      prisma.purchase.findMany({
+        where,
+        include: { supplier: true },
+        orderBy: { purchaseDate: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit
+      }),
+      prisma.purchase.count({ where })
+    ]);
+
+    return c.json({
+      data: items.map((purchase) => ({
+        id: purchase.id,
+        invoiceNo: purchase.invoiceNo,
+        date: purchase.purchaseDate,
+        supplier: purchase.supplier?.name || "-",
+        total: baseMoney(
+          purchase as unknown as Record<string, unknown>,
+          "baseTotal",
+          "total"
+        ),
+        paid: baseMoney(
+          purchase as unknown as Record<string, unknown>,
+          "basePaidAmount",
+          "paidAmount"
+        ),
+        remaining: baseMoney(
+          purchase as unknown as Record<string, unknown>,
+          "baseRemainingAmount",
+          "remainingAmount"
+        )
+      })),
+      range: { from, to, start, end },
+      pagination: createPaginationMeta({ ...pagination, total })
+    });
+  }
+
+  const baseWhere = Prisma.sql`
+    FROM "MoneyTransaction" mt
+    LEFT JOIN "FinancialCategory" fc ON fc.id = mt."categoryId"
+    LEFT JOIN "CashRegisterAccount" cra ON cra.id = mt."cashRegisterAccountId"
+    LEFT JOIN "CashRegister" cr ON cr.id = cra."cashRegisterId"
+    LEFT JOIN "BankAccount" ba ON ba.id = mt."bankAccountId"
+    LEFT JOIN "User" usr ON usr.id = mt."createdByUserId"
+    WHERE mt."createdAt" >= ${start}
+      AND mt."createdAt" < ${end}
+      AND mt."type" IN ('INCOME', 'EXPENSE')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MoneyTransaction" cancel
+        WHERE cancel."type" = 'ADJUSTMENT'
+          AND cancel."referenceId" = mt.id
+          AND cancel."referenceType" IN ('INCOME_CANCEL', 'EXPENSE_CANCEL')
+      )
+  `;
+  const [items, totalRows] = await Promise.all([
+    prisma.$queryRaw<any[]>(Prisma.sql`
+      SELECT
+        mt.id,
+        mt."createdAt" date,
+        mt."type",
+        COALESCE(fc.name, '-') category,
+        COALESCE(cr.name, ba.name, '-') account,
+        COALESCE(usr."displayName", usr.username, '-') "user",
+        COALESCE(
+          NULLIF(mt."baseAmount", 0),
+          mt.amount * COALESCE(mt."exchangeRate", 1)
+        ) amount,
+        mt.note
+      ${baseWhere}
+      ORDER BY mt."createdAt" DESC, mt.id DESC
+      OFFSET ${pagination.skip}
+      LIMIT ${pagination.limit}
+    `),
+    prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int count
+      ${baseWhere}
+    `)
+  ]);
+  const total = Number(totalRows[0]?.count || 0);
+
+  return c.json({
+    data: items.map((item) => ({
+      ...item,
+      amount: toNumber(item.amount)
+    })),
+    range: { from, to, start, end },
+    pagination: createPaginationMeta({ ...pagination, total })
   });
 });
 

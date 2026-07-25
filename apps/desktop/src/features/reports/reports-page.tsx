@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   FileBarChart,
@@ -26,7 +26,22 @@ import { API_BASE_URL } from "@/lib/api-config";
 import { useBaseCurrencyCode } from "@/lib/use-base-currency";
 import { CompanyPrintHeader, type PrintCompany } from "@/features/printing/company-print-header";
 
-type EmployeePeriod = "day" | "week" | "month";
+type ReportActivityKind = "sales" | "purchases" | "income-expenses";
+
+type PaginationMeta = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+type ActivityPages = Record<ReportActivityKind, number>;
+
+const firstActivityPages: ActivityPages = {
+  sales: 1,
+  purchases: 1,
+  "income-expenses": 1,
+};
 
 type DailyReportRow = {
   id: string;
@@ -75,7 +90,7 @@ type EmployeePerformanceRow = DailyReportRow & {
 };
 
 type EmployeePerformanceReport = {
-  period: EmployeePeriod;
+  period: "range" | "day" | "week" | "month";
   date: string;
   summary: {
     employeeCount: number;
@@ -189,35 +204,104 @@ export function ReportsPage() {
   const money = (value: number | string) => formatMoney(value, baseCurrencyCode);
   const [from, setFrom] = useState(monthStart());
   const [to, setTo] = useState(today());
-  const [employeePeriod, setEmployeePeriod] = useState<EmployeePeriod>("day");
   const [dailyReport, setDailyReport] = useState<DailyCashierReport | null>(null);
   const [managementReport, setManagementReport] = useState<ManagementReport | null>(null);
   const [employeeReport, setEmployeeReport] = useState<EmployeePerformanceReport | null>(null);
   const [currencyUsageReport, setCurrencyUsageReport] = useState<CurrencyUsageReport | null>(null);
   const [lossSalesReport, setLossSalesReport] = useState<LossSalesReport | null>(null);
   const [missingCostReport, setMissingCostReport] = useState<MissingCostSalesReport | null>(null);
+  const [activityRows, setActivityRows] = useState<
+    Record<ReportActivityKind, Array<Record<string, unknown>>>
+  >({ sales: [], purchases: [], "income-expenses": [] });
+  const [activityPages, setActivityPages] =
+    useState<ActivityPages>(firstActivityPages);
+  const [activityPagination, setActivityPagination] = useState<
+    Partial<Record<ReportActivityKind, PaginationMeta>>
+  >({});
   const [selectedLossCategoryId, setSelectedLossCategoryId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [company, setCompany] = useState<PrintCompany | null>(null);
+  const reportsRequestSeqRef = useRef(0);
+  const activityRequestSeqRef = useRef<Record<ReportActivityKind, number>>({
+    sales: 0,
+    purchases: 0,
+    "income-expenses": 0,
+  });
+  const activeRangeRef = useRef(`${from}:${to}`);
+  activeRangeRef.current = `${from}:${to}`;
 
-  const loadReports = async () => {
+  const activityUrl = (kind: ReportActivityKind, page: number) => {
+    const params = new URLSearchParams({
+      from,
+      to,
+      kind,
+      page: String(page),
+      limit: "20",
+    });
+    return `${API_BASE_URL}/api/reports/activity?${params.toString()}`;
+  };
+
+  const loadReports = async (pages: ActivityPages = activityPages) => {
+    if (!from || !to) {
+      setIsLoading(false);
+      toast.warning("تاریخ از و تا را انتخاب کنید");
+      return;
+    }
+    if (from > to) {
+      setIsLoading(false);
+      toast.warning("تاریخ از نمی‌تواند بعد از تاریخ تا باشد");
+      return;
+    }
+
+    const requestSeq = reportsRequestSeqRef.current + 1;
+    reportsRequestSeqRef.current = requestSeq;
+    activityRequestSeqRef.current.sales += 1;
+    activityRequestSeqRef.current.purchases += 1;
+    activityRequestSeqRef.current["income-expenses"] += 1;
     setIsLoading(true);
     try {
-      const [dailyRes, managementRes, employeeRes, currencyUsageRes, lossSalesRes, missingCostRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/reports/daily-cashier?date=${to}`),
-        fetch(`${API_BASE_URL}/api/reports/management?from=${from}&to=${to}`),
-        fetch(`${API_BASE_URL}/api/reports/employee-performance?period=${employeePeriod}&date=${to}`),
-        fetch(`${API_BASE_URL}/api/reports/currency-usage?from=${from}&to=${to}`),
-        fetch(`${API_BASE_URL}/api/reports/loss-sales?from=${from}&to=${to}`),
-        fetch(`${API_BASE_URL}/api/reports/missing-cost-sales?from=${from}&to=${to}`),
+      const rangeQuery = new URLSearchParams({ from, to }).toString();
+      const [
+        dailyRes,
+        managementRes,
+        employeeRes,
+        currencyUsageRes,
+        lossSalesRes,
+        missingCostRes,
+        salesRes,
+        purchasesRes,
+        incomeExpensesRes,
+      ] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/reports/daily-cashier?${rangeQuery}`),
+        fetch(`${API_BASE_URL}/api/reports/management?${rangeQuery}`),
+        fetch(`${API_BASE_URL}/api/reports/employee-performance?${rangeQuery}`),
+        fetch(`${API_BASE_URL}/api/reports/currency-usage?${rangeQuery}`),
+        fetch(`${API_BASE_URL}/api/reports/loss-sales?${rangeQuery}`),
+        fetch(`${API_BASE_URL}/api/reports/missing-cost-sales?${rangeQuery}`),
+        fetch(activityUrl("sales", pages.sales)),
+        fetch(activityUrl("purchases", pages.purchases)),
+        fetch(activityUrl("income-expenses", pages["income-expenses"])),
       ]);
-      const [dailyJson, managementJson, employeeJson, currencyUsageJson, lossSalesJson, missingCostJson] = await Promise.all([
+      const [
+        dailyJson,
+        managementJson,
+        employeeJson,
+        currencyUsageJson,
+        lossSalesJson,
+        missingCostJson,
+        salesJson,
+        purchasesJson,
+        incomeExpensesJson,
+      ] = await Promise.all([
         dailyRes.json().catch(() => null),
         managementRes.json().catch(() => null),
         employeeRes.json().catch(() => null),
         currencyUsageRes.json().catch(() => null),
         lossSalesRes.json().catch(() => null),
         missingCostRes.json().catch(() => null),
+        salesRes.json().catch(() => null),
+        purchasesRes.json().catch(() => null),
+        incomeExpensesRes.json().catch(() => null),
       ]);
 
       if (!dailyRes.ok) throw new Error(dailyJson?.message || "خواندن گزارش روزانه ناکام شد");
@@ -227,6 +311,11 @@ export function ReportsPage() {
       if (!currencyUsageRes.ok) throw new Error(currencyUsageJson?.message || "خواندن گزارش نرخ ارز ناکام شد");
       if (!lossSalesRes.ok) throw new Error(lossSalesJson?.message || "خواندن گزارش فروش زیر قیمت تمام‌شده ناکام شد");
       if (!missingCostRes.ok) throw new Error(missingCostJson?.message || "خواندن گزارش کیفیت مفاد ناکام شد");
+      if (!salesRes.ok) throw new Error(salesJson?.message || "خواندن جدول فروشات ناکام شد");
+      if (!purchasesRes.ok) throw new Error(purchasesJson?.message || "خواندن جدول خریدها ناکام شد");
+      if (!incomeExpensesRes.ok) throw new Error(incomeExpensesJson?.message || "خواندن جدول عواید و مصارف ناکام شد");
+
+      if (requestSeq !== reportsRequestSeqRef.current) return;
 
       setDailyReport(dailyJson.data);
       setManagementReport(managementJson.data);
@@ -234,16 +323,71 @@ export function ReportsPage() {
       setCurrencyUsageReport(currencyUsageJson.data);
       setLossSalesReport(lossSalesJson.data);
       setMissingCostReport(missingCostJson.data);
+      setActivityRows({
+        sales: Array.isArray(salesJson?.data) ? salesJson.data : [],
+        purchases: Array.isArray(purchasesJson?.data) ? purchasesJson.data : [],
+        "income-expenses": Array.isArray(incomeExpensesJson?.data)
+          ? incomeExpensesJson.data
+          : [],
+      });
+      setActivityPagination({
+        sales: salesJson?.pagination,
+        purchases: purchasesJson?.pagination,
+        "income-expenses": incomeExpensesJson?.pagination,
+      });
     } catch (error) {
+      if (requestSeq !== reportsRequestSeqRef.current) return;
       toast.error(error instanceof Error ? error.message : "خواندن گزارش ناکام شد");
     } finally {
-      setIsLoading(false);
+      if (requestSeq === reportsRequestSeqRef.current) {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  const loadActivityPage = async (kind: ReportActivityKind, page: number) => {
+    const rangeKey = `${from}:${to}`;
+    const requestSeq = activityRequestSeqRef.current[kind] + 1;
+    activityRequestSeqRef.current[kind] = requestSeq;
+    try {
+      const response = await fetch(activityUrl(kind, page));
+      const json = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(json?.message || "خواندن صفحه گزارش ناکام شد");
+      }
+      if (
+        requestSeq !== activityRequestSeqRef.current[kind] ||
+        rangeKey !== activeRangeRef.current
+      ) {
+        return;
+      }
+
+      setActivityRows((current) => ({
+        ...current,
+        [kind]: Array.isArray(json?.data) ? json.data : [],
+      }));
+      setActivityPagination((current) => ({
+        ...current,
+        [kind]: json?.pagination,
+      }));
+      setActivityPages((current) => ({ ...current, [kind]: page }));
+    } catch (error) {
+      if (
+        requestSeq !== activityRequestSeqRef.current[kind] ||
+        rangeKey !== activeRangeRef.current
+      ) {
+        return;
+      }
+      toast.error(
+        error instanceof Error ? error.message : "خواندن صفحه گزارش ناکام شد",
+      );
     }
   };
 
   useEffect(() => {
-    void loadReports();
-  }, [from, to, employeePeriod]);
+    setActivityPages(firstActivityPages);
+    void loadReports(firstActivityPages);
+  }, [from, to]);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/settings/company`)
@@ -439,7 +583,7 @@ export function ReportsPage() {
 
   const saleRows = useMemo<DataRow[]>(
     () =>
-      (managementReport?.recentSales || []).map((item) => ({
+      activityRows.sales.map((item) => ({
         id: String(item.id),
         invoiceNo: String(item.invoiceNo || "-"),
         date: formatDate(item.date),
@@ -449,12 +593,12 @@ export function ReportsPage() {
         paid: money(n(item.paid)),
         remaining: money(n(item.remaining)),
       })),
-    [managementReport],
+    [activityRows.sales],
   );
 
   const purchaseRows = useMemo<DataRow[]>(
     () =>
-      (managementReport?.recentPurchases || []).map((item) => ({
+      activityRows.purchases.map((item) => ({
         id: String(item.id),
         invoiceNo: String(item.invoiceNo || "-"),
         date: formatDate(item.date),
@@ -463,12 +607,12 @@ export function ReportsPage() {
         paid: money(n(item.paid)),
         remaining: money(n(item.remaining)),
       })),
-    [managementReport],
+    [activityRows.purchases],
   );
 
   const incomeExpenseRows = useMemo<DataRow[]>(
     () =>
-      (managementReport?.incomeExpenses || []).map((item) => ({
+      activityRows["income-expenses"].map((item) => ({
         id: String(item.id),
         date: formatDate(item.date),
         type: item.type === "INCOME" ? "عواید" : "مصرف",
@@ -478,7 +622,7 @@ export function ReportsPage() {
         amount: money(n(item.amount)),
         note: String(item.note || "-"),
       })),
-    [managementReport],
+    [activityRows],
   );
 
   const employeeRows = useMemo<DataRow[]>(
@@ -521,9 +665,33 @@ export function ReportsPage() {
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <DatePicker value={from} onChange={setFrom} className="w-48" />
-            <DatePicker value={to} onChange={setTo} className="w-48" />
-            <Button variant="outline" onClick={() => void loadReports()} disabled={isLoading}>
+            <div className="grid gap-1">
+              <span className="text-xs text-muted-foreground">از تاریخ</span>
+              <DatePicker
+                value={from}
+                onChange={(value) => {
+                  setFrom(value);
+                  if (value && to && value > to) setTo(value);
+                }}
+                className="w-48"
+              />
+            </div>
+            <div className="grid gap-1">
+              <span className="text-xs text-muted-foreground">تا تاریخ</span>
+              <DatePicker
+                value={to}
+                onChange={(value) => {
+                  setTo(value);
+                  if (value && from && value < from) setFrom(value);
+                }}
+                className="w-48"
+              />
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => void loadReports(activityPages)}
+              disabled={isLoading || !from || !to || from > to}
+            >
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
@@ -573,7 +741,7 @@ export function ReportsPage() {
       ) : (
         <Tabs defaultValue="daily" className="space-y-4">
           <TabsList className="flex h-auto flex-wrap justify-start gap-2">
-            <TabsTrigger value="daily">کارکرد روزانه فروشنده</TabsTrigger>
+            <TabsTrigger value="daily">کارکرد فروشنده‌ها</TabsTrigger>
             <TabsTrigger value="employee">کارکرد کارمند</TabsTrigger>
             <TabsTrigger value="top">پرفروش‌ترین</TabsTrigger>
             <TabsTrigger value="lossSales">فروش زیر قیمت</TabsTrigger>
@@ -582,15 +750,15 @@ export function ReportsPage() {
             <TabsTrigger value="payables">بدهی</TabsTrigger>
             <TabsTrigger value="lowStock">کمبود موجودی</TabsTrigger>
             <TabsTrigger value="expiring">انقضا</TabsTrigger>
-            <TabsTrigger value="sales">فروشات اخیر</TabsTrigger>
-            <TabsTrigger value="purchases">خریدهای اخیر</TabsTrigger>
+            <TabsTrigger value="sales">فروشات بازه</TabsTrigger>
+            <TabsTrigger value="purchases">خریدهای بازه</TabsTrigger>
             <TabsTrigger value="incomeExpense">عواید و مصارف</TabsTrigger>
             <TabsTrigger value="currencyUsage">نرخ معاملات</TabsTrigger>
           </TabsList>
 
           <TabsContent value="daily">
             <ReportTable
-              title="کارکرد روزانه فروشنده‌ها"
+              title="کارکرد فروشنده‌ها در بازه انتخاب‌شده"
               columns={[
                 { key: "name", label: "فروشنده" },
                 { key: "saleCount", label: "فاکتور" },
@@ -613,25 +781,8 @@ export function ReportsPage() {
                 <div>
                   <CardTitle className="text-base">خلاصه کارکرد کارمندان</CardTitle>
                   <CardDescription>
-                    فروش، دریافت/پرداخت و حاضری هر کارمند در روز، هفته یا ماه انتخاب‌شده.
+                    فروش، دریافت/پرداخت و حاضری هر کارمند در بازه از تاریخ تا تاریخ انتخاب‌شده.
                   </CardDescription>
-                </div>
-                <div className="flex rounded-lg border border-border bg-muted/40 p-1">
-                  {[
-                    ["day", "روز"],
-                    ["week", "هفته"],
-                    ["month", "ماه"],
-                  ].map(([value, label]) => (
-                    <Button
-                      key={value}
-                      type="button"
-                      size="sm"
-                      variant={employeePeriod === value ? "default" : "ghost"}
-                      onClick={() => setEmployeePeriod(value as EmployeePeriod)}
-                    >
-                      {label}
-                    </Button>
-                  ))}
                 </div>
               </CardHeader>
               <CardContent>
@@ -841,7 +992,7 @@ export function ReportsPage() {
 
           <TabsContent value="sales">
             <ReportTable
-              title="فروشات اخیر بازه"
+              title="تمام فروشات بازه انتخاب‌شده"
               columns={[
                 { key: "invoiceNo", label: "فاکتور" },
                 { key: "date", label: "تاریخ" },
@@ -852,12 +1003,14 @@ export function ReportsPage() {
                 { key: "remaining", label: "باقی" },
               ]}
               rows={saleRows}
+              pagination={activityPagination.sales}
+              onPageChange={(page) => void loadActivityPage("sales", page)}
             />
           </TabsContent>
 
           <TabsContent value="purchases">
             <ReportTable
-              title="خریدهای اخیر بازه"
+              title="تمام خریدهای بازه انتخاب‌شده"
               columns={[
                 { key: "invoiceNo", label: "فاکتور" },
                 { key: "date", label: "تاریخ" },
@@ -867,6 +1020,8 @@ export function ReportsPage() {
                 { key: "remaining", label: "باقی" },
               ]}
               rows={purchaseRows}
+              pagination={activityPagination.purchases}
+              onPageChange={(page) => void loadActivityPage("purchases", page)}
             />
           </TabsContent>
 
@@ -883,6 +1038,10 @@ export function ReportsPage() {
                 { key: "note", label: "یادداشت" },
               ]}
               rows={incomeExpenseRows}
+              pagination={activityPagination["income-expenses"]}
+              onPageChange={(page) =>
+                void loadActivityPage("income-expenses", page)
+              }
             />
           </TabsContent>
 
@@ -924,12 +1083,16 @@ function ReportTable({
   rows,
   onEdit,
   editLabel,
+  pagination,
+  onPageChange,
 }: {
   title: string;
   columns: Array<{ key: string; label: string }>;
   rows: DataRow[];
   onEdit?: (row: DataRow) => void;
   editLabel?: string;
+  pagination?: PaginationMeta;
+  onPageChange?: (page: number) => void;
 }) {
   return (
     <Card className="border-border bg-card">
@@ -942,6 +1105,8 @@ function ReportTable({
           rows={rows}
           onEdit={onEdit}
           editLabel={editLabel}
+          pagination={pagination}
+          onPageChange={onPageChange}
         />
       </CardContent>
     </Card>

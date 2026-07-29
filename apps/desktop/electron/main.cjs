@@ -2,12 +2,22 @@ const { app, BrowserWindow, shell, ipcMain, session } = require("electron");
 const path = require("node:path");
 const os = require("node:os");
 const { fileURLToPath } = require("node:url");
+const { writeFileSync } = require("node:fs");
 
 const isDev = !app.isPackaged;
+const useDevServer = isDev && process.env.MUHASEB_E2E_USE_DIST !== "true";
 const appIconPath = isDev
   ? path.join(__dirname, "../build/icon.png")
   : path.join(process.resourcesPath, "icon.png");
 const rendererRoot = path.resolve(__dirname, "../dist");
+
+if (isDev && process.env.MUHASEB_E2E_USER_DATA_DIR) {
+  app.setPath("userData", path.resolve(process.env.MUHASEB_E2E_USER_DATA_DIR));
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
 
 function isExternalWebUrl(url) {
   try {
@@ -22,7 +32,7 @@ function isTrustedRendererUrl(url) {
   try {
     const parsed = new URL(url);
 
-    if (isDev) {
+    if (useDevServer) {
       return parsed.origin === "http://localhost:5173";
     }
 
@@ -83,7 +93,58 @@ function createWindow() {
 
   win.setMenuBarVisibility(false);
 
-  if (isDev) {
+  const smokeResultPath = isDev
+    ? process.env.MUHASEB_E2E_RESULT_FILE
+    : undefined;
+  if (smokeResultPath) {
+    const finishSmokeTest = (result) => {
+      writeFileSync(
+        smokeResultPath,
+        JSON.stringify(
+          {
+            ...result,
+            checkedAt: new Date().toISOString()
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+      setTimeout(() => app.quit(), 50);
+    };
+
+    win.webContents.once("did-finish-load", async () => {
+      try {
+        const renderer = await win.webContents.executeJavaScript(`
+          ({
+            rootHasContent: Boolean(document.querySelector("#root")?.childNodes.length),
+            hasElectronApi: typeof window.electronAPI === "object",
+            hasDesktopApp: typeof window.desktopApp === "object"
+          })
+        `);
+        finishSmokeTest({ ok: true, renderer });
+      } catch (error) {
+        finishSmokeTest({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    });
+
+    win.webContents.once(
+      "did-fail-load",
+      (_event, code, description, validatedUrl) => {
+        finishSmokeTest({
+          ok: false,
+          error: description || "Renderer failed to load.",
+          code,
+          url: validatedUrl
+        });
+      }
+    );
+  }
+
+  if (useDevServer) {
     win.loadURL("http://localhost:5173");
   } else {
     win.loadFile(path.join(__dirname, "../dist/index.html"));

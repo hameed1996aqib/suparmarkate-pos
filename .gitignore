@@ -5,3 +5,7 @@ dist
 .DS_Store
 *.log
 apps/api/src/generated
+artifacts/
+test-results/
+playwright-report/
+.env.test

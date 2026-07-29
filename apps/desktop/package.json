@@ -5,10 +5,13 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"vite --host 0.0.0.0\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:web": "vite",
     "build": "vite build",
     "dist:win": "npm run build && electron-builder --win nsis",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:web": "node scripts/run-e2e.mjs web",
+    "test:electron": "npm run build && node scripts/run-electron-smoke.mjs && node scripts/run-e2e.mjs electron"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

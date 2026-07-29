@@ -60,6 +60,8 @@ export function usePosSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const productRequestSeqRef = useRef(0);
+  const productRequestAbortRef = useRef<AbortController | null>(null);
+  const productMoreRequestAbortRef = useRef<AbortController | null>(null);
   const pendingScanBarcodeRef = useRef<string | null>(null);
   const submittingSaleRef = useRef(false);
   const saleAttemptRef = useRef<{
@@ -637,6 +639,9 @@ export function usePosSession() {
         if (message.type === "SCAN_ERROR") {
           pendingScanBarcodeRef.current = null;
           const msg = message.payload?.message || "خطا در اسکن بارکود";
+          if (message.payload?.code === "BARCODE_AMBIGUOUS") {
+            setProductSearchTerm(message.payload?.barcode || "");
+          }
           setStatus(msg);
           toast.error(msg);
         }
@@ -790,6 +795,10 @@ export function usePosSession() {
   ) {
     const requestSeq = productRequestSeqRef.current + 1;
     productRequestSeqRef.current = requestSeq;
+    productRequestAbortRef.current?.abort();
+    productMoreRequestAbortRef.current?.abort();
+    const abortController = new AbortController();
+    productRequestAbortRef.current = abortController;
     const nextCategoryId = input?.categoryId ?? productCategoryId;
     const nextWarehouseId = input?.warehouseId ?? warehouse?.id ?? null;
 
@@ -801,6 +810,7 @@ export function usePosSession() {
         warehouseId: nextWarehouseId,
         offset: 0,
         limit: 60,
+        signal: abortController.signal,
       });
 
       if (requestSeq !== productRequestSeqRef.current) return;
@@ -809,11 +819,15 @@ export function usePosSession() {
       setProductPagination(res.pagination);
       setProductCategories(res.facets?.categories || []);
     } catch (error: any) {
+      if (error?.name === "AbortError") return;
       if (requestSeq !== productRequestSeqRef.current) return;
       toast.error(error?.message || "لیست محصولات دریافت نشد");
     } finally {
       if (requestSeq === productRequestSeqRef.current) {
         setIsLoadingProducts(false);
+      }
+      if (productRequestAbortRef.current === abortController) {
+        productRequestAbortRef.current = null;
       }
     }
   }
@@ -825,6 +839,10 @@ export function usePosSession() {
       return;
     }
 
+    productMoreRequestAbortRef.current?.abort();
+    const abortController = new AbortController();
+    productMoreRequestAbortRef.current = abortController;
+
     try {
       setIsLoadingMoreProducts(true);
       const requestSeq = productRequestSeqRef.current;
@@ -834,6 +852,7 @@ export function usePosSession() {
         warehouseId: warehouse?.id || null,
         offset: productPagination.nextOffset,
         limit: 60,
+        signal: abortController.signal,
       });
 
       if (requestSeq !== productRequestSeqRef.current) return;
@@ -842,9 +861,13 @@ export function usePosSession() {
       setProductPagination(res.pagination);
       setProductCategories(res.facets?.categories || []);
     } catch (error: any) {
+      if (error?.name === "AbortError") return;
       toast.error(error?.message || "لیست محصولات دریافت نشد");
     } finally {
-      setIsLoadingMoreProducts(false);
+      if (productMoreRequestAbortRef.current === abortController) {
+        productMoreRequestAbortRef.current = null;
+        setIsLoadingMoreProducts(false);
+      }
     }
   }
 
@@ -900,7 +923,7 @@ export function usePosSession() {
     setCustomerSearchTerm("");
   }
 
-  async function addProductByBarcode(barcode: string) {
+  async function addProductByBarcode(barcode: string, productId?: string) {
     if (!barcode) {
       toast.error("این محصول بارکود ندارد");
       return;
@@ -915,12 +938,14 @@ export function usePosSession() {
 
     pendingScanBarcodeRef.current = barcode;
 
-    if (sendWsMessage({
-      type: "SCAN_BARCODE",
-      barcode,
-      warehouseId: warehouse?.id || null,
-    })) {
-      return;
+    if (!productId) {
+      if (sendWsMessage({
+        type: "SCAN_BARCODE",
+        barcode,
+        warehouseId: warehouse?.id || null,
+      })) {
+        return;
+      }
     }
 
     pendingScanBarcodeRef.current = null;
@@ -930,6 +955,7 @@ export function usePosSession() {
         baseUrl: apiBaseUrl,
         sessionId: session.session.id,
         barcode,
+        productId: productId || null,
         warehouseId: warehouse?.id || null,
       });
 
@@ -945,7 +971,14 @@ export function usePosSession() {
 
       toast.success("محصول به سبد اضافه شد");
     } catch (error: any) {
-      toast.error(error?.message || "افزودن محصول ناکام شد");
+      const errorBody = error instanceof ApiRequestError ? error.body as any : null;
+      const errorCode = errorBody?.error?.code || errorBody?.code;
+      const message = error?.message || "افزودن محصول ناکام شد";
+      if (errorCode === "BARCODE_AMBIGUOUS") {
+        setProductSearchTerm(barcode);
+        setStatus(message);
+      }
+      toast.error(message);
     }
   }
 
@@ -1562,6 +1595,8 @@ export function usePosSession() {
 
     return () => {
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      productRequestAbortRef.current?.abort();
+      productMoreRequestAbortRef.current?.abort();
       socketRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1581,12 +1616,7 @@ export function usePosSession() {
 
   useEffect(() => {
     if (!apiBaseUrl) return;
-
-    const timer = window.setTimeout(() => {
-      void loadCustomerList(apiBaseUrl, customerSearchTerm);
-    }, 300);
-
-    return () => window.clearTimeout(timer);
+    void loadCustomerList(apiBaseUrl, customerSearchTerm);
     // loadCustomerList intentionally stays local to keep the POS hook compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, customerSearchTerm]);

@@ -185,6 +185,7 @@ export async function scanPosBarcode(input: {
   baseUrl: string;
   sessionId: string;
   barcode: string;
+  productId?: string | null;
   warehouseId?: string | null;
 }) {
   return fetchJson<{
@@ -200,6 +201,7 @@ export async function scanPosBarcode(input: {
     body: JSON.stringify({
       sessionId: input.sessionId,
       barcode: input.barcode,
+      productId: input.productId || null,
       warehouseId: input.warehouseId || null,
     }),
   });
@@ -213,6 +215,7 @@ export async function loadProducts(
     warehouseId?: string | null;
     offset?: number;
     limit?: number;
+    signal?: AbortSignal;
   } = {},
 ) {
   const params = new URLSearchParams({
@@ -234,6 +237,7 @@ export async function loadProducts(
 
   return fetchJson<PosProductSearchResponse>(
     `${baseUrl}/api/products/pos-search?${params.toString()}`,
+    { signal: input.signal },
   );
 }
 

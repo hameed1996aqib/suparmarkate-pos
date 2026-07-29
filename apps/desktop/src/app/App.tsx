@@ -3279,12 +3279,15 @@ function mergeById<T extends { id: string }>(current: T[], incoming: T[]) {
   return Array.from(rows.values());
 }
 
-async function searchProductLookupOptions(query: string) {
+async function searchProductLookupOptions(query: string, signal?: AbortSignal) {
   const normalized = query.trim();
-  if (normalized.length < 2) return [];
+
+  const params = new URLSearchParams({ limit: "30" });
+  if (normalized.length >= 2) params.set("search", normalized);
 
   const response = await fetch(
-    `${API_BASE_URL}/api/products/lookup?limit=30&search=${encodeURIComponent(normalized)}`,
+    `${API_BASE_URL}/api/products/lookup?${params.toString()}`,
+    { signal },
   );
   const json = await response.json().catch(() => null);
 
@@ -3293,6 +3296,18 @@ async function searchProductLookupOptions(query: string) {
   }
 
   return Array.isArray(json?.data) ? json.data : [];
+}
+
+function replaceLookupOptionsKeepingSelected<T extends { id: string }>(
+  current: T[],
+  incoming: T[],
+  selectedIds: string[],
+) {
+  const selectedIdSet = new Set(selectedIds.filter(Boolean));
+  return mergeById(
+    current.filter((item) => selectedIdSet.has(item.id)),
+    incoming,
+  );
 }
 
 function invoiceLineTotal(quantity: number, unitAmount: number, discount = 0) {
@@ -3377,6 +3392,12 @@ function SalesPage() {
   });
   const [isLoadingReturnQuality, setIsLoadingReturnQuality] = useState(false);
   const saleProductSearchSeqRef = useRef(0);
+  const saleProductSearchAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => saleProductSearchAbortRef.current?.abort(),
+    [],
+  );
 
   const loadSalesData = async (
     page = salesPagination?.page || 1,
@@ -3646,15 +3667,28 @@ function SalesPage() {
     const query = value.trim();
     const requestSeq = saleProductSearchSeqRef.current + 1;
     saleProductSearchSeqRef.current = requestSeq;
+    saleProductSearchAbortRef.current?.abort();
 
-    if (query.length < 2) return;
+    const abortController = new AbortController();
+    saleProductSearchAbortRef.current = abortController;
 
     try {
-      const rows = await searchProductLookupOptions(query);
+      const rows = await searchProductLookupOptions(query, abortController.signal);
       if (requestSeq !== saleProductSearchSeqRef.current) return;
-      setProducts((current) => mergeById(current, rows));
-    } catch {
+      setProducts((current) =>
+        replaceLookupOptionsKeepingSelected(
+          current,
+          rows,
+          saleLines.map((line) => line.productId),
+        ),
+      );
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
       // Product lookup search is best-effort; form submission still validates.
+    } finally {
+      if (saleProductSearchAbortRef.current === abortController) {
+        saleProductSearchAbortRef.current = null;
+      }
     }
   };
 
@@ -5397,6 +5431,12 @@ function PurchasesPage() {
   const [invoicePaymentNote, setInvoicePaymentNote] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const purchaseProductSearchSeqRef = useRef(0);
+  const purchaseProductSearchAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => purchaseProductSearchAbortRef.current?.abort(),
+    [],
+  );
 
   const loadPurchasesData = async (
     page = purchasesPagination?.page || 1,
@@ -5532,15 +5572,28 @@ function PurchasesPage() {
     setPurchaseProductSearchText(query);
     const requestSeq = purchaseProductSearchSeqRef.current + 1;
     purchaseProductSearchSeqRef.current = requestSeq;
+    purchaseProductSearchAbortRef.current?.abort();
 
-    if (query.length < 2) return;
+    const abortController = new AbortController();
+    purchaseProductSearchAbortRef.current = abortController;
 
     try {
-      const rows = await searchProductLookupOptions(query);
+      const rows = await searchProductLookupOptions(query, abortController.signal);
       if (requestSeq !== purchaseProductSearchSeqRef.current) return;
-      setProducts((current) => mergeById(current, rows));
-    } catch {
+      setProducts((current) =>
+        replaceLookupOptionsKeepingSelected(
+          current,
+          rows,
+          purchaseLines.map((line) => line.productId),
+        ),
+      );
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
       // Product lookup search is best-effort; form submission still validates.
+    } finally {
+      if (purchaseProductSearchAbortRef.current === abortController) {
+        purchaseProductSearchAbortRef.current = null;
+      }
     }
   };
 
@@ -9337,23 +9390,39 @@ function ProductsPage() {
   );
   const [isLoading, setIsLoading] = useState(true);
   const productsRequestSeqRef = useRef(0);
+  const productsRequestAbortRef = useRef<AbortController | null>(null);
+  const productLookupsLoadedRef = useRef(false);
+  const didMountProductFiltersRef = useRef(false);
 
   const loadProductsData = async (page = productsPagination?.page || 1) => {
     const requestSeq = productsRequestSeqRef.current + 1;
     productsRequestSeqRef.current = requestSeq;
+    productsRequestAbortRef.current?.abort();
+    const abortController = new AbortController();
+    productsRequestAbortRef.current = abortController;
     setIsLoading(true);
     try {
-      const [productRes, categoryRes, unitRes, warehouseRes, currencyRes] =
-        await Promise.all([
+      const [productRes, lookupResults] = await Promise.all([
           fetch(
             `${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}&barcodeFilter=${encodeURIComponent(barcodeFilter)}`,
+            { signal: abortController.signal },
           ).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/product-categories`).then((res) =>
-            res.json(),
-          ),
-          fetch(`${API_BASE_URL}/api/units`).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
+          productLookupsLoadedRef.current
+            ? Promise.resolve(null)
+            : Promise.all([
+                fetch(`${API_BASE_URL}/api/product-categories`, {
+                  signal: abortController.signal,
+                }).then((res) => res.json()),
+                fetch(`${API_BASE_URL}/api/units`, {
+                  signal: abortController.signal,
+                }).then((res) => res.json()),
+                fetch(`${API_BASE_URL}/api/warehouses`, {
+                  signal: abortController.signal,
+                }).then((res) => res.json()),
+                fetch(`${API_BASE_URL}/api/currencies`, {
+                  signal: abortController.signal,
+                }).then((res) => res.json()),
+              ]),
         ]);
 
       const loadedProducts = Array.isArray(productRes?.data)
@@ -9367,11 +9436,16 @@ function ProductsPage() {
         productRes?.summary || { total: 0, active: 0, barcodeCount: 0 },
       );
       setProductsPagination(productRes?.pagination || null);
-      setCategories(Array.isArray(categoryRes?.data) ? categoryRes.data : []);
-      setUnits(Array.isArray(unitRes?.data) ? unitRes.data : []);
-      setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
-      setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
-    } catch {
+      if (lookupResults) {
+        const [categoryRes, unitRes, warehouseRes, currencyRes] = lookupResults;
+        setCategories(Array.isArray(categoryRes?.data) ? categoryRes.data : []);
+        setUnits(Array.isArray(unitRes?.data) ? unitRes.data : []);
+        setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
+        setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
+        productLookupsLoadedRef.current = true;
+      }
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
       if (requestSeq !== productsRequestSeqRef.current) return;
       toast.error("داده‌های اجناس از API خوانده نشد");
       setProducts([]);
@@ -9379,15 +9453,24 @@ function ProductsPage() {
       if (requestSeq === productsRequestSeqRef.current) {
         setIsLoading(false);
       }
+      if (productsRequestAbortRef.current === abortController) {
+        productsRequestAbortRef.current = null;
+      }
     }
   };
 
   useEffect(() => {
     void loadProductsData();
+
+    return () => productsRequestAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadProductsData(1), 300);
+    if (!didMountProductFiltersRef.current) {
+      didMountProductFiltersRef.current = true;
+      return;
+    }
+    const timer = window.setTimeout(() => void loadProductsData(1), 250);
     return () => window.clearTimeout(timer);
   }, [query, barcodeFilter]);
 
@@ -10433,6 +10516,14 @@ function InventoryMovementSection({
 }
 
 function InventoryPage() {
+  type InventoryTabKey =
+    | "stock"
+    | "opening"
+    | "increase"
+    | "decrease"
+    | "damage"
+    | "transfer";
+
   const initialMovementRange = recentDateRange();
   const [stockRows, setStockRows] = useState<DataRow[]>([]);
   const [openingRows, setOpeningRows] = useState<DataRow[]>([]);
@@ -10458,6 +10549,8 @@ function InventoryPage() {
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [query, setQuery] = useState("");
+  const [activeInventoryTab, setActiveInventoryTab] =
+    useState<InventoryTabKey>("stock");
   const [stockSortBy, setStockSortBy] = useState("");
   const [stockSortOrder, setStockSortOrder] = useState<"asc" | "desc">("desc");
   const [stockCostFilter, setStockCostFilter] = useState("");
@@ -10474,8 +10567,13 @@ function InventoryPage() {
   );
   const [isLoading, setIsLoading] = useState(true);
   const inventoryLoadSeqRef = useRef(0);
+  const inventoryLoadAbortRef = useRef<AbortController | null>(null);
+  const inventoryLookupsLoadedRef = useRef(false);
   const inventoryProductSearchSeqRef = useRef(0);
+  const inventoryProductSearchAbortRef = useRef<AbortController | null>(null);
+  const didMountStockQueryRef = useRef(false);
   const didMountMovementQueryRef = useRef(false);
+  const didMountMovementDateRef = useRef(false);
   const [openingEdit, setOpeningEdit] = useState<DataRow | null>(null);
   const [openingEditForm, setOpeningEditForm] = useState({
     quantity: 0,
@@ -10487,6 +10585,11 @@ function InventoryPage() {
   const [cancelMovement, setCancelMovement] = useState<DataRow | null>(null);
   const [cancelMovementReason, setCancelMovementReason] = useState("");
 
+  useEffect(
+    () => () => inventoryProductSearchAbortRef.current?.abort(),
+    [],
+  );
+
   const normalizeMovementRow = (
     item: any,
     cancelledKeys = new Set<string>(),
@@ -10496,7 +10599,8 @@ function InventoryPage() {
         ? `TRANSFER:${item.referenceId}`
         : `MOVE:${item.id}`;
     const isCancelRow = String(item.referenceType || "").endsWith("_CANCEL");
-    const isCancelled = isCancelRow || cancelledKeys.has(movementKey);
+    const isCancelled =
+      Boolean(item.isCancelled) || isCancelRow || cancelledKeys.has(movementKey);
 
     return {
       id: item.id,
@@ -10544,13 +10648,18 @@ function InventoryPage() {
   const loadInventoryData = async (
     pages = movementPages,
     queries = movementQueries,
+    tab: InventoryTabKey = activeInventoryTab,
+    options: { refreshLookups?: boolean } = {},
   ) => {
     const requestSeq = inventoryLoadSeqRef.current + 1;
     inventoryLoadSeqRef.current = requestSeq;
+    inventoryLoadAbortRef.current?.abort();
+    const abortController = new AbortController();
+    inventoryLoadAbortRef.current = abortController;
     setIsLoading(true);
 
     const loadJson = async (url: string) => {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: abortController.signal });
       const json = await response.json().catch(() => null);
 
       if (!response.ok) {
@@ -10563,82 +10672,76 @@ function InventoryPage() {
     };
 
     try {
-      const stockParams = new URLSearchParams({
-        page: String(pages.stock),
-        limit: "20",
-      });
+      let dataUrl = "";
+      if (tab === "stock") {
+        const stockParams = new URLSearchParams({
+          page: String(pages.stock),
+          limit: "20",
+        });
 
-      if (query.trim()) stockParams.set("search", query.trim());
-      if (stockSortBy) {
-        stockParams.set("sortBy", stockSortBy);
-        stockParams.set("sortOrder", stockSortOrder);
-      }
-      if (stockCostFilter) {
-        stockParams.set("costFilter", stockCostFilter);
+        if (query.trim()) stockParams.set("search", query.trim());
+        if (stockSortBy) {
+          stockParams.set("sortBy", stockSortBy);
+          stockParams.set("sortOrder", stockSortOrder);
+        }
+        if (stockCostFilter) {
+          stockParams.set("costFilter", stockCostFilter);
+        }
+        dataUrl = `${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`;
+      } else if (tab === "transfer") {
+        dataUrl = `${API_BASE_URL}/api/inventory/transfer-reports?${movementRequestQuery(pages.transfer, queries.transfer)}`;
+      } else {
+        const movementTypeByTab = {
+          opening: "OPENING_STOCK",
+          increase: "ADJUSTMENT_IN",
+          decrease: "ADJUSTMENT_OUT",
+          damage: "DAMAGE",
+        } as const;
+        dataUrl = `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages[tab], queries[tab], movementTypeByTab[tab])}`;
       }
 
-      const [
-        stockRes,
-        productRes,
-        warehouseRes,
-        currencyRes,
-        openingRes,
-        increaseRes,
-        decreaseRes,
-        damageRes,
-        transferRes,
-      ] = await Promise.all([
-        loadJson(
-          `${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`,
-        ),
-        loadJson(`${API_BASE_URL}/api/products/lookup?limit=50`),
-        loadJson(`${API_BASE_URL}/api/warehouses`),
-        loadJson(`${API_BASE_URL}/api/currencies`),
-        loadJson(
-          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.opening, queries.opening, "OPENING_STOCK")}`,
-        ),
-        loadJson(
-          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.increase, queries.increase, "ADJUSTMENT_IN")}`,
-        ),
-        loadJson(
-          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.decrease, queries.decrease, "ADJUSTMENT_OUT")}`,
-        ),
-        loadJson(
-          `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages.damage, queries.damage, "DAMAGE")}`,
-        ),
-        loadJson(
-          `${API_BASE_URL}/api/inventory/transfer-reports?${movementRequestQuery(pages.transfer, queries.transfer)}`,
-        ),
+      const shouldLoadLookups =
+        options.refreshLookups || !inventoryLookupsLoadedRef.current;
+      const [dataRes, lookupResults] = await Promise.all([
+        loadJson(dataUrl),
+        shouldLoadLookups
+          ? Promise.all([
+              loadJson(`${API_BASE_URL}/api/products/lookup?limit=50`),
+              loadJson(`${API_BASE_URL}/api/warehouses`),
+              loadJson(`${API_BASE_URL}/api/currencies`),
+            ])
+          : Promise.resolve(null),
       ]);
 
       if (requestSeq !== inventoryLoadSeqRef.current) return;
 
-      setStockRows(
-        Array.isArray(stockRes?.data)
-          ? stockRes.data.map((item: unknown) =>
-              normalizeRow(item, "موجودی و گدام"),
-            )
-          : [],
-      );
-      setProducts(Array.isArray(productRes?.data) ? productRes.data : []);
-      setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
-      setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
-      setMovementPagination({
-        stock: stockRes?.pagination,
-        opening: openingRes?.pagination,
-        increase: increaseRes?.pagination,
-        decrease: decreaseRes?.pagination,
-        damage: damageRes?.pagination,
-        transfer: transferRes?.pagination,
-      });
+      if (lookupResults) {
+        const [productRes, warehouseRes, currencyRes] = lookupResults;
+        setProducts(Array.isArray(productRes?.data) ? productRes.data : []);
+        setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
+        setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
+        inventoryLookupsLoadedRef.current = true;
+      }
+
+      setMovementPagination((current) => ({
+        ...current,
+        [tab]: dataRes?.pagination,
+      }));
+
+      if (tab === "stock") {
+        setStockRows(
+          Array.isArray(dataRes?.data)
+            ? dataRes.data.map((item: unknown) =>
+                normalizeRow(item, "موجودی و گدام"),
+              )
+            : [],
+        );
+        return;
+      }
+
+      const movementRows = Array.isArray(dataRes?.data) ? dataRes.data : [];
       const movementCancelledKeys = new Set<string>();
-      [
-        ...(Array.isArray(openingRes?.data) ? openingRes.data : []),
-        ...(Array.isArray(increaseRes?.data) ? increaseRes.data : []),
-        ...(Array.isArray(decreaseRes?.data) ? decreaseRes.data : []),
-        ...(Array.isArray(damageRes?.data) ? damageRes.data : []),
-        ...(Array.isArray(transferRes?.data) ? transferRes.data : []),
-      ].forEach((item: any) => {
+      movementRows.forEach((item: any) => {
         if (!String(item.referenceType || "").endsWith("_CANCEL")) return;
         if (item.referenceType === "TRANSFER_CANCEL" && item.referenceId) {
           movementCancelledKeys.add(`TRANSFER:${item.referenceId}`);
@@ -10647,43 +10750,19 @@ function InventoryPage() {
           movementCancelledKeys.add(`MOVE:${item.referenceId}`);
         }
       });
-
-      setOpeningRows(
-        Array.isArray(openingRes?.data)
-          ? openingRes.data.map((item: any) =>
-              normalizeMovementRow(item, movementCancelledKeys),
-            )
-          : [],
+      const normalizedRows = movementRows.map((item: any) =>
+        normalizeMovementRow(item, movementCancelledKeys),
       );
-      setIncreaseRows(
-        Array.isArray(increaseRes?.data)
-          ? increaseRes.data.map((item: any) =>
-              normalizeMovementRow(item, movementCancelledKeys),
-            )
-          : [],
-      );
-      setDecreaseRows(
-        Array.isArray(decreaseRes?.data)
-          ? decreaseRes.data.map((item: any) =>
-              normalizeMovementRow(item, movementCancelledKeys),
-            )
-          : [],
-      );
-      setDamageRows(
-        Array.isArray(damageRes?.data)
-          ? damageRes.data.map((item: any) =>
-              normalizeMovementRow(item, movementCancelledKeys),
-            )
-          : [],
-      );
-      setTransferRows(
-        Array.isArray(transferRes?.data)
-          ? transferRes.data.map((item: any) =>
-              normalizeMovementRow(item, movementCancelledKeys),
-            )
-          : [],
-      );
-    } catch (error) {
+      const setRowsByTab = {
+        opening: setOpeningRows,
+        increase: setIncreaseRows,
+        decrease: setDecreaseRows,
+        damage: setDamageRows,
+        transfer: setTransferRows,
+      };
+      setRowsByTab[tab](normalizedRows);
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
       if (requestSeq !== inventoryLoadSeqRef.current) return;
 
       toast.error(
@@ -10691,37 +10770,46 @@ function InventoryPage() {
           ? error.message
           : "داده موجودی از API خوانده نشد",
       );
-      setStockRows([]);
-      setOpeningRows([]);
-      setIncreaseRows([]);
-      setDecreaseRows([]);
-      setDamageRows([]);
-      setTransferRows([]);
-      setMovementPagination({});
+      const clearRowsByTab = {
+        stock: setStockRows,
+        opening: setOpeningRows,
+        increase: setIncreaseRows,
+        decrease: setDecreaseRows,
+        damage: setDamageRows,
+        transfer: setTransferRows,
+      };
+      clearRowsByTab[tab]([]);
+      setMovementPagination((current) => ({ ...current, [tab]: null }));
     } finally {
       if (requestSeq === inventoryLoadSeqRef.current) {
         setIsLoading(false);
+      }
+      if (inventoryLoadAbortRef.current === abortController) {
+        inventoryLoadAbortRef.current = null;
       }
     }
   };
 
   useEffect(() => {
-    void loadInventoryData();
-  }, []);
+    void loadInventoryData(movementPages, movementQueries, activeInventoryTab);
+
+    return () => inventoryLoadAbortRef.current?.abort();
+    // loadInventoryData intentionally stays local to keep this page compact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeInventoryTab]);
 
   useEffect(() => {
+    if (!didMountStockQueryRef.current) {
+      didMountStockQueryRef.current = true;
+      return;
+    }
+    if (activeInventoryTab !== "stock") return;
+
     const timer = window.setTimeout(() => {
-      const firstPages = {
-        stock: 1,
-        opening: 1,
-        increase: 1,
-        decrease: 1,
-        damage: 1,
-        transfer: 1,
-      };
+      const firstPages = { ...movementPages, stock: 1 };
       setMovementPages(firstPages);
-      void loadInventoryData(firstPages, movementQueries);
-    }, 300);
+      void loadInventoryData(firstPages, movementQueries, "stock");
+    }, 250);
 
     return () => window.clearTimeout(timer);
     // loadInventoryData intentionally stays local to keep this page compact.
@@ -10733,38 +10821,77 @@ function InventoryPage() {
       didMountMovementQueryRef.current = true;
       return;
     }
+    if (activeInventoryTab === "stock") return;
 
     const timer = window.setTimeout(() => {
       const firstPages = {
-        stock: movementPages.stock,
-        opening: 1,
-        increase: 1,
-        decrease: 1,
-        damage: 1,
-        transfer: 1,
+        ...movementPages,
+        [activeInventoryTab]: 1,
       };
       setMovementPages(firstPages);
-      void loadInventoryData(firstPages, movementQueries);
-    }, 300);
+      void loadInventoryData(
+        firstPages,
+        movementQueries,
+        activeInventoryTab,
+      );
+    }, 250);
 
     return () => window.clearTimeout(timer);
     // loadInventoryData intentionally stays local to keep this page compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movementQueries]);
 
+  useEffect(() => {
+    if (!didMountMovementDateRef.current) {
+      didMountMovementDateRef.current = true;
+      return;
+    }
+    if (activeInventoryTab === "stock") return;
+
+    const timer = window.setTimeout(() => {
+      const firstPages = {
+        ...movementPages,
+        [activeInventoryTab]: 1,
+      };
+      setMovementPages(firstPages);
+      void loadInventoryData(
+        firstPages,
+        movementQueries,
+        activeInventoryTab,
+      );
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+    // loadInventoryData intentionally stays local to keep this page compact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movementFrom, movementTo]);
+
   const searchInventoryProducts = async (value: string) => {
     const query = value.trim();
     const requestSeq = inventoryProductSearchSeqRef.current + 1;
     inventoryProductSearchSeqRef.current = requestSeq;
+    inventoryProductSearchAbortRef.current?.abort();
 
-    if (query.length < 2) return;
+    const abortController = new AbortController();
+    inventoryProductSearchAbortRef.current = abortController;
 
     try {
-      const rows = await searchProductLookupOptions(query);
+      const rows = await searchProductLookupOptions(query, abortController.signal);
       if (requestSeq !== inventoryProductSearchSeqRef.current) return;
-      setProducts((current) => mergeById(current, rows));
-    } catch {
+      setProducts((current) =>
+        replaceLookupOptionsKeepingSelected(
+          current,
+          rows,
+          form.productId ? [form.productId] : [],
+        ),
+      );
+    } catch (error: any) {
+      if (error?.name === "AbortError") return;
       // Product lookup search is best-effort; form submission still validates.
+    } finally {
+      if (inventoryProductSearchAbortRef.current === abortController) {
+        inventoryProductSearchAbortRef.current = null;
+      }
     }
   };
 
@@ -10774,7 +10901,7 @@ function InventoryPage() {
   ) => {
     const next = { ...movementPages, [key]: page };
     setMovementPages(next);
-    void loadInventoryData(next, movementQueries);
+    void loadInventoryData(next, movementQueries, key);
   };
 
   const refreshInventoryFromFirstPage = () => {
@@ -10787,7 +10914,9 @@ function InventoryPage() {
       transfer: 1,
     };
     setMovementPages(firstPages);
-    void loadInventoryData(firstPages, movementQueries);
+    void loadInventoryData(firstPages, movementQueries, activeInventoryTab, {
+      refreshLookups: true,
+    });
   };
 
   useEffect(() => {
@@ -11100,7 +11229,12 @@ function InventoryPage() {
         <MetricCard label="عملیات گدام" value="فعال" icon={<RefreshCcw />} />
       </div>
 
-      <Tabs>
+      <Tabs
+        value={activeInventoryTab}
+        onValueChange={(value) =>
+          setActiveInventoryTab(value as InventoryTabKey)
+        }
+      >
         <div className="overflow-x-auto">
           <TabsList className="min-w-max">
             <TabsTrigger value="stock">موجودی فعلی</TabsTrigger>

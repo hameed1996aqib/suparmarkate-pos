@@ -42,7 +42,7 @@ type PosProductSearchCardProps = {
   onSearchChange: (value: string) => void;
   onCategoryChange: (value: string) => void;
   onLoadMore?: () => void;
-  onAddProduct: (barcode: string) => void;
+  onAddProduct: (barcode: string, productId?: string) => void;
   onScanBarcode: (barcode: string) => void;
 };
 
@@ -383,7 +383,9 @@ export const PosProductSearchCard = forwardRef<
                             size="icon"
                             variant="outline"
                             disabled={!hasBarcode || product.isActive === false}
-                            onClick={() => onAddProduct(product.barcode || "")}
+                            onClick={() =>
+                              onAddProduct(product.barcode || "", product.id)
+                            }
                             className="size-9 rounded-xl border-primary/35 bg-primary/10 text-primary shadow-sm hover:bg-primary hover:text-primary-foreground"
                             title="افزودن به فاکتور"
                           >

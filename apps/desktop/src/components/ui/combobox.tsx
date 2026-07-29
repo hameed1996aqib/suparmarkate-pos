@@ -89,6 +89,7 @@ export function Combobox({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const remoteSearchTimerRef = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
@@ -98,7 +99,9 @@ export function Combobox({
   const normalizedBarcodeQuery = normalizeBarcodeText(query);
   const filteredOptions = useMemo(
     () =>
-      normalizedQuery
+      onSearchChange
+        ? options
+        : normalizedQuery
         ? options.filter((option) => {
             const haystack = [
               option.label,
@@ -120,7 +123,7 @@ export function Combobox({
             );
           })
         : options,
-    [normalizedBarcodeQuery, normalizedQuery, options],
+    [normalizedBarcodeQuery, normalizedQuery, onSearchChange, options],
   );
   const optionVirtualizer = useVirtualizer({
     count: filteredOptions.length,
@@ -145,6 +148,14 @@ export function Combobox({
 
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (remoteSearchTimerRef.current !== null) {
+        window.clearTimeout(remoteSearchTimerRef.current);
+      }
     };
   }, []);
 
@@ -181,7 +192,15 @@ export function Combobox({
 
   function updateQuery(nextQuery: string) {
     setQuery(nextQuery);
-    onSearchChange?.(nextQuery);
+    if (!onSearchChange) return;
+
+    if (remoteSearchTimerRef.current !== null) {
+      window.clearTimeout(remoteSearchTimerRef.current);
+    }
+    remoteSearchTimerRef.current = window.setTimeout(() => {
+      remoteSearchTimerRef.current = null;
+      onSearchChange(nextQuery);
+    }, 250);
   }
 
   return (
@@ -237,9 +256,14 @@ export function Combobox({
                         transform: `translateY(${virtualOption.start}px)`,
                       }}
                       onClick={() => {
+                        if (remoteSearchTimerRef.current !== null) {
+                          window.clearTimeout(remoteSearchTimerRef.current);
+                          remoteSearchTimerRef.current = null;
+                        }
                         onValueChange(option.value);
                         setOpen(false);
                         setQuery("");
+                        onSearchChange?.("");
                       }}
                     >
                       <span className="min-w-0">

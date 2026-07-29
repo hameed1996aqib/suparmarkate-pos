@@ -1,5 +1,5 @@
 import { PackagePlus } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -112,6 +112,7 @@ export function PosStockIncreaseDialog({
   const [note, setNote] = useState("");
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [saving, setSaving] = useState(false);
+  const productRequestAbortRef = useRef<AbortController | null>(null);
 
   const unitOptions = useMemo(
     () => buildUnitOptions(selectedProduct),
@@ -128,16 +129,34 @@ export function PosStockIncreaseDialog({
   useEffect(() => {
     if (!open) return;
 
-    setProducts(initialProducts);
+    setProducts((current) => {
+      const selected = current.find((item) => item.id === selectedProduct?.id);
+      return selected
+        ? [selected, ...initialProducts.filter((item) => item.id !== selected.id)]
+        : initialProducts;
+    });
   }, [initialProducts, open]);
 
   useEffect(() => {
     if (!open) return;
 
-    const timer = window.setTimeout(async () => {
+    productRequestAbortRef.current?.abort();
+    const abortController = new AbortController();
+    productRequestAbortRef.current = abortController;
+
+    void (async () => {
       const search = productSearch.trim();
       if (!search) {
-        setProducts(initialProducts);
+        setProducts((current) => {
+          const selected = current.find((item) => item.id === selectedProduct?.id);
+          return selected
+            ? [selected, ...initialProducts.filter((item) => item.id !== selected.id)]
+            : initialProducts;
+        });
+        setLoadingProducts(false);
+        if (productRequestAbortRef.current === abortController) {
+          productRequestAbortRef.current = null;
+        }
         return;
       }
 
@@ -147,18 +166,28 @@ export function PosStockIncreaseDialog({
           search,
           warehouseId: warehouse?.id || null,
           limit: 80,
+          signal: abortController.signal,
         });
-        setProducts(response.data);
-      } catch (error) {
+        setProducts((current) => {
+          const selected = current.find((item) => item.id === selectedProduct?.id);
+          return selected
+            ? [selected, ...response.data.filter((item) => item.id !== selected.id)]
+            : response.data;
+        });
+      } catch (error: any) {
+        if (error?.name === "AbortError") return;
         toast.error(
           error instanceof Error ? error.message : "جستجوی محصول ناکام شد",
         );
       } finally {
-        setLoadingProducts(false);
+        if (productRequestAbortRef.current === abortController) {
+          productRequestAbortRef.current = null;
+          setLoadingProducts(false);
+        }
       }
-    }, 250);
+    })();
 
-    return () => window.clearTimeout(timer);
+    return () => abortController.abort();
   }, [apiBaseUrl, initialProducts, open, productSearch, warehouse?.id]);
 
   useEffect(() => {

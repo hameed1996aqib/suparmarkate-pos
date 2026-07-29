@@ -1,5 +1,7 @@
+import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { AuthUser } from "../../lib/auth";
 import { prisma } from "../../lib/prisma";
 import { salesRoute } from "./routes";
 
@@ -20,7 +22,22 @@ type Fixture = {
 let baseCurrencyId = "";
 let warehouseId = "";
 let unitId = "";
+let adminUserId = "";
 const fixtures: Fixture[] = [];
+const adminSalesApp = new Hono<{ Variables: { authUser: AuthUser } }>();
+
+adminSalesApp.use("*", async (c, next) => {
+  c.set("authUser", {
+    id: adminUserId,
+    username: "admin",
+    displayName: "Integration Admin",
+    role: "Admin",
+    permissions: [],
+    employee: null
+  });
+  await next();
+});
+adminSalesApp.route("/", salesRoute);
 
 async function createFixture(label: string): Promise<Fixture> {
   const suffix = `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -143,14 +160,15 @@ async function cleanupFixture(fixture: Fixture) {
 }
 
 beforeAll(async () => {
-  const [currency, warehouse, unit] = await Promise.all([
+  const [currency, warehouse, unit, admin] = await Promise.all([
     prisma.currency.findFirst({ where: { isBase: true, deletedAt: null } }),
     prisma.warehouse.findFirst({ where: { deletedAt: null, isActive: true } }),
-    prisma.unit.findFirst({ where: { deletedAt: null, isActive: true } })
+    prisma.unit.findFirst({ where: { deletedAt: null, isActive: true } }),
+    prisma.user.findFirst({ where: { role: { name: "Admin" } } })
   ]);
 
-  if (!currency || !warehouse || !unit) {
-    throw new Error("Seeded currency, warehouse and unit are required for sale integration tests.");
+  if (!currency || !warehouse || !unit || !admin) {
+    throw new Error("Seeded Admin, currency, warehouse and unit are required for sale integration tests.");
   }
 
   const requiredAccounts = await prisma.accountingAccount.count({
@@ -164,6 +182,7 @@ beforeAll(async () => {
   baseCurrencyId = currency.id;
   warehouseId = warehouse.id;
   unitId = unit.id;
+  adminUserId = admin.id;
 });
 
 afterAll(async () => {
@@ -317,5 +336,77 @@ describe("atomic POS sale", () => {
     expect(lots.map((lot) => Number(lot.remainingQuantity))).toEqual([4, 5]);
     expect(movementCount).toBe(0);
     expect(Number(cashAccount.balance)).toBe(0);
+  });
+
+  it("reports and repairs one historical sale without COGS only after Admin confirmation", async () => {
+    const fixture = await createFixture("repair");
+    const clientRequestId = `atomic-${Date.now()}-repair`;
+    fixture.clientRequestIds.push(clientRequestId);
+
+    const createdResponse = await saleRequest(fixture, clientRequestId);
+    expect(createdResponse.status).toBe(201);
+    const createdPayload = await createdResponse.json() as any;
+    const saleId = createdPayload.data.sale.id as string;
+
+    await prisma.journalEntry.delete({
+      where: {
+        sourceType_sourceId: {
+          sourceType: "POS_SALE_COGS",
+          sourceId: saleId
+        }
+      }
+    });
+
+    const qualityResponse = await salesRoute.request(
+      "http://localhost/cogs-quality?page=1&limit=100"
+    );
+    expect(qualityResponse.status).toBe(200);
+    const qualityPayload = await qualityResponse.json() as any;
+    expect(qualityPayload.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: saleId, cogsTotal: 64 })
+      ])
+    );
+
+    const denied = await salesRoute.request(
+      `http://localhost/${saleId}/repair-cogs`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true })
+      }
+    );
+    expect(denied.status).toBe(403);
+
+    const repaired = await adminSalesApp.request(
+      `http://localhost/${saleId}/repair-cogs`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true })
+      }
+    );
+    expect(repaired.status).toBe(201);
+    expect(await repaired.json()).toMatchObject({
+      cogs: { total: 64 },
+      idempotentReplay: false,
+      zeroCost: false
+    });
+
+    const replay = await adminSalesApp.request(
+      `http://localhost/${saleId}/repair-cogs`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true })
+      }
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ idempotentReplay: true });
+    expect(
+      await prisma.journalEntry.count({
+        where: { sourceType: "POS_SALE_COGS", sourceId: saleId }
+      })
+    ).toBe(1);
   });
 });

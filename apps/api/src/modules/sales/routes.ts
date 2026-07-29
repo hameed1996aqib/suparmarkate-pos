@@ -11,6 +11,7 @@ import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { parseKabulDateInput } from "../../lib/kabul-date";
 import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
+import { Prisma } from "../../generated/prisma/client";
 import {
   MoneyDirection,
   MoneyTransactionType,
@@ -145,6 +146,10 @@ const cancelSaleSchema = z.object({
   reason: z.string().trim().max(500).optional().nullable()
 });
 
+const repairSaleCogsSchema = z.object({
+  confirm: z.literal(true)
+});
+
 function parseDate(value: string | null | undefined) {
   if (!value) return null;
 
@@ -210,14 +215,126 @@ salesRoute.get("/", async (c) => {
     })
   ]);
 
+  const cogsEntries = items.length
+    ? await prisma.journalEntry.findMany({
+        where: {
+          sourceType: "POS_SALE_COGS",
+          sourceId: { in: items.map((item) => item.id) }
+        },
+        select: {
+          sourceId: true,
+          _count: { select: { lines: true } }
+        }
+      })
+    : [];
+  const cogsBySaleId = new Map(
+    cogsEntries.map((entry) => [entry.sourceId, entry._count.lines])
+  );
+
   return c.json({
-    data: items,
+    data: items.map((item) => ({
+      ...item,
+      cogsStatus: !cogsBySaleId.has(item.id)
+        ? "MISSING"
+        : Number(cogsBySaleId.get(item.id) || 0) === 0
+          ? "ZERO_COST"
+          : "POSTED"
+    })),
     pagination: createPaginationMeta({ ...pagination, total }),
     summary: {
       count: summary._count,
       total: Number(summary._sum.baseTotal || 0),
       paid: Number(summary._sum.basePaidAmount || 0),
       remaining: Number(summary._sum.baseRemainingAmount || 0)
+    }
+  });
+});
+
+salesRoute.get("/cogs-quality", async (c) => {
+  const pagination = getPagePagination(c);
+  const fromValue = c.req.query("from")?.trim();
+  const toValue = c.req.query("to")?.trim();
+  const fromDate = fromValue ? parseDate(fromValue) : null;
+  const toDate = toValue ? parseDate(toValue) : null;
+
+  if (fromDate === "INVALID_DATE" || toDate === "INVALID_DATE") {
+    return c.json({ message: "Invalid COGS quality date range" }, 400);
+  }
+
+  const filters: Prisma.Sql[] = [
+    Prisma.sql`s."status"::text <> 'CANCELLED'`,
+    Prisma.sql`NOT EXISTS (
+      SELECT 1
+      FROM "JournalEntry" j
+      WHERE j."sourceType" = 'POS_SALE_COGS'
+        AND j."sourceId" = s."id"
+    )`
+  ];
+
+  if (fromDate instanceof Date) {
+    filters.push(Prisma.sql`s."saleDate" >= ${fromDate}`);
+  }
+
+  if (toDate instanceof Date) {
+    const inclusiveTo = new Date(toDate);
+    inclusiveTo.setHours(23, 59, 59, 999);
+    filters.push(Prisma.sql`s."saleDate" <= ${inclusiveTo}`);
+  }
+
+  const whereSql = Prisma.join(filters, " AND ");
+  const [summaryRows, rows] = await Promise.all([
+    prisma.$queryRaw<Array<{ count: number; baseTotal: unknown }>>(Prisma.sql`
+      SELECT
+        COUNT(*)::int AS "count",
+        COALESCE(SUM(s."baseTotal"), 0) AS "baseTotal"
+      FROM "Sale" s
+      WHERE ${whereSql}
+    `),
+    prisma.$queryRaw<Array<{
+      id: string;
+      invoiceNo: string | null;
+      saleDate: Date;
+      createdAt: Date;
+      customerName: string | null;
+      currencyCode: string;
+      total: unknown;
+      baseTotal: unknown;
+      cogsTotal: unknown;
+    }>>(Prisma.sql`
+      SELECT
+        s."id",
+        s."invoiceNo",
+        s."saleDate",
+        s."createdAt",
+        p."name" AS "customerName",
+        c."code" AS "currencyCode",
+        s."total",
+        s."baseTotal",
+        COALESCE(SUM(COALESCE(si."baseTotalCost", si."totalCost", 0)), 0) AS "cogsTotal"
+      FROM "Sale" s
+      LEFT JOIN "SaleItem" si ON si."saleId" = s."id"
+      LEFT JOIN "Party" p ON p."id" = s."customerId"
+      JOIN "Currency" c ON c."id" = s."currencyId"
+      WHERE ${whereSql}
+      GROUP BY s."id", p."name", c."code"
+      ORDER BY s."saleDate" DESC, s."createdAt" DESC, s."id" DESC
+      LIMIT ${pagination.limit}
+      OFFSET ${pagination.skip}
+    `)
+  ]);
+  const total = Number(summaryRows[0]?.count || 0);
+
+  return c.json({
+    data: rows.map((row) => ({
+      ...row,
+      total: Number(row.total || 0),
+      baseTotal: Number(row.baseTotal || 0),
+      cogsTotal: Number(row.cogsTotal || 0)
+    })),
+    pagination: createPaginationMeta({ ...pagination, total }),
+    summary: {
+      missingCount: total,
+      baseSalesTotal: Number(summaryRows[0]?.baseTotal || 0)
     }
   });
 });
@@ -327,6 +444,87 @@ salesRoute.get("/:id", async (c) => {
   }
 
   return c.json({ data: item });
+});
+
+salesRoute.post("/:id/repair-cogs", async (c) => {
+  const authUser = getAuthUser(c);
+
+  if (authUser?.role !== "Admin") {
+    return c.json({ message: "Only Admin can repair historical COGS" }, 403);
+  }
+
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = repairSaleCogsSchema.safeParse(body);
+
+  if (!parsed.success) {
+    return c.json(
+      {
+        message: "Explicit confirmation is required to repair this sale COGS",
+        issues: zodError(parsed.error).issues
+      },
+      400
+    );
+  }
+
+  const sale = await prisma.sale.findUnique({
+    where: { id },
+    select: { id: true, invoiceNo: true, status: true }
+  });
+
+  if (!sale) {
+    return c.json({ message: "Sale not found" }, 404);
+  }
+
+  if (sale.status === SaleStatus.CANCELLED) {
+    return c.json({ message: "COGS cannot be repaired for a cancelled sale" }, 409);
+  }
+
+  const repair = () =>
+    prisma.$transaction((tx) =>
+      ensureSaleCogsJournal(tx, {
+        saleId: sale.id,
+        invoiceNo: sale.invoiceNo,
+        createdByUserId: authUser.id
+      })
+    );
+
+  let result;
+
+  try {
+    result = await repair();
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    result = await repair();
+  }
+
+  if (!result.idempotentReplay) {
+    await writeAudit(c, {
+      action: "SALE_COGS_REPAIRED",
+      entityType: "Sale",
+      entityId: sale.id,
+      metadata: {
+        invoiceNo: sale.invoiceNo,
+        cogsTotal: result.cogs.total,
+        zeroCost: result.zeroCost
+      }
+    });
+  }
+
+  return c.json(
+    {
+      data: result.journalEntry,
+      cogs: result.cogs,
+      zeroCost: result.zeroCost,
+      idempotentReplay: result.idempotentReplay,
+      message: result.idempotentReplay
+        ? "COGS journal already exists for this sale"
+        : result.zeroCost
+          ? "Sale was reviewed and marked as zero-cost"
+          : "Historical sale COGS repaired"
+    },
+    result.idempotentReplay ? 200 : 201
+  );
 });
 
 salesRoute.post("/:id/cancel", async (c) => {

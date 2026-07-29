@@ -2322,7 +2322,9 @@ function DenseTable({
                           <Package className="size-5" />
                         </div>
                       )
-                    ) : column.key === "status" || column.key === "type" ? (
+                    ) : column.key === "status" ||
+                      column.key === "type" ||
+                      column.key === "cogsStatus" ? (
                       <Badge className={badgeClassFor(row[column.key])}>
                         {String(row[column.key] ?? "فعال")}
                       </Badge>
@@ -3298,6 +3300,14 @@ function invoiceLineTotal(quantity: number, unitAmount: number, discount = 0) {
 
 function SalesPage() {
   const initialSalesRange = recentDateRange();
+  const isAdmin = useMemo(() => {
+    try {
+      const user = JSON.parse(localStorage.getItem(AUTH_USER_KEY) || "null");
+      return user?.role === "Admin";
+    } catch {
+      return false;
+    }
+  }, []);
   const [sales, setSales] = useState<DataRow[]>([]);
   const [salesSummary, setSalesSummary] = useState({
     count: 0,
@@ -3347,6 +3357,16 @@ function SalesPage() {
   const [invoicePaymentAccountKey, setInvoicePaymentAccountKey] = useState("");
   const [invoicePaymentNote, setInvoicePaymentNote] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [cogsQualityOpen, setCogsQualityOpen] = useState(false);
+  const [cogsQualityRows, setCogsQualityRows] = useState<DataRow[]>([]);
+  const [cogsQualityPagination, setCogsQualityPagination] = useState<any>(null);
+  const [cogsQualitySummary, setCogsQualitySummary] = useState({
+    missingCount: 0,
+    baseSalesTotal: 0,
+  });
+  const [isLoadingCogsQuality, setIsLoadingCogsQuality] = useState(false);
+  const [cogsRepairSale, setCogsRepairSale] = useState<DataRow | null>(null);
+  const [isRepairingCogs, setIsRepairingCogs] = useState(false);
   const saleProductSearchSeqRef = useRef(0);
 
   const loadSalesData = async (
@@ -3452,6 +3472,98 @@ function SalesPage() {
       toast.error("خواندن فروشات ناکام شد");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadCogsQuality = async (page = cogsQualityPagination?.page || 1) => {
+    if (!isAdmin) return;
+
+    setIsLoadingCogsQuality(true);
+
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+      });
+
+      for (const [key, value] of new URLSearchParams(dateRangeQuery(from, to))) {
+        params.set(key, value);
+      }
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/sales/cogs-quality?${params.toString()}`,
+      );
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(json?.message || "خواندن گزارش کیفیت COGS ناکام شد");
+      }
+
+      setCogsQualityRows(
+        Array.isArray(json?.data)
+          ? json.data.map((item: any) => ({
+              id: item.id,
+              name: item.invoiceNo || item.id,
+              party: item.customerName || "مشتری نقدی",
+              date: formatDateTime(item.saleDate),
+              total: money(item.total || 0, item.currencyCode || "AFN"),
+              cogsTotal: money(item.cogsTotal || 0),
+              __raw: item,
+            }))
+          : [],
+      );
+      setCogsQualityPagination(json?.pagination || null);
+      setCogsQualitySummary(
+        json?.summary || { missingCount: 0, baseSalesTotal: 0 },
+      );
+    } catch (error: any) {
+      toast.error(error?.message || "خواندن گزارش کیفیت COGS ناکام شد");
+    } finally {
+      setIsLoadingCogsQuality(false);
+    }
+  };
+
+  const confirmCogsRepair = async () => {
+    if (!cogsRepairSale || !isAdmin || isRepairingCogs) return;
+
+    setIsRepairingCogs(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/sales/${cogsRepairSale.id}/repair-cogs`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: true }),
+        },
+      );
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(json?.message || "اصلاح COGS فروش ناکام شد");
+      }
+
+      if (json?.zeroCost) {
+        toast.warning("سند بررسی شد؛ قیمت تمام‌شده ثبت‌شده این فروش صفر است");
+      } else if (json?.idempotentReplay) {
+        toast.info("سند COGS این فروش قبلاً ثبت شده بود");
+      } else {
+        toast.success("سند COGS فروش با موفقیت ثبت شد");
+      }
+
+      setCogsRepairSale(null);
+      await loadSalesData(
+        salesPagination?.page || 1,
+        saleReturnsPagination?.page || 1,
+      );
+
+      if (cogsQualityOpen) {
+        await loadCogsQuality(cogsQualityPagination?.page || 1);
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "اصلاح COGS فروش ناکام شد");
+    } finally {
+      setIsRepairingCogs(false);
     }
   };
 
@@ -4269,6 +4381,18 @@ function SalesPage() {
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
+            {isAdmin && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setCogsQualityOpen(true);
+                  void loadCogsQuality(1);
+                }}
+              >
+                <ShieldCheck className="size-4" />
+                کیفیت COGS
+              </Button>
+            )}
             <Button onClick={openCreate}>
               <Plus className="size-4" />
               فروش جدید
@@ -4288,6 +4412,7 @@ function SalesPage() {
                 { key: "total", label: "مجموع" },
                 { key: "paid", label: "پرداخت" },
                 { key: "status", label: "وضعیت" },
+                { key: "cogsStatus", label: "COGS" },
               ]}
               rows={sales}
               pagination={salesPagination}
@@ -4299,6 +4424,15 @@ function SalesPage() {
               onDelete={openSaleCancel}
               secondaryLabel="پرداخت"
               extraActions={[
+                {
+                  label: "اصلاح COGS",
+                  icon: <ShieldCheck className="size-4" />,
+                  onClick: setCogsRepairSale,
+                  isVisible: (row) =>
+                    isAdmin &&
+                    row.__canDelete !== false &&
+                    row.__raw?.cogsStatus === "MISSING",
+                },
                 {
                   label: "دوپلیکیت فروش",
                   icon: <Copy className="size-4" />,
@@ -4330,6 +4464,96 @@ function SalesPage() {
           setCancelSaleReturnReason("");
         }}
       />
+
+      <Dialog open={cogsQualityOpen} onOpenChange={setCogsQualityOpen}>
+        <DialogContent dir="rtl" className="sm:max-w-[min(94vw,1050px)]">
+          <DialogHeader>
+            <DialogTitle>گزارش فروش‌های بدون COGS</DialogTitle>
+            <DialogDescription>
+              فقط فروش‌های بازه انتخاب‌شده که سند بهای تمام‌شده ندارند نمایش داده می‌شوند.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2 border-y border-border py-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-muted-foreground">تعداد اسناد ناقص</span>
+              <strong>{cogsQualitySummary.missingCount}</strong>
+            </div>
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-muted-foreground">مجموع فروش پایه</span>
+              <strong>{money(cogsQualitySummary.baseSalesTotal)}</strong>
+            </div>
+          </div>
+
+          {isLoadingCogsQuality ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">
+              در حال بررسی اسناد فروش...
+            </div>
+          ) : (
+            <DenseTable
+              columns={[
+                { key: "name", label: "فاکتور" },
+                { key: "date", label: "تاریخ" },
+                { key: "party", label: "مشتری" },
+                { key: "total", label: "فروش" },
+                { key: "cogsTotal", label: "COGS قابل ثبت" },
+              ]}
+              rows={cogsQualityRows}
+              pagination={cogsQualityPagination}
+              onPageChange={(page) => void loadCogsQuality(page)}
+              extraActions={[
+                {
+                  label: "اصلاح همین سند",
+                  icon: <ShieldCheck className="size-4" />,
+                  onClick: (row) => {
+                    setCogsQualityOpen(false);
+                    setCogsRepairSale(row);
+                  },
+                },
+              ]}
+            />
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCogsQualityOpen(false)}>
+              بستن
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(cogsRepairSale)}
+        onOpenChange={(open) => {
+          if (!open && !isRepairingCogs) setCogsRepairSale(null);
+        }}
+      >
+        <DialogContent dir="rtl" className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>تایید اصلاح COGS</DialogTitle>
+            <DialogDescription>
+              برای فاکتور {String(cogsRepairSale?.name || "-")} سند COGS از قیمت‌های
+              ذخیره‌شده اقلام ساخته می‌شود. خود فروش و موجودی تغییر نمی‌کنند.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={isRepairingCogs}
+              onClick={() => setCogsRepairSale(null)}
+            >
+              انصراف
+            </Button>
+            <Button
+              disabled={isRepairingCogs}
+              onClick={() => void confirmCogsRepair()}
+            >
+              <ShieldCheck className="size-4" />
+              {isRepairingCogs ? "در حال اصلاح..." : "تایید و ثبت سند"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent dir="rtl" className="sm:max-w-[min(96vw,1280px)]">
@@ -11629,6 +11853,12 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
       total: money(item.total || 0, item.currency?.code || "AFN"),
       paid: money(item.paidAmount || 0, item.currency?.code || "AFN"),
       status: isCancelled ? "ابطال" : item.paymentStatus || item.status || "-",
+      cogsStatus:
+        item.cogsStatus === "POSTED"
+          ? "تکمیل"
+          : item.cogsStatus === "ZERO_COST"
+            ? "هشدار: قیمت صفر"
+            : "هشدار: ثبت نشده",
       __canEdit: !isCancelled,
       __canSecondary: !isCancelled && !isPaid,
       __canDelete: !isCancelled,

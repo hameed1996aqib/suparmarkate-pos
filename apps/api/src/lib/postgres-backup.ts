@@ -1,18 +1,66 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
+import {
+  access,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
 import path from "node:path";
-import { backupUploadedFiles, restoreUploadedFiles } from "./backup-assets";
+import {
+  backupUploadedFiles,
+  restoreUploadedFiles,
+  type UploadSnapshotValidation,
+  validateUploadedFilesBackup
+} from "./backup-assets";
 import { getRuntimeServerConfig } from "./runtime-server-config";
+
+const CURRENT_BACKUP_VERSION = 4;
+
+type UploadSnapshotMetadata = {
+  files: number;
+  linked: number;
+  copied: number;
+  totalBytes?: number;
+  manifestSha256?: string | null;
+};
 
 export type NativeBackupMetadata = {
   version: number;
   format: "postgres-custom";
   app: "Muhaseb";
+  appVersion?: string;
+  schemaVersion?: string | null;
   createdAt: string;
   uploadsIncluded: boolean;
+  databaseSizeBytes?: number;
+  databaseSha256?: string;
   tableCounts: Record<string, number>;
-  uploadSnapshot?: { files: number; linked: number; copied: number } | null;
+  uploadSnapshot?: UploadSnapshotMetadata | null;
+};
+
+export type NativeBackupValidation = {
+  valid: boolean;
+  legacy: boolean;
+  restoreMode: "full" | "database-only";
+  metadata: NativeBackupMetadata;
+  database: {
+    sizeBytes: number;
+    sha256: string;
+    checksumMatches: boolean | null;
+    archiveEntries: number;
+  };
+  uploads: UploadSnapshotValidation;
+  errors: string[];
+  warnings: string[];
+};
+
+type ValidationOptions = {
+  inspectArchive?: (filePath: string) => Promise<string>;
 };
 
 export function getBackupDir() {
@@ -38,25 +86,53 @@ function databaseUrl() {
 function execute(
   command: string,
   args: string[],
-  options: { stdinFile?: string; stdoutFile?: string } = {}
+  options: {
+    stdinFile?: string;
+    stdoutFile?: string;
+    captureStdout?: boolean;
+    maxStdoutBytes?: number;
+  } = {}
 ) {
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
+    const captureStdout = options.captureStdout === true;
     const child = spawn(command, args, {
       env: process.env,
       windowsHide: true,
-      stdio: [options.stdinFile ? "pipe" : "ignore", options.stdoutFile ? "pipe" : "ignore", "pipe"]
+      stdio: [
+        options.stdinFile ? "pipe" : "ignore",
+        options.stdoutFile || captureStdout ? "pipe" : "ignore",
+        "pipe"
+      ]
     });
     let stderr = "";
+    let stdout = "";
+    let stdoutOverflow = false;
+    const maxStdoutBytes = options.maxStdoutBytes ?? 8 * 1024 * 1024;
 
-    child.stderr!.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       stderr = `${stderr}${String(chunk)}`.slice(-8000);
     });
+    if (captureStdout) {
+      child.stdout?.on("data", (chunk) => {
+        if (stdoutOverflow) return;
+        stdout += String(chunk);
+        if (Buffer.byteLength(stdout, "utf8") > maxStdoutBytes) {
+          stdoutOverflow = true;
+          child.kill();
+        }
+      });
+    }
     if (options.stdinFile) createReadStream(options.stdinFile).pipe(child.stdin!);
     if (options.stdoutFile) child.stdout!.pipe(createWriteStream(options.stdoutFile));
     child.on("error", (error) => reject(new Error(`${command} could not start: ${error.message}`)));
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} failed with code ${code}: ${stderr.trim()}`));
+      if (stdoutOverflow) {
+        reject(new Error(`${command} output exceeded ${maxStdoutBytes} bytes`));
+      } else if (code === 0) {
+        resolve(stdout);
+      } else {
+        reject(new Error(`${command} failed with code ${code}: ${stderr.trim()}`));
+      }
     });
   });
 }
@@ -72,7 +148,44 @@ async function executeSql(sql: string) {
     await execute(process.env.PG_PSQL_PATH || "psql", args);
   } catch (error) {
     if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
-    await execute("docker", ["exec", dockerContainer(), "psql", "--dbname", databaseUrl(), "--command", sql]);
+    await execute("docker", [
+      "exec",
+      dockerContainer(),
+      "psql",
+      "--dbname",
+      databaseUrl(),
+      "--command",
+      sql
+    ]);
+  }
+}
+
+async function executeSqlScalar(sql: string) {
+  const args = ["--tuples-only", "--no-align", "--dbname", databaseUrl(), "--command", sql];
+
+  try {
+    return (
+      await execute(process.env.PG_PSQL_PATH || "psql", args, { captureStdout: true })
+    ).trim();
+  } catch (error) {
+    if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
+    return (
+      await execute(
+        "docker",
+        [
+          "exec",
+          dockerContainer(),
+          "psql",
+          "--tuples-only",
+          "--no-align",
+          "--dbname",
+          databaseUrl(),
+          "--command",
+          sql
+        ],
+        { captureStdout: true }
+      )
+    ).trim();
   }
 }
 
@@ -93,8 +206,32 @@ async function createDump(filePath: string) {
     if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
     await execute(
       "docker",
-      ["exec", dockerContainer(), "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname", databaseUrl()],
+      [
+        "exec",
+        dockerContainer(),
+        "pg_dump",
+        "--format=custom",
+        "--no-owner",
+        "--no-privileges",
+        "--dbname",
+        databaseUrl()
+      ],
       { stdoutFile: filePath }
+    );
+  }
+}
+
+async function inspectPostgresArchive(filePath: string) {
+  try {
+    return await execute(process.env.PG_RESTORE_PATH || "pg_restore", ["--list", filePath], {
+      captureStdout: true
+    });
+  } catch (error) {
+    if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
+    return execute(
+      "docker",
+      ["exec", "-i", dockerContainer(), "pg_restore", "--list"],
+      { stdinFile: filePath, captureStdout: true }
     );
   }
 }
@@ -107,7 +244,7 @@ async function restoreDump(filePath: string) {
       AND pid <> pg_backend_pid();
   `);
 
-  const args = [
+  const restoreArgs = [
     "--clean",
     "--if-exists",
     "--single-transaction",
@@ -115,38 +252,233 @@ async function restoreDump(filePath: string) {
     "--no-owner",
     "--no-privileges",
     "--dbname",
-    databaseUrl(),
-    filePath
+    databaseUrl()
   ];
 
   try {
-    await execute(process.env.PG_RESTORE_PATH || "pg_restore", args);
+    await execute(process.env.PG_RESTORE_PATH || "pg_restore", [...restoreArgs, filePath]);
   } catch (error) {
     if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
     await execute(
       "docker",
-      ["exec", "-i", dockerContainer(), "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-privileges", "--dbname", databaseUrl()],
+      ["exec", "-i", dockerContainer(), "pg_restore", ...restoreArgs],
       { stdinFile: filePath }
     );
   }
 }
 
-function metadataPath(filePath: string) {
+export function backupMetadataPath(filePath: string) {
   return `${filePath}.meta.json`;
 }
 
-export async function readBackupMetadata(filePath: string): Promise<NativeBackupMetadata> {
-  await access(filePath);
-  const raw = await readFile(metadataPath(filePath), "utf8").catch(() => "");
-  if (raw) return JSON.parse(raw) as NativeBackupMetadata;
+async function sha256File(filePath: string) {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
+}
 
+async function getAppVersion() {
+  if (process.env.APP_VERSION) return process.env.APP_VERSION;
+  const packageLocations = [
+    path.resolve(process.cwd(), "package.json"),
+    path.resolve(process.cwd(), "apps/api/package.json")
+  ];
+  for (const packagePath of packageLocations) {
+    const raw = await readFile(packagePath, "utf8").catch(() => "");
+    if (!raw) continue;
+    const parsed = JSON.parse(raw) as { version?: string };
+    if (parsed.version) return parsed.version;
+  }
+  return "unknown";
+}
+
+async function getDatabaseSchemaVersion() {
+  return (
+    (await executeSqlScalar(`
+      SELECT migration_name
+      FROM "_prisma_migrations"
+      WHERE finished_at IS NOT NULL
+        AND rolled_back_at IS NULL
+      ORDER BY finished_at DESC
+      LIMIT 1;
+    `)) || null
+  );
+}
+
+async function knownSchemaVersions() {
+  const locations = [
+    path.resolve(process.cwd(), "prisma/migrations"),
+    path.resolve(process.cwd(), "apps/api/prisma/migrations")
+  ];
+  for (const directory of locations) {
+    const rows = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    const versions = rows
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    if (versions.length) return versions;
+  }
+  return [];
+}
+
+function fallbackMetadata(createdAt: string): NativeBackupMetadata {
   return {
-    version: 3,
+    version: 0,
     format: "postgres-custom",
     app: "Muhaseb",
-    createdAt: new Date().toISOString(),
+    createdAt,
     uploadsIncluded: false,
     tableCounts: {}
+  };
+}
+
+async function readMetadataFile(filePath: string) {
+  const raw = await readFile(backupMetadataPath(filePath), "utf8").catch(() => "");
+  if (!raw) return { metadata: null, raw: "" };
+  return { metadata: JSON.parse(raw) as NativeBackupMetadata, raw };
+}
+
+export async function readBackupMetadata(filePath: string): Promise<NativeBackupMetadata> {
+  const fileStat = await stat(filePath);
+  const { metadata } = await readMetadataFile(filePath);
+  return metadata ?? fallbackMetadata(fileStat.mtime.toISOString());
+}
+
+function archiveEntryCount(toc: string) {
+  return toc
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith(";")).length;
+}
+
+export async function validateNativeBackup(
+  filePath: string,
+  options: ValidationOptions = {}
+): Promise<NativeBackupValidation> {
+  await access(filePath);
+  const fileStat = await stat(filePath);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let metadata: NativeBackupMetadata;
+  let hasMetadata = true;
+
+  try {
+    const parsed = await readMetadataFile(filePath);
+    hasMetadata = Boolean(parsed.metadata);
+    metadata = parsed.metadata ?? fallbackMetadata(fileStat.mtime.toISOString());
+  } catch (error) {
+    metadata = fallbackMetadata(fileStat.mtime.toISOString());
+    errors.push(
+      `Backup metadata is invalid: ${error instanceof Error ? error.message : "invalid JSON"}`
+    );
+  }
+
+  if (!hasMetadata) {
+    warnings.push(
+      "Legacy backup has no metadata; restore is limited to database-only and current uploads will be preserved"
+    );
+  } else {
+    if (metadata.app !== "Muhaseb") errors.push("Backup was not created by Muhaseb");
+    if (metadata.format !== "postgres-custom") errors.push("Unsupported backup format");
+    if (!Number.isInteger(metadata.version) || metadata.version < 1) {
+      errors.push("Backup metadata version is invalid");
+    }
+    if (metadata.version > CURRENT_BACKUP_VERSION) {
+      errors.push(`Backup version ${metadata.version} is newer than this server supports`);
+    }
+    if (!metadata.createdAt || Number.isNaN(Date.parse(metadata.createdAt))) {
+      errors.push("Backup creation date is invalid");
+    }
+  }
+
+  let toc = "";
+  try {
+    toc = await (options.inspectArchive ?? inspectPostgresArchive)(filePath);
+    if (!archiveEntryCount(toc)) errors.push("PostgreSQL archive contains no restore entries");
+  } catch (error) {
+    errors.push(
+      `PostgreSQL archive validation failed: ${
+        error instanceof Error ? error.message : "pg_restore --list failed"
+      }`
+    );
+  }
+
+  const sha256 = await sha256File(filePath);
+  const checksumMatches = metadata.databaseSha256
+    ? metadata.databaseSha256 === sha256
+    : null;
+  if (checksumMatches === false) errors.push("Database backup checksum does not match metadata");
+  if (hasMetadata && metadata.version >= CURRENT_BACKUP_VERSION && !metadata.databaseSha256) {
+    errors.push("Database backup checksum is missing from metadata");
+  } else if (!metadata.databaseSha256) {
+    warnings.push("Backup has no database checksum; archive structure was validated instead");
+  }
+  if (
+    metadata.databaseSizeBytes !== undefined &&
+    metadata.databaseSizeBytes !== fileStat.size
+  ) {
+    errors.push("Database backup size does not match metadata");
+  }
+
+  const versions = await knownSchemaVersions();
+  const latestKnownVersion = versions.at(-1) ?? null;
+  if (metadata.schemaVersion && !versions.includes(metadata.schemaVersion)) {
+    if (latestKnownVersion && metadata.schemaVersion > latestKnownVersion) {
+      errors.push(
+        `Backup schema ${metadata.schemaVersion} is newer than server schema ${latestKnownVersion}`
+      );
+    } else {
+      warnings.push(`Backup schema ${metadata.schemaVersion} is not present in this release`);
+    }
+  }
+
+  let uploads: UploadSnapshotValidation = {
+    present: false,
+    valid: true,
+    legacy: false,
+    files: 0,
+    totalBytes: 0,
+    manifestSha256: null,
+    errors: []
+  };
+  try {
+    uploads = await validateUploadedFilesBackup(filePath, {
+      required: hasMetadata && metadata.uploadsIncluded
+    });
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "Upload snapshot validation failed");
+  }
+
+  if (
+    metadata.uploadSnapshot?.manifestSha256 &&
+    uploads.manifestSha256 &&
+    metadata.uploadSnapshot.manifestSha256 !== uploads.manifestSha256
+  ) {
+    errors.push("Upload manifest checksum does not match backup metadata");
+  }
+  if (uploads.legacy) {
+    warnings.push("Upload snapshot uses a legacy manifest without per-file checksums");
+  }
+
+  return {
+    valid: errors.length === 0,
+    legacy: !hasMetadata || metadata.version < CURRENT_BACKUP_VERSION,
+    restoreMode: hasMetadata && metadata.uploadsIncluded ? "full" : "database-only",
+    metadata,
+    database: {
+      sizeBytes: fileStat.size,
+      sha256,
+      checksumMatches,
+      archiveEntries: archiveEntryCount(toc)
+    },
+    uploads,
+    errors,
+    warnings
   };
 }
 
@@ -157,31 +489,68 @@ export async function createNativeBackup() {
   const filePath = path.join(backupDir, filename);
   const includeUploads = process.env.BACKUP_UPLOADS_ENABLED !== "false";
 
-  await createDump(filePath);
+  try {
+    await createDump(filePath);
+    const toc = await inspectPostgresArchive(filePath);
+    if (!archiveEntryCount(toc)) throw new Error("Created PostgreSQL archive is empty");
 
-  const uploadSnapshot = includeUploads ? await backupUploadedFiles(filePath) : null;
+    const fileStat = await stat(filePath);
+    const databaseSha256 = await sha256File(filePath);
+    const uploadSnapshot = includeUploads ? await backupUploadedFiles(filePath) : null;
 
-  const metadata: NativeBackupMetadata = {
-    version: 3,
-    format: "postgres-custom",
-    app: "Muhaseb",
-    createdAt: new Date().toISOString(),
-    uploadsIncluded: includeUploads,
-    tableCounts: {},
-    uploadSnapshot
-  };
-  await writeFile(metadataPath(filePath), JSON.stringify(metadata, null, 2), "utf8");
+    const metadata: NativeBackupMetadata = {
+      version: CURRENT_BACKUP_VERSION,
+      format: "postgres-custom",
+      app: "Muhaseb",
+      appVersion: await getAppVersion(),
+      schemaVersion: await getDatabaseSchemaVersion(),
+      createdAt: new Date().toISOString(),
+      uploadsIncluded: includeUploads,
+      databaseSizeBytes: fileStat.size,
+      databaseSha256,
+      tableCounts: {},
+      uploadSnapshot
+    };
+    await writeFile(
+      backupMetadataPath(filePath),
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      "utf8"
+    );
 
-  return { filename, filePath, metadata };
+    const validation = await validateNativeBackup(filePath, {
+      inspectArchive: async () => toc
+    });
+    if (!validation.valid) {
+      throw new Error(`Created backup failed validation: ${validation.errors.join("; ")}`);
+    }
+
+    return { filename, filePath, metadata, validation };
+  } catch (error) {
+    await Promise.all([
+      rm(filePath, { force: true }),
+      rm(backupMetadataPath(filePath), { force: true }),
+      rm(`${filePath}-uploads`, { recursive: true, force: true })
+    ]);
+    throw error;
+  }
 }
 
-export async function restoreNativeBackup(filePath: string) {
-  await restoreDump(filePath);
+export async function restoreNativeBackup(
+  filePath: string,
+  options: { validation?: NativeBackupValidation } = {}
+) {
+  const validation = options.validation ?? (await validateNativeBackup(filePath));
+  if (!validation.valid) {
+    throw new Error(`Backup validation failed: ${validation.errors.join("; ")}`);
+  }
 
-  await restoreUploadedFiles(filePath);
+  await restoreDump(filePath);
+  const uploadResult = await restoreUploadedFiles(filePath, {
+    required: validation.restoreMode === "full"
+  });
+  return { validation, uploadResult };
 }
 
 export async function deleteBackupMetadata(filePath: string) {
-  const { rm } = await import("node:fs/promises");
-  await rm(metadataPath(filePath), { force: true });
+  await rm(backupMetadataPath(filePath), { force: true });
 }

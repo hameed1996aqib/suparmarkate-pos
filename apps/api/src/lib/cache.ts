@@ -85,7 +85,7 @@ export const invalidateReadCachesAfterWrite: MiddlewareHandler = async (c, next)
   if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method) && c.res.status < 400) {
     await Promise.all([
       cacheDeleteByPattern("dashboard:summary:*"),
-      cacheDeleteByPattern("reports:management:*"),
+      cacheDeleteByPattern("reports:*"),
       cacheDeleteByPattern("alerts:*"),
       cacheDeleteByPattern("pos:products:*")
     ]);

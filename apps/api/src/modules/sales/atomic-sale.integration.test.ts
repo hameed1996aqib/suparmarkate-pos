@@ -2,7 +2,11 @@ import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { AuthUser } from "../../lib/auth";
+import { cacheDeleteByPattern } from "../../lib/cache";
 import { prisma } from "../../lib/prisma";
+import { dashboardRoute } from "../dashboard/routes";
+import { posReceiptsRoute } from "../pos-receipts/routes";
+import { reportsRoute } from "../reports/routes";
 import { saleReturnsRoute } from "../sale-returns/routes";
 import { salesRoute } from "./routes";
 
@@ -580,6 +584,34 @@ describe("atomic POS sale", () => {
       sale.items.reduce((sum, item) => sum + Number(item.netTotalPrice), 0)
     ).toBe(101);
 
+    await Promise.all([
+      cacheDeleteByPattern("dashboard:summary:*"),
+      cacheDeleteByPattern("reports:management:*")
+    ]);
+    const [dashboardResponse, managementResponse, receiptResponse] = await Promise.all([
+      dashboardRoute.request("http://localhost/summary?period=today"),
+      reportsRoute.request("http://localhost/management"),
+      posReceiptsRoute.request(`http://localhost/sales/${saleId}/html?width=80`)
+    ]);
+    expect(dashboardResponse.status).toBe(200);
+    expect(managementResponse.status).toBe(200);
+    expect(receiptResponse.status).toBe(200);
+    const dashboardPayload = await dashboardResponse.json() as any;
+    const managementPayload = await managementResponse.json() as any;
+    const receiptHtml = await receiptResponse.text();
+    expect(
+      dashboardPayload.data.topProducts.find(
+        (item: any) => item.id === fixture.productId
+      )?.sales
+    ).toBe(101);
+    expect(
+      managementPayload.data.topProducts.find(
+        (item: any) => item.id === fixture.productId
+      )?.totalSales
+    ).toBe(101);
+    expect(receiptHtml).toContain("<td>101</td>");
+    expect(receiptHtml).toContain("<strong>19 AFN</strong>");
+
     const returned = await adminReturnsApp.request("http://localhost/", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -631,6 +663,10 @@ describe("atomic POS sale", () => {
     expect(lots.map((lot) => Number(lot.remainingQuantity))).toEqual([4, 5]);
     expect(journal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(165);
     expect(journal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(165);
+    await Promise.all([
+      cacheDeleteByPattern("dashboard:summary:*"),
+      cacheDeleteByPattern("reports:management:*")
+    ]);
   });
 
   it("computes legacy returns in memory, preserves rounding, and reports only suspicious old amounts", async () => {

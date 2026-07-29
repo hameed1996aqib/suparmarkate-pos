@@ -69,6 +69,12 @@ function groupReceiptItems(items: any[]) {
     const totalPrice = Number(
       item.totalPrice ?? Math.max(0, quantity * Number(item.unitPrice || 0) - discount),
     );
+    const documentDiscountAllocated = Number(
+      item.documentDiscountAllocated || 0,
+    );
+    const netTotalPrice = Number(
+      item.netTotalPrice ?? totalPrice - documentDiscountAllocated,
+    );
     const existing = grouped.get(key);
 
     if (!existing) {
@@ -77,6 +83,8 @@ function groupReceiptItems(items: any[]) {
         quantity,
         discount,
         totalPrice,
+        documentDiscountAllocated,
+        netTotalPrice,
       });
       continue;
     }
@@ -84,6 +92,8 @@ function groupReceiptItems(items: any[]) {
     existing.quantity += quantity;
     existing.discount += discount;
     existing.totalPrice += totalPrice;
+    existing.documentDiscountAllocated += documentDiscountAllocated;
+    existing.netTotalPrice += netTotalPrice;
   }
 
   return Array.from(grouped.values());
@@ -154,8 +164,8 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
     return sum + Number(item.quantity || 0) * Number(item.unitPrice || 0);
   }, 0);
 
-  const discount = Number((sale as any).discount || 0);
-  const total = Number((sale as any).total || subtotal - discount);
+  const total = Number((sale as any).total || subtotal);
+  const discount = Math.max(0, subtotal - total);
   const returnedTotal = receiptReturns.reduce(
     (sum, saleReturn) => sum + Number(saleReturn.subtotal || 0),
     0,
@@ -380,7 +390,9 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
           const price = Number(item.unitPrice || 0);
           const itemDiscount = Number((item as any).discount || 0);
           const lineTotal = Number(
-            (item as any).totalPrice ?? Math.max(0, qty * price - itemDiscount),
+            (item as any).netTotalPrice ??
+              (item as any).totalPrice ??
+              Math.max(0, qty * price - itemDiscount),
           );
 
           return `

@@ -187,8 +187,8 @@ dashboardRoute.get("/summary", async (c) => {
   );
   const saleItemNetValue = Prisma.raw(
     currencyId
-      ? `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END)`
-      : `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END) * COALESCE(s."exchangeRate", 1)`,
+      ? `COALESCE(si."netTotalPrice", GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END))`
+      : `COALESCE(si."netTotalPrice", GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END)) * COALESCE(s."exchangeRate", 1)`,
   );
   const saleReturnItemValue = Prisma.raw(
     currencyId ? `sri."totalPrice"` : `sri."totalPrice" * sr."exchangeRate"`,
@@ -437,7 +437,7 @@ dashboardRoute.get("/summary", async (c) => {
         AND s."status" <> 'CANCELLED'
         ${saleCurrencyFilter}
         AND COALESCE(si."quantityBase", 0) > 0
-        AND COALESCE(si."totalPrice", 0) > 0
+        AND COALESCE(si."netTotalPrice", si."totalPrice", 0) > 0
         AND COALESCE(si."baseTotalCost", si."totalCost", 0) <= 0
     `),
   ]);

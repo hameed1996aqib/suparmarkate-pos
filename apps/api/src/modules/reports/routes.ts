@@ -6,6 +6,7 @@ import { Prisma } from "../../generated/prisma/client";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
 import { kabulDateRange, kabulDayRange } from "../../lib/kabul-date";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
+import { resolveSaleItemPricing } from "../../lib/sale-pricing";
 
 export const reportsRoute = new Hono();
 
@@ -671,7 +672,19 @@ reportsRoute.get("/management", async (c) => {
     `),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT p.id, p.name, COALESCE(u."shortName", u.name) unit, COALESCE(SUM(si."quantityBase"), 0) quantity,
-        COALESCE(SUM(si."totalPrice" * s."exchangeRate"), 0) "totalSales",
+        COALESCE(SUM(
+          COALESCE(
+            si."netTotalPrice",
+            GREATEST(
+              0,
+              si."totalPrice" - CASE
+                WHEN s.subtotal > 0
+                  THEN s.discount * (si."totalPrice" / s.subtotal)
+                ELSE 0
+              END
+            )
+          ) * s."exchangeRate"
+        ), 0) "totalSales",
         COALESCE(SUM(COALESCE(si."baseTotalCost", si."totalCost")), 0) cogs
       FROM "SaleItem" si JOIN "Sale" s ON s.id = si."saleId" JOIN "Product" p ON p.id = si."productId"
       JOIN "Unit" u ON u.id = p."baseUnitId"
@@ -939,7 +952,8 @@ reportsRoute.get("/loss-sales", async (c) => {
         COALESCE(pc.name, 'بدون کتگوری') "categoryName",
         COALESCE(u."shortName", u.name, '') "unitName",
         COALESCE(si."quantityBase", 0) "quantityBase",
-        (
+        COALESCE(
+          si."netTotalPrice",
           COALESCE(si."totalPrice", 0)
           - CASE
               WHEN COALESCE(s.subtotal, 0) > 0
@@ -1098,7 +1112,8 @@ reportsRoute.get("/missing-cost-sales", async (c) => {
         COALESCE(pc.name, 'بدون کتگوری') "categoryName",
         COALESCE(unit."shortName", unit.name, '') "unitName",
         COALESCE(si."quantityBase", 0) "quantityBase",
-        (
+        COALESCE(
+          si."netTotalPrice",
           COALESCE(si."totalPrice", 0)
           - CASE
               WHEN COALESCE(s.subtotal, 0) > 0
@@ -1116,7 +1131,7 @@ reportsRoute.get("/missing-cost-sales", async (c) => {
         AND s."saleDate" < ${end}
         AND s.status <> 'CANCELLED'
         AND COALESCE(si."quantityBase", 0) > 0
-        AND COALESCE(si."totalPrice", 0) > 0
+        AND COALESCE(si."netTotalPrice", si."totalPrice", 0) > 0
         AND COALESCE(si."baseTotalCost", si."totalCost", 0) <= 0
     ),
     return_lines AS (
@@ -1354,6 +1369,24 @@ reportsRoute.get("/management-legacy", async (c) => {
     cogs: number;
     profit: number;
   }>();
+  const netPriceBySaleItemId = new Map<string, number>();
+  const saleItemsBySaleId = new Map<string, typeof saleItems>();
+
+  for (const item of saleItems) {
+    const current = saleItemsBySaleId.get(item.saleId) || [];
+    current.push(item);
+    saleItemsBySaleId.set(item.saleId, current);
+  }
+
+  for (const items of saleItemsBySaleId.values()) {
+    const pricing = resolveSaleItemPricing(items[0]?.sale.discount || 0, items);
+    for (const item of items) {
+      netPriceBySaleItemId.set(
+        item.id,
+        pricing.get(item.id)?.netTotalPrice ?? toNumber(item.totalPrice),
+      );
+    }
+  }
 
   for (const item of saleItems) {
     const existing = productMap.get(item.productId) || {
@@ -1365,7 +1398,9 @@ reportsRoute.get("/management-legacy", async (c) => {
       profit: 0
     };
     existing.quantity += toNumber(item.quantityBase);
-    existing.totalSales += toNumber(item.totalPrice) * toNumber(item.sale.exchangeRate || 1);
+    existing.totalSales +=
+      (netPriceBySaleItemId.get(item.id) ?? toNumber(item.totalPrice)) *
+      toNumber(item.sale.exchangeRate || 1);
     existing.cogs += toNumber(item.baseTotalCost ?? item.totalCost);
     existing.profit = existing.totalSales - existing.cogs;
     productMap.set(item.productId, existing);

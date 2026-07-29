@@ -1,3 +1,5 @@
+import { getMaintenanceMode } from "./maintenance-mode";
+
 const DEFAULT_INTERVAL_HOURS = 24;
 
 export function startBackupScheduler(createBackup: () => Promise<unknown>) {
@@ -8,6 +10,7 @@ export function startBackupScheduler(createBackup: () => Promise<unknown>) {
   const intervalMs = hours * 60 * 60 * 1000;
 
   const run = () => {
+    if (getMaintenanceMode()) return;
     void createBackup().catch((error) => {
       console.error("Scheduled backup failed", error);
     });

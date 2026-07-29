@@ -11,11 +11,7 @@ export function getMaintenanceMode() {
 }
 
 export const maintenanceModeMiddleware: MiddlewareHandler = async (c, next) => {
-  if (
-    reason &&
-    !["GET", "HEAD", "OPTIONS"].includes(c.req.method) &&
-    !new URL(c.req.url).pathname.startsWith("/api/backups/")
-  ) {
+  if (reason && c.req.method !== "OPTIONS") {
     return c.json({ message: `Server is in maintenance mode: ${reason}` }, 503);
   }
 

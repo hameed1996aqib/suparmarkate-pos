@@ -4,6 +4,7 @@ import { createAutomatedBackup } from "../modules/backups/service";
 import { reconcileStockBalances } from "./stock-balance-reconciliation";
 import { runRetentionCleanup } from "./retention";
 import { createLedgerCsvExport, createStockCsvExport } from "../modules/exports/service";
+import { getMaintenanceMode } from "./maintenance-mode";
 
 export type JobType =
   | "BACKUP_CREATE"
@@ -69,7 +70,7 @@ async function handleJob(type: string, payload: unknown) {
 }
 
 async function workOnce() {
-  if (isWorking) return;
+  if (isWorking || getMaintenanceMode()) return;
   isWorking = true;
   lastPollAt = new Date();
   try {
@@ -129,10 +130,18 @@ export async function startPersistentJobWorker() {
   workerTimer = setInterval(() => void workOnce(), pollMs);
   const retentionHours = Math.max(1, Number(process.env.RETENTION_INTERVAL_HOURS || 24));
   retentionTimer = setInterval(
-    () => void enqueueJob("RETENTION_CLEANUP", { source: "schedule" }),
+    () => {
+      if (!getMaintenanceMode()) {
+        void enqueueJob("RETENTION_CLEANUP", { source: "schedule" });
+      }
+    },
     retentionHours * 60 * 60 * 1000
   );
-  setTimeout(() => void enqueueJob("RETENTION_CLEANUP", { source: "startup" }), 45_000);
+  setTimeout(() => {
+    if (!getMaintenanceMode()) {
+      void enqueueJob("RETENTION_CLEANUP", { source: "startup" });
+    }
+  }, 45_000);
   void workOnce();
   console.log(`Persistent job worker started (${workerId})`);
 }
@@ -144,6 +153,16 @@ export function stopPersistentJobWorker() {
   retentionTimer = null;
   workerStartedAt = null;
   lastPollAt = null;
+}
+
+export async function waitForPersistentJobWorkerIdle(timeoutMs = 10 * 60_000) {
+  const startedAt = Date.now();
+  while (isWorking) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error("Timed out waiting for the background job worker to become idle");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 export function getPersistentJobWorkerHealth() {

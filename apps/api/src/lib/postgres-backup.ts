@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, statSync } from "node:fs";
 import {
   access,
   mkdir,
@@ -91,11 +91,13 @@ function execute(
     stdoutFile?: string;
     captureStdout?: boolean;
     maxStdoutBytes?: number;
+    cwd?: string;
   } = {}
 ) {
   return new Promise<string>((resolve, reject) => {
     const captureStdout = options.captureStdout === true;
     const child = spawn(command, args, {
+      cwd: options.cwd,
       env: process.env,
       windowsHide: true,
       stdio: [
@@ -141,6 +143,10 @@ function dockerContainer() {
   return process.env.PG_DOCKER_CONTAINER || "muhaseb_postgres";
 }
 
+function dockerDatabaseUrl() {
+  return process.env.PG_DOCKER_DATABASE_URL || databaseUrl();
+}
+
 async function executeSql(sql: string) {
   const args = ["--dbname", databaseUrl(), "--command", sql];
 
@@ -153,7 +159,7 @@ async function executeSql(sql: string) {
       dockerContainer(),
       "psql",
       "--dbname",
-      databaseUrl(),
+      dockerDatabaseUrl(),
       "--command",
       sql
     ]);
@@ -179,7 +185,7 @@ async function executeSqlScalar(sql: string) {
           "--tuples-only",
           "--no-align",
           "--dbname",
-          databaseUrl(),
+          dockerDatabaseUrl(),
           "--command",
           sql
         ],
@@ -214,7 +220,7 @@ async function createDump(filePath: string) {
         "--no-owner",
         "--no-privileges",
         "--dbname",
-        databaseUrl()
+        dockerDatabaseUrl()
       ],
       { stdoutFile: filePath }
     );
@@ -259,9 +265,12 @@ async function restoreDump(filePath: string) {
     await execute(process.env.PG_RESTORE_PATH || "pg_restore", [...restoreArgs, filePath]);
   } catch (error) {
     if (process.env.PG_DOCKER_FALLBACK === "false") throw error;
+    const dockerRestoreArgs = restoreArgs.map((value, index) =>
+      index > 0 && restoreArgs[index - 1] === "--dbname" ? dockerDatabaseUrl() : value
+    );
     await execute(
       "docker",
-      ["exec", "-i", dockerContainer(), "pg_restore", ...restoreArgs],
+      ["exec", "-i", dockerContainer(), "pg_restore", ...dockerRestoreArgs],
       { stdinFile: filePath }
     );
   }
@@ -324,6 +333,33 @@ async function knownSchemaVersions() {
     if (versions.length) return versions;
   }
   return [];
+}
+
+function apiWorkingDirectory() {
+  const candidates = [
+    process.cwd(),
+    path.resolve(process.cwd(), "apps/api")
+  ];
+  return candidates.find((candidate) =>
+    requirePathExists(path.join(candidate, "prisma", "schema.prisma"))
+  ) ?? process.cwd();
+}
+
+function requirePathExists(target: string) {
+  try {
+    return statSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export async function applyPostRestoreSchemaAndSeed() {
+  const cwd = apiWorkingDirectory();
+  const npmCli = process.env.npm_execpath;
+  const command = npmCli ? process.execPath : "npm";
+  const prefix = npmCli ? [npmCli] : [];
+  await execute(command, [...prefix, "run", "prisma", "--", "migrate", "deploy"], { cwd });
+  await execute(command, [...prefix, "run", "seed"], { cwd });
 }
 
 function fallbackMetadata(createdAt: string): NativeBackupMetadata {
@@ -394,6 +430,12 @@ export async function validateNativeBackup(
     if (!metadata.createdAt || Number.isNaN(Date.parse(metadata.createdAt))) {
       errors.push("Backup creation date is invalid");
     }
+    if (typeof metadata.uploadsIncluded !== "boolean") {
+      errors.push("Backup uploadsIncluded flag is invalid");
+    }
+    if (!metadata.tableCounts || typeof metadata.tableCounts !== "object") {
+      errors.push("Backup table counts are invalid");
+    }
   }
 
   let toc = "";
@@ -417,6 +459,8 @@ export async function validateNativeBackup(
     errors.push("Database backup checksum is missing from metadata");
   } else if (!metadata.databaseSha256) {
     warnings.push("Backup has no database checksum; archive structure was validated instead");
+  } else if (!/^[a-f0-9]{64}$/.test(metadata.databaseSha256)) {
+    errors.push("Database backup checksum format is invalid");
   }
   if (
     metadata.databaseSizeBytes !== undefined &&
@@ -461,6 +505,28 @@ export async function validateNativeBackup(
   ) {
     errors.push("Upload manifest checksum does not match backup metadata");
   }
+  if (
+    hasMetadata &&
+    metadata.version >= CURRENT_BACKUP_VERSION &&
+    metadata.uploadsIncluded &&
+    !metadata.uploadSnapshot?.manifestSha256
+  ) {
+    errors.push("Upload manifest checksum is missing from backup metadata");
+  }
+  if (
+    metadata.uploadSnapshot?.files !== undefined &&
+    uploads.present &&
+    metadata.uploadSnapshot.files !== uploads.files
+  ) {
+    errors.push("Upload file count does not match backup metadata");
+  }
+  if (
+    metadata.uploadSnapshot?.totalBytes !== undefined &&
+    uploads.present &&
+    metadata.uploadSnapshot.totalBytes !== uploads.totalBytes
+  ) {
+    errors.push("Upload total size does not match backup metadata");
+  }
   if (uploads.legacy) {
     warnings.push("Upload snapshot uses a legacy manifest without per-file checksums");
   }
@@ -468,7 +534,8 @@ export async function validateNativeBackup(
   return {
     valid: errors.length === 0,
     legacy: !hasMetadata || metadata.version < CURRENT_BACKUP_VERSION,
-    restoreMode: hasMetadata && metadata.uploadsIncluded ? "full" : "database-only",
+    restoreMode:
+      hasMetadata && metadata.uploadsIncluded === true ? "full" : "database-only",
     metadata,
     database: {
       sizeBytes: fileStat.size,
@@ -482,12 +549,13 @@ export async function validateNativeBackup(
   };
 }
 
-export async function createNativeBackup() {
+export async function createNativeBackup(options: { includeUploads?: boolean } = {}) {
   const backupDir = getBackupDir();
   await mkdir(backupDir, { recursive: true });
   const filename = formatBackupName();
   const filePath = path.join(backupDir, filename);
-  const includeUploads = process.env.BACKUP_UPLOADS_ENABLED !== "false";
+  const includeUploads =
+    options.includeUploads ?? process.env.BACKUP_UPLOADS_ENABLED !== "false";
 
   try {
     await createDump(filePath);

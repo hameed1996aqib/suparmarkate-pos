@@ -40,6 +40,12 @@ jobs:
       JWT_SECRET: test-only-github-actions-secret
       NODE_ENV: test
       BACKUP_SCHEDULE_ENABLED: "false"
+      BACKUP_DIR: /tmp/muhaseb-backup-integration
+      UPLOAD_DIR: /tmp/muhaseb-upload-integration
+      SERVER_CONFIG_PATH: /tmp/muhaseb-server-config-test.json
+      BACKUP_UPLOADS_ENABLED: "true"
+      RUN_BACKUP_INTEGRATION: "true"
+      PG_DOCKER_FALLBACK: "false"
       STOCK_RECONCILIATION_ENABLED: "false"
       JOB_WORKER_ENABLED: "false"
 
@@ -70,6 +76,13 @@ jobs:
 
       - name: Run unit tests
         run: npm run test:unit
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          pg_dump --version
+          pg_restore --version
 
       - name: Run database integration tests
         run: npm run test:integration

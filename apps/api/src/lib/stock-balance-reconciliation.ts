@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { getMaintenanceMode } from "./maintenance-mode";
 
 type BalanceMismatch = {
   productId: string;
@@ -56,6 +57,7 @@ export function startStockBalanceReconciliationScheduler() {
 
   const hours = Math.max(1, Number(process.env.STOCK_RECONCILIATION_INTERVAL_HOURS || 24));
   const run = async () => {
+    if (getMaintenanceMode()) return;
     try {
       const { enqueueJob } = await import("./persistent-jobs");
       await enqueueJob("STOCK_RECONCILE", { source: "schedule" });

@@ -19,6 +19,10 @@
 npm ci
 npm run test:stack:up
 $env:DATABASE_URL="postgresql://supermarket_test:supermarket_test@127.0.0.1:55432/supermarket_test"
+$env:BACKUP_DIR="$env:TEMP\muhaseb-backup-integration"
+$env:UPLOAD_DIR="$env:TEMP\muhaseb-upload-integration"
+$env:SERVER_CONFIG_PATH="$env:TEMP\muhaseb-server-config-test.json"
+$env:RUN_BACKUP_INTEGRATION="true"
 npm run prisma:deploy
 npm --workspace @supermarket/api run seed
 npm run test:integration
@@ -29,6 +33,22 @@ npm run test:stack:down
 
 The Electron gate opens a real GUI process and must run in a normal Windows
 session, not a restricted service session.
+
+## Backup Restore Guarantees
+
+- Restore validates the PostgreSQL archive with `pg_restore --list`, verifies
+  the dump checksum, and validates every uploaded file before maintenance
+  starts.
+- A safety backup with uploads is mandatory. Background jobs stop claiming new
+  work, and the restore waits for the active job to finish.
+- Uploads are copied to a staging directory and swapped atomically. A
+  database-only or legacy backup never deletes current uploads.
+- After restore, additive migrations and the compatible baseline seed run,
+  caches are cleared, all sessions are revoked, and the integrity audit must
+  pass.
+- If restore, migration, seed, or integrity verification fails after database
+  replacement, the safety backup is restored automatically. A critical error
+  identifies the safety filename if automatic rollback also fails.
 
 ## Maintenance Window
 

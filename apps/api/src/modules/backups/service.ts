@@ -12,23 +12,30 @@ import { getRuntimeServerConfig } from "../../lib/runtime-server-config";
 export async function listBackupFiles() {
   const files = await readdir(getBackupDir()).catch(() => []);
   const rows = await Promise.all(
-    files.filter((name) => name.endsWith(".dump")).map(async (name) => {
-      const filePath = path.join(getBackupDir(), name);
-      const fileStat = await stat(filePath);
-      const metadata = await readBackupMetadata(filePath);
-      return {
-        id: name,
-        name,
-        date: metadata.createdAt || fileStat.mtime.toISOString(),
-        sizeBytes: fileStat.size,
-        size: fileStat.size < 1048576 ? `${(fileStat.size / 1024).toFixed(1)}KB` : `${(fileStat.size / 1048576).toFixed(2)}MB`,
-        status: "موفق",
-        format: metadata.format,
-        uploadsIncluded: metadata.uploadsIncluded
-      };
-    })
+    files
+      .filter((name) => name.endsWith(".dump"))
+      .map(async (name) => {
+        const filePath = path.join(getBackupDir(), name);
+        const fileStat = await stat(filePath);
+        const metadata = await readBackupMetadata(filePath).catch(() => null);
+        return {
+          id: name,
+          name,
+          date: metadata?.createdAt || fileStat.mtime.toISOString(),
+          sizeBytes: fileStat.size,
+          size:
+            fileStat.size < 1048576
+              ? `${(fileStat.size / 1024).toFixed(1)}KB`
+              : `${(fileStat.size / 1048576).toFixed(2)}MB`,
+          status: metadata ? "آماده" : "نامعتبر",
+          format: metadata?.format ?? "unknown",
+          metadataVersion: metadata?.version ?? null,
+          legacy: metadata?.version === 0,
+          uploadsIncluded: metadata?.uploadsIncluded ?? false
+        };
+      })
   );
-  return rows.sort((a, b) => b.date.localeCompare(a.date));
+  return rows.sort((left, right) => right.date.localeCompare(left.date));
 }
 
 export async function pruneOldBackups() {

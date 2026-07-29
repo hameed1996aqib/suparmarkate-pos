@@ -132,6 +132,7 @@ import {
 } from "@/lib/party-balance";
 import { kabulDateString } from "@/lib/kabul-date";
 import { dateRangeQuery, recentDateRange } from "@/lib/recent-date-filter";
+import { allocateMoneyByWeight } from "@/lib/money-allocation";
 
 const ReportsPageRoute = lazy(() =>
   import("@/features/reports/reports-page").then((module) => ({
@@ -3367,6 +3368,14 @@ function SalesPage() {
   const [isLoadingCogsQuality, setIsLoadingCogsQuality] = useState(false);
   const [cogsRepairSale, setCogsRepairSale] = useState<DataRow | null>(null);
   const [isRepairingCogs, setIsRepairingCogs] = useState(false);
+  const [returnQualityOpen, setReturnQualityOpen] = useState(false);
+  const [returnQualityRows, setReturnQualityRows] = useState<DataRow[]>([]);
+  const [returnQualityPagination, setReturnQualityPagination] = useState<any>(null);
+  const [returnQualitySummary, setReturnQualitySummary] = useState({
+    suspiciousCount: 0,
+    discrepancyTotal: 0,
+  });
+  const [isLoadingReturnQuality, setIsLoadingReturnQuality] = useState(false);
   const saleProductSearchSeqRef = useRef(0);
 
   const loadSalesData = async (
@@ -3564,6 +3573,62 @@ function SalesPage() {
       toast.error(error?.message || "اصلاح COGS فروش ناکام شد");
     } finally {
       setIsRepairingCogs(false);
+    }
+  };
+
+  const loadReturnQuality = async (
+    page = returnQualityPagination?.page || 1,
+  ) => {
+    if (!isAdmin) return;
+
+    setIsLoadingReturnQuality(true);
+
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: "20",
+      });
+
+      for (const [key, value] of new URLSearchParams(dateRangeQuery(from, to))) {
+        params.set(key, value);
+      }
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/sale-returns/quality?${params.toString()}`,
+      );
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          json?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد",
+        );
+      }
+
+      setReturnQualityRows(
+        Array.isArray(json?.data)
+          ? json.data.map((item: any) => ({
+              id: item.returnItemId,
+              name: item.returnNo || item.returnId,
+              invoice: item.invoiceNo || item.saleId,
+              product: item.productName || "-",
+              date: formatDateTime(item.createdAt),
+              actual: money(item.actualTotal || 0),
+              expected: money(item.expectedNetTotal || 0),
+              difference: money(item.discrepancy || 0),
+              __raw: item,
+            }))
+          : [],
+      );
+      setReturnQualityPagination(json?.pagination || null);
+      setReturnQualitySummary(
+        json?.summary || { suspiciousCount: 0, discrepancyTotal: 0 },
+      );
+    } catch (error: any) {
+      toast.error(
+        error?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد",
+      );
+    } finally {
+      setIsLoadingReturnQuality(false);
     }
   };
 
@@ -3768,24 +3833,16 @@ function SalesPage() {
     setSaleItemDialogOpen(false);
   };
 
-  let remainingSaleDiscount = form.discount;
+  const saleLineNetTotals = saleLines.map((line) =>
+    invoiceLineTotal(line.quantity, line.unitPrice, line.discount),
+  );
+  const saleDiscountAllocations = allocateMoneyByWeight(
+    form.discount,
+    saleLineNetTotals,
+  );
   const saleItemRows: InvoiceItemRow[] = saleLines.map((line, index) => {
-    const lineNetBeforeGeneral = invoiceLineTotal(
-      line.quantity,
-      line.unitPrice,
-      line.discount,
-    );
-    const generalDiscount =
-      index === saleLines.length - 1
-        ? remainingSaleDiscount
-        : subtotal > 0
-          ? Number(
-              ((lineNetBeforeGeneral / subtotal) * form.discount).toFixed(4),
-            )
-          : 0;
-    remainingSaleDiscount = Number(
-      (remainingSaleDiscount - generalDiscount).toFixed(4),
-    );
+    const lineNetBeforeGeneral = saleLineNetTotals[index] ?? 0;
+    const generalDiscount = saleDiscountAllocations[index] ?? 0;
     const unitInfo = productUnitInfo(products, line.productId, line.unitId);
     const baseQuantity = line.quantity * unitInfo.conversionRate;
     const baseSalePrice =
@@ -4268,12 +4325,32 @@ function SalesPage() {
       (candidate: any) => candidate.id === line.itemId,
     );
     if (!item || Number(item.quantity || 0) <= 0) return sum;
-    return (
-      sum +
-      (Number(item.totalPrice || 0) / Number(item.quantity || 1)) *
-        line.quantity
+    const soldQuantity = Number(item.quantity || 0);
+    const returnableQuantity = Number(
+      item.returnableQuantity ?? soldQuantity,
     );
+    const returnableNetTotal = Number(
+      item.returnableNetTotal ??
+        item.effectiveNetTotalPrice ??
+        item.netTotalPrice ??
+        item.totalPrice ??
+        0,
+    );
+    const fullNetTotal = Number(
+      item.effectiveNetTotalPrice ??
+        item.netTotalPrice ??
+        item.totalPrice ??
+        0,
+    );
+    const quantity = Math.min(line.quantity, returnableQuantity);
+    const lineTotal =
+      Math.abs(quantity - returnableQuantity) <= 0.0001
+        ? returnableNetTotal
+        : (fullNetTotal / Math.max(soldQuantity, 1)) * quantity;
+
+    return sum + lineTotal;
   }, 0);
+  const roundedSaleReturnSubtotal = Number(saleReturnSubtotal.toFixed(4));
 
   const submitSaleReturn = async () => {
     if (!returnSale) return;
@@ -4290,7 +4367,7 @@ function SalesPage() {
 
     const effectiveRefundAmount = returnSale.customerId
       ? refundAmount
-      : saleReturnSubtotal;
+      : roundedSaleReturnSubtotal;
 
     if (effectiveRefundAmount > 0 && !paymentAccount) {
       toast.error("برای برگشت نقدی، حساب صندوق یا بانک را انتخاب کنید");
@@ -4382,16 +4459,28 @@ function SalesPage() {
               تازه‌سازی
             </Button>
             {isAdmin && (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setCogsQualityOpen(true);
-                  void loadCogsQuality(1);
-                }}
-              >
-                <ShieldCheck className="size-4" />
-                کیفیت COGS
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setCogsQualityOpen(true);
+                    void loadCogsQuality(1);
+                  }}
+                >
+                  <ShieldCheck className="size-4" />
+                  کیفیت COGS
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setReturnQualityOpen(true);
+                    void loadReturnQuality(1);
+                  }}
+                >
+                  <TrendingDown className="size-4" />
+                  کیفیت برگشتی
+                </Button>
+              </>
             )}
             <Button onClick={openCreate}>
               <Plus className="size-4" />
@@ -4516,6 +4605,57 @@ function SalesPage() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setCogsQualityOpen(false)}>
+              بستن
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={returnQualityOpen} onOpenChange={setReturnQualityOpen}>
+        <DialogContent dir="rtl" className="sm:max-w-[min(94vw,1100px)]">
+          <DialogHeader>
+            <DialogTitle>گزارش برگشتی‌های قدیمی مشکوک</DialogTitle>
+            <DialogDescription>
+              این گزارش فقط برگشتی‌های legacy را نشان می‌دهد که احتمالاً تخفیف
+              عمومی فروش در مبلغ‌شان لحاظ نشده است. اصلاح خودکار انجام نمی‌شود؛
+              هر سند باید جداگانه بررسی و در صورت نیاز ابطال و دوباره ثبت شود.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2 border-y border-border py-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-muted-foreground">اقلام مشکوک</span>
+              <strong>{returnQualitySummary.suspiciousCount}</strong>
+            </div>
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-muted-foreground">مجموع اختلاف تخمینی</span>
+              <strong>{money(returnQualitySummary.discrepancyTotal)}</strong>
+            </div>
+          </div>
+
+          {isLoadingReturnQuality ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">
+              در حال بررسی برگشتی‌های قدیمی...
+            </div>
+          ) : (
+            <DenseTable
+              columns={[
+                { key: "name", label: "سند برگشت" },
+                { key: "invoice", label: "فاکتور فروش" },
+                { key: "product", label: "محصول" },
+                { key: "date", label: "تاریخ" },
+                { key: "actual", label: "مبلغ ثبت‌شده" },
+                { key: "expected", label: "مبلغ خالص مورد انتظار" },
+                { key: "difference", label: "اختلاف" },
+              ]}
+              rows={returnQualityRows}
+              pagination={returnQualityPagination}
+              onPageChange={(page) => void loadReturnQuality(page)}
+            />
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReturnQualityOpen(false)}>
               بستن
             </Button>
           </DialogFooter>
@@ -4984,6 +5124,11 @@ function SalesPage() {
                       <strong className="block">
                         {Number(item.quantity || 0)}
                       </strong>
+                      {Number(item.returnedQuantity || 0) > 0 && (
+                        <span className="text-xs text-muted-foreground">
+                          قابل برگشت: {Number(item.returnableQuantity || 0)}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm">
                       <span className="text-muted-foreground">قیمت قلم</span>
@@ -4998,7 +5143,15 @@ function SalesPage() {
                         setReturnLines((current) =>
                           current.map((candidate) =>
                             candidate.itemId === item.id
-                              ? { ...candidate, quantity: value }
+                              ? {
+                                  ...candidate,
+                                  quantity: Math.min(
+                                    Math.max(0, value),
+                                    Number(
+                                      item.returnableQuantity ?? item.quantity ?? 0,
+                                    ),
+                                  ),
+                                }
                               : candidate,
                           ),
                         )
@@ -5016,7 +5169,7 @@ function SalesPage() {
             />
             <div className="rounded-xl border border-border bg-muted/30 p-4">
               <p className="text-xs text-muted-foreground">جمع تخمینی برگشت</p>
-              <strong>{money(saleReturnSubtotal)}</strong>
+              <strong>{money(roundedSaleReturnSubtotal)}</strong>
             </div>
           </div>
 

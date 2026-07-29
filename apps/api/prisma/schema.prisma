@@ -1208,6 +1208,8 @@ model SaleItem {
   unitPrice  Decimal @db.Decimal(18, 4)
   discount   Decimal @default(0) @db.Decimal(18, 4)
   totalPrice Decimal @db.Decimal(18, 4)
+  documentDiscountAllocated Decimal? @db.Decimal(18, 4)
+  netTotalPrice Decimal? @db.Decimal(18, 4)
 
   unitCostBase Decimal? @db.Decimal(18, 4)
   totalCost    Decimal? @db.Decimal(18, 4)

@@ -63,6 +63,25 @@ type BackupPreview = {
   createdAt: string;
   app: string;
   tableCounts: Record<string, number>;
+  validation: {
+    valid: boolean;
+    legacy: boolean;
+    restoreMode: "full" | "database-only";
+    database: {
+      sizeBytes: number;
+      sha256: string;
+      checksumMatches: boolean | null;
+      archiveEntries: number;
+    };
+    uploads: {
+      present: boolean;
+      valid: boolean;
+      files: number;
+      totalBytes: number;
+    };
+    errors: string[];
+    warnings: string[];
+  };
 };
 
 function formatDate(value: string) {
@@ -111,6 +130,7 @@ function tableLabel(key: string) {
 export function BackupPage() {
   const [files, setFiles] = useState<BackupFile[]>([]);
   const [preview, setPreview] = useState<BackupPreview | null>(null);
+  const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<BackupFile | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BackupFile | null>(null);
   const [confirmText, setConfirmText] = useState("");
@@ -192,6 +212,34 @@ export function BackupPage() {
     }
   }
 
+  async function prepareRestore(file: BackupFile) {
+    setIsWorking(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/backups/${encodeURIComponent(file.name)}`,
+      );
+      const json = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(json?.message || "جزئیات بکاپ خوانده نشد");
+      }
+
+      const nextPreview = json.data as BackupPreview;
+      if (!nextPreview.validation.valid) {
+        throw new Error(
+          nextPreview.validation.errors.join("، ") || "این بکاپ برای بازیابی معتبر نیست",
+        );
+      }
+
+      setRestorePreview(nextPreview);
+      setRestoreTarget(file);
+      setConfirmText("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "اعتبارسنجی بکاپ ناکام شد");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
   async function restoreBackup() {
     if (!restoreTarget) return;
 
@@ -213,8 +261,11 @@ export function BackupPage() {
 
       toast.success(`Restore تکمیل شد. Safety backup: ${json?.data?.safetyBackup || "-"}`);
       setRestoreTarget(null);
+      setRestorePreview(null);
       setConfirmText("");
-      await loadFiles();
+      localStorage.removeItem("belal_auth_token");
+      localStorage.removeItem("belal_auth_user");
+      window.setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Restore ناکام شد");
     } finally {
@@ -353,10 +404,7 @@ export function BackupPage() {
                             <span>جزئیات</span>
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => {
-                              setRestoreTarget(file);
-                              setConfirmText("");
-                            }}
+                            onClick={() => void prepareRestore(file)}
                           >
                             <ArchiveRestore className="size-4" />
                             <span>Restore</span>
@@ -384,6 +432,54 @@ export function BackupPage() {
               {preview ? `${preview.filename} - ${formatDate(preview.createdAt)}` : ""}
             </DialogDescription>
           </DialogHeader>
+          {preview && (
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="border border-border bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">اعتبار بکاپ</p>
+                <Badge
+                  className={
+                    preview.validation.valid
+                      ? "mt-1 bg-emerald-500/15 text-emerald-600"
+                      : "mt-1 bg-destructive/15 text-destructive"
+                  }
+                >
+                  {preview.validation.valid ? "معتبر" : "نامعتبر"}
+                </Badge>
+              </div>
+              <div className="border border-border bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">نوع بازیابی</p>
+                <p className="mt-1 text-sm font-medium">
+                  {preview.validation.restoreMode === "full"
+                    ? "دیتابیس و فایل‌ها"
+                    : "فقط دیتابیس؛ فایل‌های فعلی حفظ می‌شوند"}
+                </p>
+              </div>
+              <div className="border border-border bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground">فایل‌های ضمیمه</p>
+                <p className="mt-1 text-sm font-medium">
+                  {preview.validation.uploads.present
+                    ? `${preview.validation.uploads.files} فایل`
+                    : "داخل بکاپ نیست"}
+                </p>
+              </div>
+            </div>
+          )}
+          {preview?.validation.errors.map((message) => (
+            <p
+              key={message}
+              className="border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive"
+            >
+              {message}
+            </p>
+          ))}
+          {preview?.validation.warnings.map((message) => (
+            <p
+              key={message}
+              className="border border-amber-500/30 bg-amber-500/10 p-2 text-sm text-amber-700 dark:text-amber-300"
+            >
+              {message}
+            </p>
+          ))}
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {preview &&
               Object.entries(preview.tableCounts).map(([key, count]) => (
@@ -401,7 +497,15 @@ export function BackupPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(restoreTarget)} onOpenChange={(open) => !open && setRestoreTarget(null)}>
+      <Dialog
+        open={Boolean(restoreTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRestoreTarget(null);
+            setRestorePreview(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>تایید Restore</DialogTitle>
@@ -414,6 +518,13 @@ export function BackupPage() {
               <p className="text-muted-foreground">فایل انتخاب‌شده</p>
               <p className="mt-1 font-mono text-xs">{restoreTarget?.name}</p>
             </div>
+            {restorePreview && (
+              <div className="border border-primary/30 bg-primary/10 p-3 text-sm">
+                {restorePreview.validation.restoreMode === "full"
+                  ? "دیتابیس و فایل‌های ضمیمه بازیابی می‌شوند."
+                  : "این بکاپ فقط دیتابیس است؛ فایل‌های فعلی حذف یا جایگزین نمی‌شوند."}
+              </div>
+            )}
             <label className="grid gap-1.5 text-sm">
               <span className="text-muted-foreground">برای تایید، RESTORE را بنویسید</span>
               <Input
@@ -425,7 +536,13 @@ export function BackupPage() {
             </label>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRestoreTarget(null)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRestoreTarget(null);
+                setRestorePreview(null);
+              }}
+            >
               لغو
             </Button>
             <Button

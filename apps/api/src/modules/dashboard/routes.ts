@@ -26,10 +26,12 @@ function periodRange(period: DashboardPeriod) {
       : period === "fourMonths"
         ? parseKabulDateInput(
             (() => {
-              const date = new Date(Date.UTC(year, month - 1, 1, -4, -30, 0, 0));
+              const date = new Date(
+                Date.UTC(year, month - 1, 1, -4, -30, 0, 0),
+              );
               date.setUTCMonth(date.getUTCMonth() - 3);
               return kabulDateString(date);
-            })()
+            })(),
           )
         : startOfDay(end);
 
@@ -45,7 +47,9 @@ function periodRange(period: DashboardPeriod) {
 }
 
 function parsePeriod(value?: string): DashboardPeriod {
-  return value === "week" || value === "month" || value === "fourMonths" ? value : "today";
+  return value === "week" || value === "month" || value === "fourMonths"
+    ? value
+    : "today";
 }
 
 function bucketKey(date: Date, period: DashboardPeriod) {
@@ -57,20 +61,35 @@ function bucketKey(date: Date, period: DashboardPeriod) {
 
 function rangeBuckets(start: Date, end: Date, period: DashboardPeriod) {
   const cursor = new Date(start);
-  const rows: Array<{ key: string; label: string; sales: number; purchases: number }> = [];
+  const rows: Array<{
+    key: string;
+    label: string;
+    sales: number;
+    purchases: number;
+  }> = [];
   while (cursor <= end) {
     const key = bucketKey(cursor, period);
     if (!rows.some((item) => item.key === key)) {
       rows.push({
         key,
-        label: period === "fourMonths"
-          ? cursor.toLocaleDateString("fa-AF", { timeZone: "Asia/Kabul", month: "short" })
-          : cursor.toLocaleDateString("fa-AF", { timeZone: "Asia/Kabul", month: "short", day: "numeric" }),
+        label:
+          period === "fourMonths"
+            ? cursor.toLocaleDateString("fa-AF", {
+                timeZone: "Asia/Kabul",
+                month: "short",
+              })
+            : cursor.toLocaleDateString("fa-AF", {
+                timeZone: "Asia/Kabul",
+                month: "short",
+                day: "numeric",
+              }),
         sales: 0,
-        purchases: 0
+        purchases: 0,
       });
     }
-    period === "fourMonths" ? cursor.setUTCMonth(cursor.getUTCMonth() + 1, 1) : cursor.setUTCDate(cursor.getUTCDate() + 1);
+    period === "fourMonths"
+      ? cursor.setUTCMonth(cursor.getUTCMonth() + 1, 1)
+      : cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return rows;
 }
@@ -79,7 +98,7 @@ function dateBucket(period: DashboardPeriod, column: string) {
   return Prisma.raw(
     period === "fourMonths"
       ? `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM')`
-      : `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM-DD')`
+      : `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM-DD')`,
   );
 }
 
@@ -96,51 +115,103 @@ dashboardRoute.get("/summary", async (c) => {
   expiryTarget.setDate(expiryTarget.getDate() + 30);
 
   const [selectedCurrency, baseCurrency, rates] = await Promise.all([
-    currencyId ? prisma.currency.findFirst({ where: { id: currencyId, deletedAt: null } }) : Promise.resolve(null),
-    prisma.currency.findFirst({ where: { isBase: true, deletedAt: null }, orderBy: { createdAt: "asc" } }),
-    getCurrentCurrencyRates(prisma)
+    currencyId
+      ? prisma.currency.findFirst({
+          where: { id: currencyId, deletedAt: null },
+        })
+      : Promise.resolve(null),
+    prisma.currency.findFirst({
+      where: { isBase: true, deletedAt: null },
+      orderBy: { createdAt: "asc" },
+    }),
+    getCurrentCurrencyRates(prisma),
   ]);
-  if (currencyId && !selectedCurrency) return c.json({ message: "Currency not found" }, 404);
+  if (currencyId && !selectedCurrency)
+    return c.json({ message: "Currency not found" }, 404);
 
-  const currencyFilter = currencyId ? Prisma.sql`AND "currencyId" = ${currencyId}` : Prisma.empty;
-  const saleCurrencyFilter = currencyId ? Prisma.sql`AND s."currencyId" = ${currencyId}` : Prisma.empty;
-  const purchaseCurrencyFilter = currencyId ? Prisma.sql`AND p."currencyId" = ${currencyId}` : Prisma.empty;
-  const saleReturnCurrencyFilter = currencyId ? Prisma.sql`AND sr."currencyId" = ${currencyId}` : Prisma.empty;
-  const purchaseReturnCurrencyFilter = currencyId ? Prisma.sql`AND pr."currencyId" = ${currencyId}` : Prisma.empty;
-  const totalColumn = Prisma.raw(currencyId ? `"total"` : `COALESCE(NULLIF("baseTotal", 0), "total" * COALESCE("exchangeRate", 1))`);
-  const paidColumn = Prisma.raw(currencyId ? `"paidAmount"` : `COALESCE(NULLIF("basePaidAmount", 0), "paidAmount" * COALESCE("exchangeRate", 1))`);
-  const remainingColumn = Prisma.raw(currencyId ? `"remainingAmount"` : `COALESCE(NULLIF("baseRemainingAmount", 0), "remainingAmount" * COALESCE("exchangeRate", 1))`);
-  const subtotalColumn = Prisma.raw(currencyId ? `"subtotal"` : `COALESCE(NULLIF("baseSubtotal", 0), "subtotal" * COALESCE("exchangeRate", 1))`);
+  const currencyFilter = currencyId
+    ? Prisma.sql`AND "currencyId" = ${currencyId}`
+    : Prisma.empty;
+  const saleCurrencyFilter = currencyId
+    ? Prisma.sql`AND s."currencyId" = ${currencyId}`
+    : Prisma.empty;
+  const purchaseCurrencyFilter = currencyId
+    ? Prisma.sql`AND p."currencyId" = ${currencyId}`
+    : Prisma.empty;
+  const saleReturnCurrencyFilter = currencyId
+    ? Prisma.sql`AND sr."currencyId" = ${currencyId}`
+    : Prisma.empty;
+  const purchaseReturnCurrencyFilter = currencyId
+    ? Prisma.sql`AND pr."currencyId" = ${currencyId}`
+    : Prisma.empty;
+  const totalColumn = Prisma.raw(
+    currencyId
+      ? `"total"`
+      : `COALESCE(NULLIF("baseTotal", 0), "total" * COALESCE("exchangeRate", 1))`,
+  );
+  const paidColumn = Prisma.raw(
+    currencyId
+      ? `"paidAmount"`
+      : `COALESCE(NULLIF("basePaidAmount", 0), "paidAmount" * COALESCE("exchangeRate", 1))`,
+  );
+  const remainingColumn = Prisma.raw(
+    currencyId
+      ? `"remainingAmount"`
+      : `COALESCE(NULLIF("baseRemainingAmount", 0), "remainingAmount" * COALESCE("exchangeRate", 1))`,
+  );
+  const subtotalColumn = Prisma.raw(
+    currencyId
+      ? `"subtotal"`
+      : `COALESCE(NULLIF("baseSubtotal", 0), "subtotal" * COALESCE("exchangeRate", 1))`,
+  );
   const moneyColumn = Prisma.raw(currencyId ? `"amount"` : `"baseAmount"`);
-  const saleTotal = Prisma.raw(currencyId ? `s."total"` : `COALESCE(NULLIF(s."baseTotal", 0), s."total" * COALESCE(s."exchangeRate", 1))`);
-  const purchaseTotal = Prisma.raw(currencyId ? `p."total"` : `COALESCE(NULLIF(p."baseTotal", 0), p."total" * COALESCE(p."exchangeRate", 1))`);
-  const saleReturnTotal = Prisma.raw(currencyId ? `sr."subtotal"` : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`);
-  const purchaseReturnTotal = Prisma.raw(currencyId ? `pr."subtotal"` : `COALESCE(NULLIF(pr."baseSubtotal", 0), pr."subtotal" * COALESCE(pr."exchangeRate", 1))`);
+  const saleTotal = Prisma.raw(
+    currencyId
+      ? `s."total"`
+      : `COALESCE(NULLIF(s."baseTotal", 0), s."total" * COALESCE(s."exchangeRate", 1))`,
+  );
+  const purchaseTotal = Prisma.raw(
+    currencyId
+      ? `p."total"`
+      : `COALESCE(NULLIF(p."baseTotal", 0), p."total" * COALESCE(p."exchangeRate", 1))`,
+  );
+  const saleReturnTotal = Prisma.raw(
+    currencyId
+      ? `sr."subtotal"`
+      : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`,
+  );
+  const purchaseReturnTotal = Prisma.raw(
+    currencyId
+      ? `pr."subtotal"`
+      : `COALESCE(NULLIF(pr."baseSubtotal", 0), pr."subtotal" * COALESCE(pr."exchangeRate", 1))`,
+  );
   const saleItemNetValue = Prisma.raw(
     currencyId
       ? `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END)`
-      : `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END) * COALESCE(s."exchangeRate", 1)`
+      : `GREATEST(0, si."totalPrice" - CASE WHEN s."subtotal" > 0 THEN s."discount" * (si."totalPrice" / s."subtotal") ELSE 0 END) * COALESCE(s."exchangeRate", 1)`,
   );
-  const saleReturnItemValue = Prisma.raw(currencyId ? `sri."totalPrice"` : `sri."totalPrice" * sr."exchangeRate"`);
+  const saleReturnItemValue = Prisma.raw(
+    currencyId ? `sri."totalPrice"` : `sri."totalPrice" * sr."exchangeRate"`,
+  );
   const saleCogsValue = Prisma.raw(
     currencyId
       ? `COALESCE(si."baseTotalCost", si."totalCost") / COALESCE(NULLIF(s."exchangeRate", 0), 1)`
-      : `COALESCE(si."baseTotalCost", si."totalCost")`
+      : `COALESCE(si."baseTotalCost", si."totalCost")`,
   );
   const saleReturnCogsValue = Prisma.raw(
     currencyId
       ? `COALESCE(i."baseTotalCost", i."totalCost") / COALESCE(NULLIF(sr."exchangeRate", 0), 1)`
-      : `COALESCE(i."baseTotalCost", i."totalCost")`
+      : `COALESCE(i."baseTotalCost", i."totalCost")`,
   );
   const saleReturnCategoryCogsValue = Prisma.raw(
     currencyId
       ? `COALESCE(sri."baseTotalCost", sri."totalCost") / COALESCE(NULLIF(sr."exchangeRate", 0), 1)`
-      : `COALESCE(sri."baseTotalCost", sri."totalCost")`
+      : `COALESCE(sri."baseTotalCost", sri."totalCost")`,
   );
   const saleReturnSubtotal = Prisma.raw(
     currencyId
       ? `sr."subtotal"`
-      : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`
+      : `COALESCE(NULLIF(sr."baseSubtotal", 0), sr."subtotal" * COALESCE(sr."exchangeRate", 1))`,
   );
   const bucketSale = dateBucket(period, `s."saleDate"`);
   const bucketPurchase = dateBucket(period, `p."purchaseDate"`);
@@ -149,11 +220,30 @@ dashboardRoute.get("/summary", async (c) => {
   const inventoryRate = currencyId ? rates.get(currencyId) || 1 : 1;
 
   const [
-    salesRows, purchaseRows, saleReturnRows, purchaseReturnRows, cogsRows,
-    moneyRows, damageRows, stockRows, trendRows, cashierRows, categoryRows,
-    productRows, expired, expiringSoon, auditLogs, cashAccounts, bankAccounts,
-    customerAccounts, supplierAccounts, customers, suppliers, outstandingSalesRows,
-    outstandingPurchaseRows, missingCostRows
+    salesRows,
+    purchaseRows,
+    saleReturnRows,
+    purchaseReturnRows,
+    cogsRows,
+    moneyRows,
+    damageRows,
+    stockRows,
+    trendRows,
+    cashierRows,
+    categoryRows,
+    productRows,
+    expired,
+    expiringSoon,
+    auditLogs,
+    cashAccounts,
+    bankAccounts,
+    customerAccounts,
+    supplierAccounts,
+    customers,
+    suppliers,
+    outstandingSalesRows,
+    outstandingPurchaseRows,
+    missingCostRows,
   ] = await Promise.all([
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT COUNT(*)::int count, COALESCE(SUM(${totalColumn}), 0) total,
@@ -271,15 +361,61 @@ dashboardRoute.get("/summary", async (c) => {
         WHERE sr."createdAt" >= ${start} AND sr."createdAt" < ${end} AND sr."cancelledAt" IS NULL ${saleReturnCurrencyFilter} GROUP BY p.id, p.name
       ) product GROUP BY id, name HAVING SUM(sales) > 0 ORDER BY sales DESC LIMIT 8
     `),
-    prisma.stockLot.count({ where: { remainingQuantity: { gt: 0 }, expiryDate: { not: null, lt: now } } }),
-    prisma.stockLot.count({ where: { remainingQuantity: { gt: 0 }, expiryDate: { not: null, gte: now, lte: expiryTarget } } }),
-    prisma.auditLog.findMany({ include: { user: true }, orderBy: { createdAt: "desc" }, take: 8 }),
-    prisma.cashRegisterAccount.findMany({ where: currencyId ? { currencyId } : {}, include: { currency: true } }),
-    prisma.bankAccount.findMany({ where: { isActive: true, deletedAt: null, ...(currencyId ? { currencyId } : {}) }, include: { currency: true } }),
-    prisma.partyAccount.findMany({ where: { party: { type: { in: ["CUSTOMER", "BOTH"] } }, ...(currencyId ? { currencyId } : {}) } }),
-    prisma.partyAccount.findMany({ where: { party: { type: { in: ["SUPPLIER", "BOTH"] } }, ...(currencyId ? { currencyId } : {}) } }),
-    prisma.party.count({ where: { type: { in: ["CUSTOMER", "BOTH"] }, isActive: true, deletedAt: null } }),
-    prisma.party.count({ where: { type: { in: ["SUPPLIER", "BOTH"] }, isActive: true, deletedAt: null } }),
+    prisma.stockLot.count({
+      where: {
+        remainingQuantity: { gt: 0 },
+        expiryDate: { not: null, lt: now },
+      },
+    }),
+    prisma.stockLot.count({
+      where: {
+        remainingQuantity: { gt: 0 },
+        expiryDate: { not: null, gte: now, lte: expiryTarget },
+      },
+    }),
+    prisma.auditLog.findMany({
+      include: { user: true },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    }),
+    prisma.cashRegisterAccount.findMany({
+      where: currencyId ? { currencyId } : {},
+      include: { currency: true },
+    }),
+    prisma.bankAccount.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        ...(currencyId ? { currencyId } : {}),
+      },
+      include: { currency: true },
+    }),
+    prisma.partyAccount.findMany({
+      where: {
+        party: { type: { in: ["CUSTOMER", "BOTH"] } },
+        ...(currencyId ? { currencyId } : {}),
+      },
+    }),
+    prisma.partyAccount.findMany({
+      where: {
+        party: { type: { in: ["SUPPLIER", "BOTH"] } },
+        ...(currencyId ? { currencyId } : {}),
+      },
+    }),
+    prisma.party.count({
+      where: {
+        type: { in: ["CUSTOMER", "BOTH"] },
+        isActive: true,
+        deletedAt: null,
+      },
+    }),
+    prisma.party.count({
+      where: {
+        type: { in: ["SUPPLIER", "BOTH"] },
+        isActive: true,
+        deletedAt: null,
+      },
+    }),
     prisma.$queryRaw<any[]>(Prisma.sql`
       SELECT COUNT(*)::int count FROM "Sale"
       WHERE "status" <> 'CANCELLED' AND "baseRemainingAmount" > 0
@@ -303,11 +439,15 @@ dashboardRoute.get("/summary", async (c) => {
         AND COALESCE(si."quantityBase", 0) > 0
         AND COALESCE(si."totalPrice", 0) > 0
         AND COALESCE(si."baseTotalCost", si."totalCost", 0) <= 0
-    `)
+    `),
   ]);
 
-  const sales = salesRows[0], purchases = purchaseRows[0], saleReturns = saleReturnRows[0];
-  const purchaseReturns = purchaseReturnRows[0], money = moneyRows[0], stock = stockRows[0];
+  const sales = salesRows[0],
+    purchases = purchaseRows[0],
+    saleReturns = saleReturnRows[0];
+  const purchaseReturns = purchaseReturnRows[0],
+    money = moneyRows[0],
+    stock = stockRows[0];
   const netSales = number(sales.total) - number(saleReturns.total);
   const cogs = number(cogsRows[0].total) - number(saleReturns.cogs);
   const wasteValue = number(damageRows[0].total);
@@ -316,59 +456,119 @@ dashboardRoute.get("/summary", async (c) => {
     grossProfit + number(money.income) - number(money.expenses) - wasteValue;
   const accountBalance = (amount: number, row: { currencyId: string }) =>
     currencyId ? amount : amount * (rates.get(row.currencyId) || 1);
-  const receivables = customerAccounts.reduce((sum, row) => sum + accountBalance(Math.max(0, number(row.debitBalance) - number(row.creditBalance)), row), 0);
-  const payables = supplierAccounts.reduce((sum, row) => sum + accountBalance(Math.max(0, number(row.creditBalance) - number(row.debitBalance)), row), 0);
-  const treasury = [...cashAccounts, ...bankAccounts].reduce((sum, row) => sum + accountBalance(number(row.balance), row), 0);
+  const receivables = customerAccounts.reduce(
+    (sum, row) =>
+      sum +
+      accountBalance(
+        Math.max(0, number(row.debitBalance) - number(row.creditBalance)),
+        row,
+      ),
+    0,
+  );
+  const payables = supplierAccounts.reduce(
+    (sum, row) =>
+      sum +
+      accountBalance(
+        Math.max(0, number(row.creditBalance) - number(row.debitBalance)),
+        row,
+      ),
+    0,
+  );
+  const treasury = [...cashAccounts, ...bankAccounts].reduce(
+    (sum, row) => sum + accountBalance(number(row.balance), row),
+    0,
+  );
   const trend = rangeBuckets(start, end, period);
   for (const row of trendRows) {
     const item = trend.find((candidate) => candidate.key === row.bucket);
-    if (item) Object.assign(item, { sales: number(row.sales), purchases: number(row.purchases) });
+    if (item)
+      Object.assign(item, {
+        sales: number(row.sales),
+        purchases: number(row.purchases),
+      });
   }
 
   const data = {
     period: { key: period, start, end },
     currency: {
-      filterCurrencyId: selectedCurrency?.id ?? null, filterCode: selectedCurrency?.code ?? null,
-      filterName: selectedCurrency?.name ?? null, baseCurrencyId: baseCurrency?.id ?? null,
-      baseCode: baseCurrency?.code ?? "AFN", displayCode: selectedCurrency?.code ?? baseCurrency?.code ?? "AFN"
+      filterCurrencyId: selectedCurrency?.id ?? null,
+      filterCode: selectedCurrency?.code ?? null,
+      filterName: selectedCurrency?.name ?? null,
+      baseCurrencyId: baseCurrency?.id ?? null,
+      baseCode: baseCurrency?.code ?? "AFN",
+      displayCode: selectedCurrency?.code ?? baseCurrency?.code ?? "AFN",
     },
     overview: {
-      sales: netSales, purchases: number(purchases.total) - number(purchaseReturns.total),
+      sales: netSales,
+      purchases: number(purchases.total) - number(purchaseReturns.total),
       cogs,
       grossProfit,
       netProfit,
-      income: number(money.income), expenses: number(money.expenses), treasury, receivables, payables,
-      inventoryValue: number(stock.value), wasteValue
+      income: number(money.income),
+      expenses: number(money.expenses),
+      treasury,
+      receivables,
+      payables,
+      inventoryValue: number(stock.value),
+      wasteValue,
     },
     documents: {
-      sales: number(sales.count), purchases: number(purchases.count), pendingSales: number(outstandingSalesRows[0]?.count),
-      pendingPurchases: number(outstandingPurchaseRows[0]?.count), paidSales: number(sales.paid), paidPurchases: number(purchases.paid),
-      remainingSales: number(sales.remaining), remainingPurchases: number(purchases.remaining)
+      sales: number(sales.count),
+      purchases: number(purchases.count),
+      pendingSales: number(outstandingSalesRows[0]?.count),
+      pendingPurchases: number(outstandingPurchaseRows[0]?.count),
+      paidSales: number(sales.paid),
+      paidPurchases: number(purchases.paid),
+      remainingSales: number(sales.remaining),
+      remainingPurchases: number(purchases.remaining),
     },
     parties: { customers, suppliers, receivables, payables },
-    inventory: { products: number(stock.products), inventoryValue: number(stock.value), value: number(stock.value),
-      outOfStock: number(stock.outOfStock), lowStock: number(stock.lowStock), highStock: number(stock.highStock), expired, expiringSoon },
-    cashFlow: { moneyIn: number(money.moneyIn), moneyOut: number(money.moneyOut), net: number(money.moneyIn) - number(money.moneyOut) },
+    inventory: {
+      products: number(stock.products),
+      inventoryValue: number(stock.value),
+      value: number(stock.value),
+      outOfStock: number(stock.outOfStock),
+      lowStock: number(stock.lowStock),
+      highStock: number(stock.highStock),
+      expired,
+      expiringSoon,
+    },
+    cashFlow: {
+      moneyIn: number(money.moneyIn),
+      moneyOut: number(money.moneyOut),
+      net: number(money.moneyIn) - number(money.moneyOut),
+    },
     dataQuality: {
       missingCostInvoiceCount: number(missingCostRows[0]?.invoiceCount),
       missingCostLineCount: number(missingCostRows[0]?.lineCount),
       missingCostProductCount: number(missingCostRows[0]?.productCount),
-      missingCostSales: number(missingCostRows[0]?.sales)
+      missingCostSales: number(missingCostRows[0]?.sales),
     },
-    salesByCashier: cashierRows.map((row) => ({ ...row, invoices: number(row.invoices), sales: number(row.sales) })),
+    salesByCashier: cashierRows.map((row) => ({
+      ...row,
+      invoices: number(row.invoices),
+      sales: number(row.sales),
+    })),
     salesPurchasesTrend: trend,
     salesByCategory: categoryRows.map((row) => ({
       ...row,
       quantity: number(row.quantity),
       sales: number(row.sales),
       cogs: number(row.cogs),
-      profit: number(row.profit)
+      profit: number(row.profit),
     })),
-    topProducts: productRows.map((row) => ({ ...row, quantity: number(row.quantity), sales: number(row.sales) })),
+    topProducts: productRows.map((row) => ({
+      ...row,
+      quantity: number(row.quantity),
+      sales: number(row.sales),
+    })),
     recentActivities: auditLogs.map((row) => ({
-      id: row.id, action: row.action, entityType: row.entityType,
-      user: row.user?.displayName || row.user?.username || "سیستم", createdAt: row.createdAt
-    }))
+      id: row.id,
+      action: row.action,
+      entityType: row.entityType,
+      user: row.user?.displayName || row.user?.username || "سیستم",
+      createdAt: row.createdAt,
+    })),
   };
 
   await cacheSetJson(cacheKey, data, 30);

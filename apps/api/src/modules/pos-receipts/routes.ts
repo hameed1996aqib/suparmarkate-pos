@@ -105,6 +105,26 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
           unit: true,
         },
       },
+      returns: {
+        where: {
+          cancelledAt: null,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+        include: {
+          items: {
+            include: {
+              product: true,
+              saleItem: {
+                include: {
+                  unit: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 
@@ -119,6 +139,16 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
   const address = setting?.address || "";
   const logoImage = setting?.logoImage || "";
   const receiptItems = groupReceiptItems(sale.items);
+  const receiptReturns = sale.returns.map((saleReturn) => ({
+    ...saleReturn,
+    receiptItems: groupReceiptItems(
+      saleReturn.items.map((item) => ({
+        ...item,
+        unitId: item.saleItem.unitId,
+        unit: item.saleItem.unit,
+      })),
+    ),
+  }));
 
   const subtotal = receiptItems.reduce((sum, item) => {
     return sum + Number(item.quantity || 0) * Number(item.unitPrice || 0);
@@ -126,11 +156,25 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
   const discount = Number((sale as any).discount || 0);
   const total = Number((sale as any).total || subtotal - discount);
+  const returnedTotal = receiptReturns.reduce(
+    (sum, saleReturn) => sum + Number(saleReturn.subtotal || 0),
+    0,
+  );
+  const refundedTotal = receiptReturns.reduce(
+    (sum, saleReturn) => sum + Number(saleReturn.refundAmount || 0),
+    0,
+  );
+  const receivableAdjustmentTotal = receiptReturns.reduce(
+    (sum, saleReturn) => sum + Number(saleReturn.receivableAdjustment || 0),
+    0,
+  );
+  const netSaleTotal = total - returnedTotal;
   const salePaidAmount = Number((sale as any).paidAmount || total);
   const tenderedAmount = getNoteNumber((sale as any).note, "TenderedAmount") ?? salePaidAmount;
   const changeAmount =
     getNoteNumber((sale as any).note, "ChangeAmount") ??
     Math.max(0, tenderedAmount - total);
+  const receiptNote = getNotePart((sale as any).note, "Note");
 
   const currencyLabel = sale.currency?.symbol || sale.currency?.code || "";
   const customerLabel = getCustomerLabel(sale);
@@ -263,6 +307,29 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
       font-weight: 900;
     }
 
+    .section-title {
+      margin-top: 8px;
+      border-top: 1px dashed #000;
+      border-bottom: 1px dashed #000;
+      padding: 4px 0;
+      text-align: center;
+      font-weight: 900;
+    }
+
+    .return-meta {
+      margin-top: 5px;
+      font-size: ${widthMm === 58 ? "9px" : "11px"};
+      font-weight: 700;
+    }
+
+    .receipt-note {
+      margin-top: 8px;
+      border: 1px dashed #000;
+      padding: 5px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
     .footer {
       margin-top: 8px;
       text-align: center;
@@ -357,7 +424,100 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
       <span>برگشت پول:</span>
       <strong>${money(changeAmount)} ${safeText(currencyLabel)}</strong>
     </div>
+
+    ${
+      returnedTotal > 0
+        ? `
+    <div class="row">
+      <span>مجموع برگشتی:</span>
+      <strong>-${money(returnedTotal)} ${safeText(currencyLabel)}</strong>
+    </div>
+
+    <div class="row">
+      <span>پول مستردشده:</span>
+      <strong>${money(refundedTotal)} ${safeText(currencyLabel)}</strong>
+    </div>
+
+    ${
+      receivableAdjustmentTotal > 0
+        ? `
+    <div class="row">
+      <span>کاهش طلب مشتری:</span>
+      <strong>${money(receivableAdjustmentTotal)} ${safeText(currencyLabel)}</strong>
+    </div>
+    `
+        : ""
+    }
+
+    <div class="row total-row">
+      <span>فروش خالص پس از برگشت:</span>
+      <strong>${money(netSaleTotal)} ${safeText(currencyLabel)}</strong>
+    </div>
+    `
+        : ""
+    }
   </div>
+
+  ${
+    receiptReturns.length > 0
+      ? `
+  <div class="section-title">اقلام برگشتی</div>
+  ${receiptReturns
+    .map(
+      (saleReturn) => `
+    <div class="return-meta row">
+      <span>سند: ${safeText(saleReturn.returnNo || saleReturn.id)}</span>
+      <span>${new Date(saleReturn.createdAt).toLocaleString("en-AF")}</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>محصول</th>
+          <th>تعداد</th>
+          <th>قیمت</th>
+          <th>جمع</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${saleReturn.receiptItems
+          .map((item) => {
+            const qty = Number(item.quantity || 0);
+            const price = Number(item.unitPrice || 0);
+            const lineTotal = Number(item.totalPrice || 0);
+
+            return `
+              <tr>
+                <td><div class="product-name">${safeText(item.product?.name || "-")}</div></td>
+                <td>${money(qty)} ${safeText(item.unit?.shortName || item.unit?.name || "-")}</td>
+                <td>${money(price)}</td>
+                <td>-${money(lineTotal)}</td>
+              </tr>
+            `;
+          })
+          .join("")}
+      </tbody>
+    </table>
+    <div class="row">
+      <span>جمع سند برگشتی:</span>
+      <strong>-${money(saleReturn.subtotal)} ${safeText(currencyLabel)}</strong>
+    </div>
+  `,
+    )
+    .join("")}
+  `
+      : ""
+  }
+
+  ${
+    receiptNote
+      ? `
+  <div class="receipt-note">
+    <strong>یادداشت:</strong>
+    <div>${safeText(receiptNote)}</div>
+  </div>
+  `
+      : ""
+  }
 
   <div class="footer">
     <div>تشکر از خرید شما</div>

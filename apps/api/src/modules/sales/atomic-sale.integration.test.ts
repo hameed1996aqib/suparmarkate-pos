@@ -15,8 +15,13 @@ type Fixture = {
   productId: string;
   cashRegisterId: string;
   cashAccountId: string;
+  saleCurrencyId: string;
   lotIds: string[];
   clientRequestIds: string[];
+  partyIds: string[];
+  bankAccountIds: string[];
+  currencyIds: string[];
+  currencyRateIds: string[];
 };
 
 let baseCurrencyId = "";
@@ -39,7 +44,10 @@ adminSalesApp.use("*", async (c, next) => {
 });
 adminSalesApp.route("/", salesRoute);
 
-async function createFixture(label: string): Promise<Fixture> {
+async function createFixture(
+  label: string,
+  saleCurrencyId = baseCurrencyId
+): Promise<Fixture> {
   const suffix = `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const product = await prisma.product.create({
     data: {
@@ -56,13 +64,15 @@ async function createFixture(label: string): Promise<Fixture> {
       code: `AR-${suffix}`,
       accounts: {
         create: {
-          currencyId: baseCurrencyId,
+          currencyId: saleCurrencyId,
           balance: 0
         }
       }
     },
     include: { accounts: true }
   });
+  const firstLotCreatedAt = new Date(Date.now() - 1_000);
+  const secondLotCreatedAt = new Date();
   const lots = await Promise.all([
     prisma.stockLot.create({
       data: {
@@ -74,7 +84,8 @@ async function createFixture(label: string): Promise<Fixture> {
         currencyId: baseCurrencyId,
         exchangeRate: 1,
         baseUnitCost: 10,
-        sourceType: "ATOMIC_SALE_TEST"
+        sourceType: "ATOMIC_SALE_TEST",
+        createdAt: firstLotCreatedAt
       }
     }),
     prisma.stockLot.create({
@@ -87,7 +98,8 @@ async function createFixture(label: string): Promise<Fixture> {
         currencyId: baseCurrencyId,
         exchangeRate: 1,
         baseUnitCost: 12,
-        sourceType: "ATOMIC_SALE_TEST"
+        sourceType: "ATOMIC_SALE_TEST",
+        createdAt: secondLotCreatedAt
       }
     })
   ]);
@@ -96,26 +108,49 @@ async function createFixture(label: string): Promise<Fixture> {
     productId: product.id,
     cashRegisterId: cashRegister.id,
     cashAccountId: cashRegister.accounts[0]!.id,
+    saleCurrencyId,
     lotIds: lots.map((lot) => lot.id),
-    clientRequestIds: [] as string[]
+    clientRequestIds: [] as string[],
+    partyIds: [] as string[],
+    bankAccountIds: [] as string[],
+    currencyIds: [] as string[],
+    currencyRateIds: [] as string[]
   };
 
   fixtures.push(fixture);
   return fixture;
 }
 
-function saleRequest(fixture: Fixture, clientRequestId: string) {
+function saleRequest(
+  fixture: Fixture,
+  clientRequestId: string,
+  overrides: {
+    customerId?: string | null;
+    paidAmount?: number;
+    paymentAccountType?: "CASH" | "BANK";
+    paymentAccountId?: string;
+    paymentLines?: Array<{
+      paymentAccountType: "CASH" | "BANK";
+      paymentAccountId: string;
+      amount: number;
+    }>;
+  } = {}
+) {
+  const paidAmount = overrides.paidAmount ?? 120;
+
   return salesRoute.request("http://localhost/", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       clientRequestId,
       invoiceNo: `POS-${clientRequestId}`,
-      currencyId: baseCurrencyId,
+      customerId: overrides.customerId ?? null,
+      currencyId: fixture.saleCurrencyId,
       discount: 0,
-      paidAmount: 120,
-      paymentAccountType: "CASH",
-      paymentAccountId: fixture.cashAccountId,
+      paidAmount,
+      paymentAccountType: overrides.paymentAccountType ?? "CASH",
+      paymentAccountId: overrides.paymentAccountId ?? fixture.cashAccountId,
+      paymentLines: overrides.paymentLines,
       items: [
         {
           productId: fixture.productId,
@@ -156,7 +191,11 @@ async function cleanupFixture(fixture: Fixture) {
 
   await prisma.stockLot.deleteMany({ where: { id: { in: fixture.lotIds } } });
   await prisma.product.delete({ where: { id: fixture.productId } }).catch(() => undefined);
+  await prisma.bankAccount.deleteMany({ where: { id: { in: fixture.bankAccountIds } } });
   await prisma.cashRegister.delete({ where: { id: fixture.cashRegisterId } }).catch(() => undefined);
+  await prisma.party.deleteMany({ where: { id: { in: fixture.partyIds } } });
+  await prisma.currencyRate.deleteMany({ where: { id: { in: fixture.currencyRateIds } } });
+  await prisma.currency.deleteMany({ where: { id: { in: fixture.currencyIds } } });
 }
 
 beforeAll(async () => {
@@ -336,6 +375,158 @@ describe("atomic POS sale", () => {
     expect(lots.map((lot) => Number(lot.remainingQuantity))).toEqual([4, 5]);
     expect(movementCount).toBe(0);
     expect(Number(cashAccount.balance)).toBe(0);
+  });
+
+  it("posts a partial cash sale and customer receivable in one transaction", async () => {
+    const fixture = await createFixture("credit");
+    const clientRequestId = `atomic-${Date.now()}-credit`;
+    fixture.clientRequestIds.push(clientRequestId);
+    const customer = await prisma.party.create({
+      data: {
+        type: "CUSTOMER",
+        name: `Atomic customer ${Date.now()}`,
+        code: `AC-${Date.now()}`
+      }
+    });
+    fixture.partyIds.push(customer.id);
+
+    const response = await saleRequest(fixture, clientRequestId, {
+      customerId: customer.id,
+      paidAmount: 20
+    });
+    expect(response.status).toBe(201);
+    const payload = await response.json() as any;
+    const saleId = payload.data.sale.id as string;
+
+    const [sale, partyAccount, partyTransactions, saleJournal, cashAccount] =
+      await Promise.all([
+        prisma.sale.findUniqueOrThrow({ where: { id: saleId } }),
+        prisma.partyAccount.findUniqueOrThrow({
+          where: {
+            partyId_currencyId: {
+              partyId: customer.id,
+              currencyId: baseCurrencyId
+            }
+          }
+        }),
+        prisma.partyTransaction.findMany({
+          where: { referenceType: "SALE", referenceId: saleId }
+        }),
+        prisma.journalEntry.findUniqueOrThrow({
+          where: {
+            sourceType_sourceId: { sourceType: "POS_SALE", sourceId: saleId }
+          },
+          include: { lines: { include: { account: true } } }
+        }),
+        prisma.cashRegisterAccount.findUniqueOrThrow({
+          where: { id: fixture.cashAccountId }
+        })
+      ]);
+
+    expect(sale.paymentStatus).toBe("PARTIAL");
+    expect(Number(sale.paidAmount)).toBe(20);
+    expect(Number(sale.remainingAmount)).toBe(100);
+    expect(Number(cashAccount.balance)).toBe(20);
+    expect(Number(partyAccount.debitBalance)).toBe(100);
+    expect(partyTransactions).toHaveLength(1);
+    expect(
+      saleJournal.lines
+        .filter((line) => line.account.code === "1200")
+        .reduce((sum, line) => sum + Number(line.debit), 0)
+    ).toBe(100);
+    expect(saleJournal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(120);
+    expect(saleJournal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(120);
+  });
+
+  it("snapshots a foreign-currency rate across split cash and bank payment", async () => {
+    const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const currency = await prisma.currency.create({
+      data: {
+        code: `T${suffix}`,
+        name: `Test currency ${suffix}`,
+        isBase: false,
+        isActive: true
+      }
+    });
+    const rate = await prisma.currencyRate.create({
+      data: {
+        currencyId: currency.id,
+        rateToBase: 70,
+        effectiveAt: new Date(Date.now() - 60_000)
+      }
+    });
+    const fixture = await createFixture("multicurrency", currency.id);
+    fixture.currencyIds.push(currency.id);
+    fixture.currencyRateIds.push(rate.id);
+    const bankAccount = await prisma.bankAccount.create({
+      data: {
+        name: `Atomic bank ${suffix}`,
+        currencyId: currency.id,
+        balance: 0,
+        isActive: true
+      }
+    });
+    fixture.bankAccountIds.push(bankAccount.id);
+    const clientRequestId = `atomic-${Date.now()}-multicurrency`;
+    fixture.clientRequestIds.push(clientRequestId);
+
+    const response = await saleRequest(fixture, clientRequestId, {
+      paidAmount: 120,
+      paymentLines: [
+        {
+          paymentAccountType: "CASH",
+          paymentAccountId: fixture.cashAccountId,
+          amount: 50
+        },
+        {
+          paymentAccountType: "BANK",
+          paymentAccountId: bankAccount.id,
+          amount: 70
+        }
+      ]
+    });
+    expect(response.status).toBe(201);
+    const payload = await response.json() as any;
+    const saleId = payload.data.sale.id as string;
+
+    const [sale, transactions, saleJournal, cogsJournal, cash, bank] =
+      await Promise.all([
+        prisma.sale.findUniqueOrThrow({ where: { id: saleId } }),
+        prisma.moneyTransaction.findMany({
+          where: { referenceType: "SALE", referenceId: saleId },
+          orderBy: { amount: "asc" }
+        }),
+        prisma.journalEntry.findUniqueOrThrow({
+          where: {
+            sourceType_sourceId: { sourceType: "POS_SALE", sourceId: saleId }
+          },
+          include: { lines: true }
+        }),
+        prisma.journalEntry.findUniqueOrThrow({
+          where: {
+            sourceType_sourceId: {
+              sourceType: "POS_SALE_COGS",
+              sourceId: saleId
+            }
+          },
+          include: { lines: true }
+        }),
+        prisma.cashRegisterAccount.findUniqueOrThrow({
+          where: { id: fixture.cashAccountId }
+        }),
+        prisma.bankAccount.findUniqueOrThrow({ where: { id: bankAccount.id } })
+      ]);
+
+    expect(Number(sale.exchangeRate)).toBe(70);
+    expect(Number(sale.baseTotal)).toBe(8400);
+    expect(transactions.map((item) => Number(item.amount))).toEqual([50, 70]);
+    expect(transactions.map((item) => Number(item.baseAmount))).toEqual([3500, 4900]);
+    expect(Number(cash.balance)).toBe(50);
+    expect(Number(bank.balance)).toBe(70);
+    expect(saleJournal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(8400);
+    expect(saleJournal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(8400);
+    expect(cogsJournal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(64);
+    expect(cogsJournal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(64);
   });
 
   it("reports and repairs one historical sale without COGS only after Admin confirmation", async () => {

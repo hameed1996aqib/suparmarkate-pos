@@ -389,7 +389,8 @@ salesRoute.get("/scan/:barcode", async (c) => {
     },
     orderBy: [
       { expiryDate: "asc" },
-      { createdAt: "asc" }
+      { createdAt: "asc" },
+      { id: "asc" }
     ]
   });
 
@@ -1185,7 +1186,8 @@ salesRoute.post("/", async (c) => {
       },
       orderBy: [
         { expiryDate: "asc" },
-        { createdAt: "asc" }
+        { createdAt: "asc" },
+        { id: "asc" }
       ]
     });
 

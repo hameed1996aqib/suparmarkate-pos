@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
-import { barcodeSearchCandidates, normalizeBarcodeText } from "../../lib/barcode";
+import { normalizeBarcodeText } from "../../lib/barcode";
 import { resolveCurrencySnapshot, snapshotBaseFields, toBaseAmount } from "../../lib/currency-rates";
 import { createPostedJournal, createReversalJournal, treasuryAccountCode } from "../../lib/journal";
 import { getRequestPosDevice } from "../../lib/pos-device";
@@ -16,6 +16,7 @@ import {
   decorateSaleItemsWithPricing,
   roundMoney4,
 } from "../../lib/sale-pricing";
+import { findProductIdsByBarcode } from "../../lib/product-barcode-lookup";
 import { Prisma } from "../../generated/prisma/client";
 import {
   MoneyDirection,
@@ -350,25 +351,42 @@ salesRoute.get("/cogs-quality", async (c) => {
 
 salesRoute.get("/scan/:barcode", async (c) => {
   const barcode = normalizeBarcodeText(c.req.param("barcode"));
-  const barcodeCandidates = barcodeSearchCandidates(c.req.param("barcode"));
   const warehouseId = c.req.query("warehouseId");
+  const productIds = await findProductIdsByBarcode(c.req.param("barcode"));
 
-  const product = await prisma.product.findFirst({
-    where: {
-      OR: [
-        { barcode: { in: barcodeCandidates } },
-        { barcodeNormalized: { in: barcodeCandidates } }
-      ]
-    },
-    include: {
-      baseUnit: true,
-      units: {
+  if (productIds.length > 1) {
+    const candidateRows = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, barcode: true, sku: true, isActive: true },
+    });
+    const candidateById = new Map(candidateRows.map((candidate) => [candidate.id, candidate]));
+    const candidates = productIds
+      .map((id) => candidateById.get(id))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+
+    return c.json(
+      {
+        status: "AMBIGUOUS",
+        message: "این بارکود به چند محصول مربوط است؛ محصول درست را انتخاب کنید",
+        candidates,
+      },
+      409,
+    );
+  }
+
+  const product = productIds[0]
+    ? await prisma.product.findUnique({
+        where: { id: productIds[0] },
         include: {
-          unit: true
-        }
-      }
-    }
-  });
+          baseUnit: true,
+          units: {
+            include: {
+              unit: true,
+            },
+          },
+        },
+      })
+    : null;
 
   if (!product) {
     return c.json({ message: "محصولی با این بارکود ثبت نشده است" }, 404);

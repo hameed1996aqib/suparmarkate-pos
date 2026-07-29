@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { prisma } from "./prisma";
-import { barcodeSearchCandidates, normalizeBarcodeText } from "./barcode";
+import { normalizeBarcodeText } from "./barcode";
+import { findProductIdsByBarcode } from "./product-barcode-lookup";
 
 const MIN_CART_QUANTITY = 0.0001;
 
@@ -533,6 +534,7 @@ function addPayloadToCart(input: {
 export async function handlePosBarcodeScan(input: {
   sessionId: string;
   barcode: string;
+  productId?: string | null;
   warehouseId?: string | null;
   source?: "http" | "websocket";
 }) {
@@ -550,24 +552,51 @@ export async function handlePosBarcodeScan(input: {
 
   const sessionSettings = getPosSessionSettings(input.sessionId);
   const warehouseIdForScan = input.warehouseId || sessionSettings.warehouseId || null;
-  const barcodeCandidates = barcodeSearchCandidates(input.barcode);
+  const productIds = input.productId
+    ? [input.productId]
+    : await findProductIdsByBarcode(input.barcode);
 
-  const product = await prisma.product.findFirst({
-    where: {
-      OR: [
-        { barcode: { in: barcodeCandidates } },
-        { barcodeNormalized: { in: barcodeCandidates } }
-      ]
-    },
-    include: {
-      baseUnit: true,
-      units: {
+  if (!input.productId && productIds.length > 1) {
+    const candidateRows = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: {
+        id: true,
+        name: true,
+        barcode: true,
+        sku: true,
+        isActive: true,
+        deletedAt: true,
+      },
+    });
+    const candidateById = new Map(candidateRows.map((candidate) => [candidate.id, candidate]));
+    const candidates = productIds
+      .map((id) => candidateById.get(id))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+    const payload = {
+      code: "BARCODE_AMBIGUOUS",
+      status: "AMBIGUOUS",
+      barcode,
+      candidates,
+      message: "این بارکود به چند محصول مربوط است؛ محصول درست را از لیست انتخاب کنید",
+    };
+
+    broadcastToPosSession(input.sessionId, "SCAN_ERROR", payload);
+    return { ok: false, statusCode: 409 as const, error: payload };
+  }
+
+  const product = productIds[0]
+    ? await prisma.product.findUnique({
+        where: { id: productIds[0] },
         include: {
-          unit: true
-        }
-      }
-    }
-  });
+          baseUnit: true,
+          units: {
+            include: {
+              unit: true,
+            },
+          },
+        },
+      })
+    : null;
 
   if (!product) {
     const payload = {

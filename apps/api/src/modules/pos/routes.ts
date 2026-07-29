@@ -30,6 +30,7 @@ const createSessionSchema = z.object({
 const scanSchema = z.object({
   sessionId: z.string().min(1),
   barcode: z.string().trim().min(1),
+  productId: z.string().trim().optional().nullable(),
   warehouseId: z.string().trim().optional().nullable()
 });
 
@@ -397,12 +398,13 @@ posRoute.post("/scan", async (c) => {
   const result = await handlePosBarcodeScan({
     sessionId: parsed.data.sessionId,
     barcode: parsed.data.barcode,
+    productId: parsed.data.productId ?? null,
     warehouseId: parsed.data.warehouseId ?? null,
     source: "http"
   });
 
   if (!result.ok) {
-    return c.json(result, 404);
+    return c.json(result, result.statusCode === 409 ? 409 : 404);
   }
 
   return c.json({

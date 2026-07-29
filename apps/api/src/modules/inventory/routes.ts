@@ -9,6 +9,7 @@ import { StockMovementType } from "../../generated/prisma/enums";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
+import { findProductIdsByBarcode } from "../../lib/product-barcode-lookup";
 
 export const inventoryRoute = new Hono();
 
@@ -109,7 +110,10 @@ function resolveProductUnitConversion(
   };
 }
 
-function buildStockMovementSearchWhere(search: string | null | undefined) {
+function buildStockMovementSearchWhere(
+  search: string | null | undefined,
+  exactProductIds: string[] = [],
+) {
   const rawSearch = (search || "").trim();
   const barcodeSearch = normalizeBarcodeText(rawSearch);
 
@@ -117,6 +121,7 @@ function buildStockMovementSearchWhere(search: string | null | undefined) {
 
   return {
     OR: [
+      ...(exactProductIds.length ? [{ productId: { in: exactProductIds } }] : []),
       { referenceId: { contains: rawSearch, mode: "insensitive" as const } },
       { referenceType: { contains: rawSearch, mode: "insensitive" as const } },
       { note: { contains: rawSearch, mode: "insensitive" as const } },
@@ -139,7 +144,10 @@ function buildStockMovementSearchWhere(search: string | null | undefined) {
   };
 }
 
-function buildStockBalanceSearchWhere(search: string | null | undefined) {
+function buildStockBalanceSearchWhere(
+  search: string | null | undefined,
+  exactProductIds: string[] = [],
+) {
   const rawSearch = (search || "").trim();
   const barcodeSearch = normalizeBarcodeText(rawSearch);
 
@@ -147,6 +155,7 @@ function buildStockBalanceSearchWhere(search: string | null | undefined) {
 
   return {
     OR: [
+      ...(exactProductIds.length ? [{ productId: { in: exactProductIds } }] : []),
       { product: { name: { contains: rawSearch, mode: "insensitive" as const } } },
       { product: { sku: { contains: rawSearch, mode: "insensitive" as const } } },
       { product: { barcode: rawSearch } },
@@ -180,11 +189,14 @@ inventoryRoute.get("/stock", async (c) => {
         ? "costAboveSale"
         : null;
   const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 100 });
+  const exactProductIds = search
+    ? await findProductIdsByBarcode(search)
+    : [];
   const where = {
     quantityBase: { gt: 0 },
     ...(productId ? { productId } : {}),
     ...(warehouseId ? { warehouseId } : {}),
-    ...buildStockBalanceSearchWhere(search)
+    ...buildStockBalanceSearchWhere(search, exactProductIds)
   };
   const orderBy: Prisma.StockBalanceOrderByWithRelationInput[] =
     sortBy === "quantity"
@@ -209,6 +221,11 @@ inventoryRoute.get("/stock", async (c) => {
           AND (
             p."name" ILIKE ${rawSearchLike}
             OR p."sku" ILIKE ${rawSearchLike}
+            ${
+              exactProductIds.length
+                ? Prisma.sql`OR p.id IN (${Prisma.join(exactProductIds)})`
+                : Prisma.empty
+            }
             OR p."barcode" = ${rawSearch}
             OR p."barcode" ILIKE ${rawSearchLike}
             OR w."name" ILIKE ${rawSearchLike}
@@ -413,6 +430,9 @@ inventoryRoute.get("/movements", async (c) => {
   const warehouseId = c.req.query("warehouseId");
   const referenceId = c.req.query("referenceId");
   const search = c.req.query("search");
+  const exactProductIds = search
+    ? await findProductIdsByBarcode(search)
+    : [];
   const pagination = getPagePagination(c, { defaultLimit: 100, maxLimit: 200 });
   const allowedTypes = Object.values(StockMovementType);
   const movementType = allowedTypes.includes(type as StockMovementType)
@@ -425,7 +445,7 @@ inventoryRoute.get("/movements", async (c) => {
       ...(productId ? { productId } : {}),
       ...(warehouseId ? { warehouseId } : {}),
       ...(referenceId ? { referenceId } : {}),
-      ...buildStockMovementSearchWhere(search)
+      ...buildStockMovementSearchWhere(search, exactProductIds)
   };
   const [movements, total] = await Promise.all([
     prisma.stockMovement.findMany({
@@ -455,12 +475,15 @@ inventoryRoute.get("/movements", async (c) => {
 inventoryRoute.get("/transfer-reports", async (c) => {
   const pagination = getPagePagination(c, { defaultLimit: 100, maxLimit: 200 });
   const search = c.req.query("search");
+  const exactProductIds = search
+    ? await findProductIdsByBarcode(search)
+    : [];
   const where = {
       createdAt: getRecentDateRange(c),
       type: {
         in: [StockMovementType.TRANSFER_OUT, StockMovementType.TRANSFER_IN]
       },
-      ...buildStockMovementSearchWhere(search)
+      ...buildStockMovementSearchWhere(search, exactProductIds)
   };
   const [movements, total] = await Promise.all([
     prisma.stockMovement.findMany({

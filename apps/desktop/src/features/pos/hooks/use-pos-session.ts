@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
+  ApiRequestError,
   clearPosCart,
   createPosSession,
   deleteHeldCart,
@@ -13,7 +14,6 @@ import {
   loadProducts,
   removeCartItem,
   restoreHeldCart,
-  postSaleCogsJournal,
   scanPosBarcode,
   submitPosSale,
   updateCartItem,
@@ -47,11 +47,26 @@ const defaultVisiblePosMetricIds = [
   "activeCashRegister",
 ];
 
+function createSaleRequestId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const randomPart = Math.random().toString(36).slice(2);
+  return `sale-${Date.now()}-${randomPart}`;
+}
+
 export function usePosSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const productRequestSeqRef = useRef(0);
   const pendingScanBarcodeRef = useRef<string | null>(null);
+  const submittingSaleRef = useRef(false);
+  const saleAttemptRef = useRef<{
+    signature: string;
+    clientRequestId: string;
+    invoiceNo: string;
+  } | null>(null);
 
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [apiBaseUrlOverride, setApiBaseUrlOverrideState] = useState(() => {
@@ -101,15 +116,6 @@ export function usePosSession() {
   const [isLoadingCustomers, setIsLoadingCustomers] = useState(false);
 
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
-  const [lastCogsStatus, setLastCogsStatus] = useState<{
-    status: "none" | "posted" | "skipped" | "error";
-    message: string;
-    total: number;
-  }>({
-    status: "none",
-    message: "",
-    total: 0,
-  });
   const [lastReceiptUrl, setLastReceiptUrl] = useState<string | null>(() => {
     return localStorage.getItem("muhaseb_last_receipt_url") || null;
   });
@@ -119,6 +125,7 @@ export function usePosSession() {
   const [splitCardAmount, setSplitCardAmount] = useState(0);
   const [invoiceDiscount, setInvoiceDiscount] = useState(0);
   const [isBooting, setIsBooting] = useState(true);
+  const [isSubmittingSale, setIsSubmittingSale] = useState(false);
 
   const [shift, setShift] = useState<PosShiftSummary>(() => {
     const saved = localStorage.getItem("muhaseb_pos_shift_v1");
@@ -262,8 +269,10 @@ export function usePosSession() {
     selectedCustomerPartyId,
   ]);
 
-  const canSubmitSale = readinessIssues.length === 0;
-  const saleDisabledReason = readinessIssues[0] || "";
+  const canSubmitSale = readinessIssues.length === 0 && !isSubmittingSale;
+  const saleDisabledReason = isSubmittingSale
+    ? "فروش در حال ثبت است"
+    : readinessIssues[0] || "";
 
   const shiftStats = useMemo(() => {
     const invoiceCount = shift.sales.length;
@@ -548,6 +557,10 @@ export function usePosSession() {
     paidAmount: number;
     changeAmount: number;
   }) {
+    if (shift.sales.some((sale) => sale.saleId === input.saleId)) {
+      return;
+    }
+
     const nextShift: PosShiftSummary = {
       ...shift,
       sales: [
@@ -1140,9 +1153,13 @@ export function usePosSession() {
     applyServerCart(res.data);
   }
 
-  async function clearCart() {
-    if (sendWsMessage({ type: "CLEAR_CART" })) {
+  async function clearCart(options: {
+    forceRest?: boolean;
+    preserveSaleAttempt?: boolean;
+  } = {}) {
+    if (!options.forceRest && sendWsMessage({ type: "CLEAR_CART" })) {
       setInvoiceDiscount(0);
+      if (!options.preserveSaleAttempt) saleAttemptRef.current = null;
       return;
     }
 
@@ -1151,6 +1168,7 @@ export function usePosSession() {
     const res = await clearPosCart(apiBaseUrl, session.session.id);
     applyServerCart(res.data);
     setInvoiceDiscount(0);
+    if (!options.preserveSaleAttempt) saleAttemptRef.current = null;
   }
 
   async function startNewInvoice() {
@@ -1306,6 +1324,11 @@ export function usePosSession() {
   }
 
   async function submitSale(options: SubmitSaleOptions = {}) {
+    if (submittingSaleRef.current) {
+      toast.info("فروش در حال ثبت است؛ لطفاً منتظر نتیجه بمانید");
+      return;
+    }
+
     if (!canSubmitSale) {
       toast.error(saleDisabledReason || "صندوق آماده ثبت فروش نیست");
       return;
@@ -1392,14 +1415,55 @@ export function usePosSession() {
       })
       .filter((line) => line.amount > 0);
 
+    const finalInvoiceDiscount = Math.min(Number(invoiceDiscount || 0), subtotal);
+    const saleItems = cartItems.map((item) => ({
+      productId: item.productId,
+      warehouseId: item.warehouseId,
+      unitId: item.unitId,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      discount: item.discount || 0,
+    }));
+    const requestSignature = JSON.stringify({
+      currencyId: currency!.id,
+      paymentAccountType,
+      paymentAccountId,
+      paymentLines,
+      discount: finalInvoiceDiscount,
+      paidAmount: finalPaidAmount,
+      customerId: selectedCustomerPartyId,
+      customerLabel: customerLabel.trim(),
+      saleNote: saleNote.trim(),
+      items: saleItems,
+    });
+
+    if (saleAttemptRef.current?.signature !== requestSignature) {
+      saleAttemptRef.current = {
+        signature: requestSignature,
+        clientRequestId: createSaleRequestId(),
+        invoiceNo: `POS-${Date.now()}`,
+      };
+    }
+
+    const saleAttempt = saleAttemptRef.current;
+
+    if (!saleAttempt) {
+      toast.error("شناسه امن درخواست فروش ساخته نشد");
+      return;
+    }
+
+    submittingSaleRef.current = true;
+    setIsSubmittingSale(true);
+    let saleCommitted = false;
+
     try {
       setStatus("در حال ثبت فروش...");
 
-      const invoiceNo = `POS-${Date.now()}`;
-      const finalInvoiceDiscount = Math.min(Number(invoiceDiscount || 0), subtotal);
+      const invoiceNo = saleAttempt.invoiceNo;
 
       const res = await submitPosSale({
         baseUrl: apiBaseUrl,
+        clientRequestId: saleAttempt.clientRequestId,
         invoiceNo,
         currencyId: currency!.id,
         paymentAccountType,
@@ -1414,17 +1478,16 @@ export function usePosSession() {
         customerLabel: customerLabel.trim() || undefined,
         saleNote: saleNote.trim() || undefined,
         paymentMethodLabel,
-        items: cartItems.map((item) => ({
-          productId: item.productId,
-          warehouseId: item.warehouseId,
-          unitId: item.unitId,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount || 0,
-        })),
+        items: saleItems,
       });
 
       const saleId = res.data?.sale?.id;
+
+      if (!saleId) {
+        throw new Error("سرور فروش را ثبت کرد اما شناسه فروش را برنگرداند");
+      }
+
+      saleCommitted = true;
       setLastSaleId(saleId || null);
 
       const receiptUrl = saleId
@@ -1432,42 +1495,6 @@ export function usePosSession() {
         : null;
 
       if (saleId) {
-        try {
-          const cogsRes = await postSaleCogsJournal({
-            baseUrl: apiBaseUrl,
-            saleId,
-            invoiceNo,
-            items: cartItems.map((item) => ({
-              productId: item.productId,
-              warehouseId: item.warehouseId || null,
-              lotId: item.lotId || null,
-              quantity: item.quantity,
-            })),
-          });
-
-          if (cogsRes.skipped) {
-            setLastCogsStatus({
-              status: "skipped",
-              message: cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست",
-              total: 0,
-            });
-            toast.error(cogsRes.message || "COGS ساخته نشد قیمت تمامشده موجود نیست");
-          } else {
-            setLastCogsStatus({
-              status: "posted",
-              message: "COGS حسابداری ثبت شد",
-              total: Number(cogsRes.cogs?.total || 0),
-            });
-          }
-          } catch (error: any) {
-            setLastCogsStatus({
-              status: "error",
-              message: error?.message || "ثبت COGS ناکام شد",
-              total: 0,
-            });
-            toast.error(error?.message || "ثبت COGS ناکام شد");
-        }
-
         recordShiftSale({
           saleId,
           invoiceNo,
@@ -1481,7 +1508,8 @@ export function usePosSession() {
       setStatus("فروش ثبت شد");
       toast.success("فروش ثبت شد");
 
-      await clearCart();
+      await clearCart({ forceRest: true, preserveSaleAttempt: true });
+      saleAttemptRef.current = null;
 
       setPaidAmount(0);
       setSplitCashAmount(0);
@@ -1501,8 +1529,31 @@ export function usePosSession() {
         }
       }
     } catch (error: any) {
-      setStatus(error?.message || "ثبت فروش ناکام شد");
-      toast.error(error?.message || "ثبت فروش ناکام شد");
+      if (
+        !saleCommitted &&
+        error instanceof ApiRequestError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408 &&
+        error.status !== 429
+      ) {
+        saleAttemptRef.current = null;
+      }
+
+      if (saleCommitted) {
+        setStatus("فروش ثبت شد؛ تکمیل صفحه فروش نیاز به تلاش دوباره دارد");
+        toast.warning(
+          error?.message
+            ? `فروش ثبت شد، اما تکمیل صفحه ناکام شد: ${error.message}`
+            : "فروش ثبت شد، اما تکمیل صفحه ناکام شد",
+        );
+      } else {
+        setStatus(error?.message || "ثبت فروش ناکام شد");
+        toast.error(error?.message || "ثبت فروش ناکام شد");
+      }
+    } finally {
+      submittingSaleRef.current = false;
+      setIsSubmittingSale(false);
     }
   }
 
@@ -1641,6 +1692,7 @@ export function usePosSession() {
     setMetricVisibility,
 
     isBooting,
+    isSubmittingSale,
     subtotal,
     payableTotal,
     itemsCount,

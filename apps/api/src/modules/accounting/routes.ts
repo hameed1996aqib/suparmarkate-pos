@@ -5,6 +5,7 @@ import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
 import { getBaseCurrency } from "../../lib/currency-rates";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
+import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
 
 export const accountingRoute = new Hono();
 
@@ -2563,6 +2564,7 @@ accountingRoute.get("/journal-entries/:id", async (c) => {
  * Credit Inventory
  */
 accountingRoute.post("/post-sale-cogs", async (c) => {
+  const authUser = getAuthUser(c);
   const body = await c.req.json().catch(() => ({}));
   const parsed = postSaleCogsJournalSchema.safeParse(body);
 
@@ -2570,118 +2572,49 @@ accountingRoute.post("/post-sale-cogs", async (c) => {
     return c.json(zodError(parsed.error), 400);
   }
 
-  const existing = await prisma.journalEntry.findFirst({
-    where: {
-      sourceType: "POS_SALE_COGS",
-      sourceId: parsed.data.saleId
-    },
-    include: {
-      lines: {
-        include: {
-          account: true,
-          party: true
-        }
-      }
+  const postCogs = () =>
+    prisma.$transaction((tx) =>
+      ensureSaleCogsJournal(tx, {
+        saleId: parsed.data.saleId,
+        invoiceNo: parsed.data.invoiceNo,
+        createdByUserId: authUser?.id || null
+      })
+    );
+
+  try {
+    const result = await postCogs();
+
+    return c.json(
+      {
+        data: result.journalEntry,
+        cogs: result.cogs,
+        zeroCost: result.zeroCost,
+        idempotentReplay: result.idempotentReplay,
+        message: result.idempotentReplay
+          ? "COGS journal already exists for this sale"
+          : result.zeroCost
+            ? "COGS was checked and the sale has zero recorded cost"
+            : "COGS journal created"
+      },
+      result.idempotentReplay ? 200 : 201
+    );
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      const replay = await postCogs();
+
+      return c.json({
+        data: replay.journalEntry,
+        cogs: replay.cogs,
+        zeroCost: replay.zeroCost,
+        idempotentReplay: true,
+        message: "COGS journal already exists for this sale"
+      });
     }
-  });
 
-  if (existing) {
-    return c.json({
-      data: existing,
-      message: "COGS journal already exists for this sale"
-    });
-  }
-
-  const saleItems = await prisma.saleItem.findMany({
-    where: { saleId: parsed.data.saleId }
-  });
-  const cogs = {
-    total: round4(
-      saleItems.reduce(
-        (sum, item) => sum + Number(item.baseTotalCost ?? item.totalCost ?? 0),
-        0
-      )
-    ),
-    details: saleItems.map((item) => ({
-      productId: item.productId,
-      warehouseId: item.warehouseId,
-      lotId: item.lotId,
-      quantity: Number(item.quantityBase || 0),
-      avgCost:
-        Number(item.quantityBase || 0) > 0
-          ? Number(item.baseTotalCost ?? item.totalCost ?? 0) /
-            Number(item.quantityBase)
-          : 0,
-      lineCost: Number(item.baseTotalCost ?? item.totalCost ?? 0)
-    }))
-  };
-
-  if (cogs.total <= 0) {
-    return c.json({
-      data: null,
-      skipped: true,
-      message: "COGS was not posted because product cost was not available",
-      details: cogs.details
-    });
-  }
-
-  const cogsAccount = await getAccountByCode("5000");
-  const inventoryAccount = await getAccountByCode("1300");
-
-  const lines = [
-    {
-      accountId: cogsAccount.id,
-      debit: cogs.total,
-      credit: 0,
-      note: "Cost of goods sold for POS sale"
-    },
-    {
-      accountId: inventoryAccount.id,
-      debit: 0,
-      credit: cogs.total,
-      note: "Inventory reduced by POS sale cost"
+    if (error instanceof Error && error.message === "Sale not found") {
+      return c.json({ message: error.message }, 404);
     }
-  ];
 
-  const balance = validateDoubleEntry(lines);
-
-  if (!balance.ok) {
-    return c.json({ message: balance.message }, 400);
+    throw error;
   }
-
-  const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
-  const entry = await prisma.journalEntry.create({
-    data: {
-      entryNo: `JE-COGS-${Date.now()}`,
-      date: new Date(),
-      description: `COGS for POS Sale ${parsed.data.invoiceNo}`,
-      sourceType: "POS_SALE_COGS",
-      sourceId: parsed.data.saleId,
-      lines: {
-        create: lines.map((line) => ({
-          accountId: line.accountId,
-          debit: line.debit,
-          credit: line.credit,
-          exchangeRate: 1,
-          baseCurrencyId,
-          baseDebit: line.debit,
-          baseCredit: line.credit,
-          note: line.note
-        }))
-      }
-    },
-    include: {
-      lines: {
-        include: {
-          account: true,
-          party: true
-        }
-      }
-    }
-  });
-
-  return c.json({
-    data: entry,
-    cogs
-  }, 201);
 });

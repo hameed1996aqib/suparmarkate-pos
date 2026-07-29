@@ -16,12 +16,28 @@ import {
   partyBalanceBase,
 } from "@/lib/party-balance";
 
+export class ApiRequestError extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const json = await res.json().catch(() => null);
 
   if (!res.ok) {
-    throw new Error(json?.message || json?.error?.message || "Request failed");
+    throw new ApiRequestError(
+      json?.message || json?.error?.message || "Request failed",
+      res.status,
+      json
+    );
   }
 
   return json;
@@ -373,6 +389,7 @@ export async function loadPosDefaults(baseUrl: string): Promise<PosDefaults> {
 
 export async function submitPosSale(input: {
   baseUrl: string;
+  clientRequestId: string;
   invoiceNo: string;
   currencyId: string;
   paymentAccountType: "CASH" | "BANK";
@@ -428,6 +445,7 @@ export async function submitPosSale(input: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      clientRequestId: input.clientRequestId,
       invoiceNo: input.invoiceNo,
       currencyId: input.currencyId,
       discount: input.invoiceDiscount,

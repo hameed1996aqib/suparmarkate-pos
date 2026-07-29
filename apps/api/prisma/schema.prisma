@@ -1133,6 +1133,7 @@ model PurchaseReturnItem {
 
 model Sale {
   id String @id @default(cuid())
+  clientRequestId String? @unique
 
   invoiceNo  String?
   customerId String?
@@ -1439,7 +1440,7 @@ model JournalEntry {
   employeePayment EmployeePayment?
 
   @@index([date])
-  @@index([sourceType, sourceId])
+  @@unique([sourceType, sourceId])
   @@index([createdByUserId])
 }
 

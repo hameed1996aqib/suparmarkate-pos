@@ -54,6 +54,39 @@ function validateBalancedLines(lines: JournalLineInput[]) {
   }
 }
 
+async function loadJournalWithRelations(
+  tx: JournalTx,
+  entry: Awaited<ReturnType<JournalTx["journalEntry"]["findFirst"]>>
+) {
+  if (!entry) return null;
+
+  const lines = await tx.journalLine.findMany({
+    where: { journalEntryId: entry.id },
+    orderBy: { createdAt: "asc" }
+  });
+  const accountIds = [...new Set(lines.map((line) => line.accountId))];
+  const partyIds = [
+    ...new Set(lines.map((line) => line.partyId).filter((id): id is string => Boolean(id)))
+  ];
+  const accounts = accountIds.length
+    ? await tx.accountingAccount.findMany({ where: { id: { in: accountIds } } })
+    : [];
+  const parties = partyIds.length
+    ? await tx.party.findMany({ where: { id: { in: partyIds } } })
+    : [];
+  const accountById = new Map(accounts.map((account) => [account.id, account]));
+  const partyById = new Map(parties.map((party) => [party.id, party]));
+
+  return {
+    ...entry,
+    lines: lines.map((line) => ({
+      ...line,
+      account: accountById.get(line.accountId)!,
+      party: line.partyId ? partyById.get(line.partyId) || null : null
+    }))
+  };
+}
+
 export function treasuryAccountCode(type: "CASH" | "BANK") {
   return type === "BANK" ? "1100" : "1000";
 }
@@ -66,19 +99,11 @@ export async function createPostedJournal(
     where: {
       sourceType: input.sourceType,
       sourceId: input.sourceId
-    },
-    include: {
-      lines: {
-        include: {
-          account: true,
-          party: true
-        }
-      }
     }
   });
 
   if (existing) {
-    return existing;
+    return (await loadJournalWithRelations(tx, existing))!;
   }
 
   validateBalancedLines(input.lines);
@@ -99,37 +124,53 @@ export async function createPostedJournal(
     throw new Error(`Accounting account ${missingCode} not found`);
   }
 
-  return tx.journalEntry.create({
+  const partyIds = [
+    ...new Set(input.lines.map((line) => line.partyId).filter((id): id is string => Boolean(id)))
+  ];
+  const parties = partyIds.length
+    ? await tx.party.findMany({ where: { id: { in: partyIds } } })
+    : [];
+  const partyById = new Map(parties.map((party) => [party.id, party]));
+
+  const entry = await tx.journalEntry.create({
     data: {
       entryNo: `${input.entryNoPrefix}-${Date.now()}`,
       date: new Date(),
       description: input.description,
       sourceType: input.sourceType,
       sourceId: input.sourceId,
-      createdByUserId: input.createdByUserId || null,
-      lines: {
-        create: input.lines.map((line) => ({
-          accountId: accountByCode.get(line.accountCode)!.id,
-          partyId: line.partyId || null,
-          debit: round4(Number(line.debit || 0)),
-          credit: round4(Number(line.credit || 0)),
-          exchangeRate: Number(line.exchangeRate || 1),
-          baseCurrencyId: line.baseCurrencyId || null,
-          baseDebit: baseValue(line.debit, line.exchangeRate),
-          baseCredit: baseValue(line.credit, line.exchangeRate),
-          note: line.note || null
-        }))
-      }
-    },
-    include: {
-      lines: {
-        include: {
-          account: true,
-          party: true
-        }
-      }
+      createdByUserId: input.createdByUserId || null
     }
   });
+  const createdLines = [];
+
+  for (const line of input.lines) {
+    const account = accountByCode.get(line.accountCode)!;
+    const createdLine = await tx.journalLine.create({
+      data: {
+        journalEntryId: entry.id,
+        accountId: account.id,
+        partyId: line.partyId || null,
+        debit: round4(Number(line.debit || 0)),
+        credit: round4(Number(line.credit || 0)),
+        exchangeRate: Number(line.exchangeRate || 1),
+        baseCurrencyId: line.baseCurrencyId || null,
+        baseDebit: baseValue(line.debit, line.exchangeRate),
+        baseCredit: baseValue(line.credit, line.exchangeRate),
+        note: line.note || null
+      }
+    });
+    createdLines.push({
+      ...createdLine,
+      account,
+      party: line.partyId ? partyById.get(line.partyId) || null : null
+    });
+  }
+
+  return {
+    ...entry,
+    lines: createdLines
+  };
 }
 
 export async function createReversalJournal(
@@ -144,22 +185,47 @@ export async function createReversalJournal(
     createdByUserId?: string | null;
   }
 ) {
-  const original = await tx.journalEntry.findFirst({
+  const originalEntry = await tx.journalEntry.findFirst({
     where: {
       sourceType: input.sourceType,
       sourceId: input.sourceId
-    },
-    include: {
-      lines: {
-        include: {
-          account: true
-        }
-      }
     }
   });
 
+  const original = await loadJournalWithRelations(tx, originalEntry);
+
   if (!original) {
     return null;
+  }
+
+  if (original.lines.length === 0) {
+    const existingReversalEntry = await tx.journalEntry.findFirst({
+      where: {
+        sourceType: input.reversalSourceType,
+        sourceId: input.reversalSourceId
+      }
+    });
+    const existingReversal = await loadJournalWithRelations(tx, existingReversalEntry);
+
+    if (existingReversal) {
+      return existingReversal;
+    }
+
+    const reversal = await tx.journalEntry.create({
+      data: {
+        entryNo: `${input.entryNoPrefix}-${Date.now()}`,
+        date: new Date(),
+        description: input.description,
+        sourceType: input.reversalSourceType,
+        sourceId: input.reversalSourceId,
+        createdByUserId: input.createdByUserId || null
+      }
+    });
+
+    return {
+      ...reversal,
+      lines: []
+    };
   }
 
   return createPostedJournal(tx, {

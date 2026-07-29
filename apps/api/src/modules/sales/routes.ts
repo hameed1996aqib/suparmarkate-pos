@@ -10,6 +10,7 @@ import { getRequestPosDevice } from "../../lib/pos-device";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { parseKabulDateInput } from "../../lib/kabul-date";
+import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
 import {
   MoneyDirection,
   MoneyTransactionType,
@@ -42,6 +43,7 @@ const saleItemSchema = z.object({
 });
 
 const createSaleSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(100).optional().nullable(),
   invoiceNo: z.string().trim().max(120).optional().nullable(),
   customerId: z.string().trim().optional().nullable(),
   currencyId: z.string().min(1),
@@ -54,6 +56,83 @@ const createSaleSchema = z.object({
   note: z.string().trim().max(500).optional().nullable(),
   items: z.array(saleItemSchema).min(1)
 });
+
+const saleResponseInclude = {
+  customer: true,
+  currency: true,
+  cashier: true,
+  posDevice: true,
+  items: {
+    include: {
+      product: true,
+      warehouse: true,
+      unit: true,
+      lot: true
+    }
+  }
+} as const;
+
+class SaleRequestOwnershipError extends Error {}
+
+async function loadIdempotentSaleResult(
+  clientRequestId: string,
+  requestingUserId: string | null
+) {
+  const sale = await prisma.sale.findUnique({
+    where: { clientRequestId },
+    include: saleResponseInclude
+  });
+
+  if (!sale) return null;
+
+  if (sale.cashierId && sale.cashierId !== requestingUserId) {
+    throw new SaleRequestOwnershipError("This sale request ID belongs to another user");
+  }
+
+  const [moneyTransactions, customerTransaction, journalEntry, cogsJournal] =
+    await Promise.all([
+      prisma.moneyTransaction.findMany({
+        where: {
+          referenceType: "SALE",
+          referenceId: sale.id,
+          direction: MoneyDirection.IN
+        }
+      }),
+      prisma.partyTransaction.findFirst({
+        where: {
+          referenceType: "SALE",
+          referenceId: sale.id,
+          type: PartyTransactionType.SALE_CREDIT
+        }
+      }),
+      prisma.journalEntry.findFirst({
+        where: { sourceType: "POS_SALE", sourceId: sale.id },
+        include: {
+          lines: {
+            include: { account: true, party: true }
+          }
+        }
+      }),
+      prisma.journalEntry.findFirst({
+        where: { sourceType: "POS_SALE_COGS", sourceId: sale.id },
+        include: {
+          lines: {
+            include: { account: true, party: true }
+          }
+        }
+      })
+    ]);
+
+  return {
+    sale,
+    items: sale.items,
+    moneyTransactions,
+    customerTransaction,
+    journalEntry,
+    cogsJournal,
+    idempotentReplay: true
+  };
+}
 
 const salePaymentSchema = z.object({
   amount: z.coerce.number().positive(),
@@ -445,13 +524,35 @@ salesRoute.post("/:id/cancel", async (c) => {
       });
     }
 
-    const journalEntry = await createReversalJournal(tx, {
-      sourceType: "SALE",
+    let journalEntry = await createReversalJournal(tx, {
+      sourceType: "POS_SALE",
       sourceId: sale.id,
       reversalSourceType: "SALE_CANCEL",
       reversalSourceId: sale.id,
       entryNoPrefix: "JE-SC",
       description: "Sale cancellation",
+      createdByUserId: authUser?.id ?? null
+    });
+
+    if (!journalEntry) {
+      journalEntry = await createReversalJournal(tx, {
+        sourceType: "SALE",
+        sourceId: sale.id,
+        reversalSourceType: "SALE_CANCEL",
+        reversalSourceId: sale.id,
+        entryNoPrefix: "JE-SC",
+        description: "Sale cancellation",
+        createdByUserId: authUser?.id ?? null
+      });
+    }
+
+    const cogsJournalEntry = await createReversalJournal(tx, {
+      sourceType: "POS_SALE_COGS",
+      sourceId: sale.id,
+      reversalSourceType: "POS_SALE_COGS_CANCEL",
+      reversalSourceId: sale.id,
+      entryNoPrefix: "JE-COGS-CANCEL",
+      description: "COGS reversal for sale cancellation",
       createdByUserId: authUser?.id ?? null
     });
 
@@ -467,25 +568,25 @@ salesRoute.post("/:id/cancel", async (c) => {
         note: [sale.note, parsed.data.reason ? `Cancelled: ${parsed.data.reason}` : "Cancelled"]
           .filter(Boolean)
           .join("\n")
-      },
-      include: {
-        customer: true,
-        currency: true,
-        cashier: true,
-        posDevice: true,
-        items: {
-          include: {
-            product: true,
-            warehouse: true,
-            unit: true,
-            lot: true
-          }
-        }
       }
     });
 
-    return { sale: updatedSale, journalEntry };
+    return { sale: updatedSale, journalEntry, cogsJournalEntry };
   });
+
+  const fullCancelledSale = await prisma.sale.findUnique({
+    where: { id: sale.id },
+    include: saleResponseInclude
+  });
+
+  if (!fullCancelledSale) {
+    throw new Error("Cancelled sale could not be reloaded");
+  }
+
+  const responseResult = {
+    ...result,
+    sale: fullCancelledSale
+  };
 
   await writeAudit(c, {
     action: "SALE_CANCELLED",
@@ -496,7 +597,7 @@ salesRoute.post("/:id/cancel", async (c) => {
     }
   });
 
-  return c.json({ data: result });
+  return c.json({ data: responseResult });
 });
 
 salesRoute.post("/:id/payments", async (c) => {
@@ -748,13 +849,41 @@ salesRoute.post("/:id/payments", async (c) => {
 
 salesRoute.post("/", async (c) => {
   const authUser = getAuthUser(c);
-  const posDevice = await getRequestPosDevice(c, authUser?.id || null);
   const body = await c.req.json().catch(() => null);
   const parsed = createSaleSchema.safeParse(body);
 
   if (!parsed.success) {
     return c.json(zodError(parsed.error), 400);
   }
+
+  if (parsed.data.clientRequestId) {
+    try {
+      const replay = await loadIdempotentSaleResult(
+        parsed.data.clientRequestId,
+        authUser?.id || null
+      );
+
+      if (replay) {
+        return c.json({ data: replay, idempotentReplay: true }, 200);
+      }
+    } catch (error) {
+      if (!(error instanceof SaleRequestOwnershipError)) {
+        throw error;
+      }
+
+      return c.json(
+        {
+          message:
+            error instanceof Error
+              ? error.message
+              : "Sale request ID could not be verified"
+        },
+        409
+      );
+    }
+  }
+
+  const posDevice = await getRequestPosDevice(c, authUser?.id || null);
 
   const currency = await prisma.currency.findUnique({
     where: { id: parsed.data.currencyId }
@@ -1053,9 +1182,10 @@ salesRoute.post("/", async (c) => {
     );
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  const runSaleTransaction = () => prisma.$transaction(async (tx) => {
     const sale = await tx.sale.create({
       data: {
+        clientRequestId: parsed.data.clientRequestId ?? null,
         invoiceNo: parsed.data.invoiceNo ?? null,
         customerId: parsed.data.customerId ?? null,
         currencyId: parsed.data.currencyId,
@@ -1141,12 +1271,6 @@ salesRoute.post("/", async (c) => {
             totalCost: allocation.totalCost,
             baseTotalCost: allocation.baseTotalCost,
             expiryDate: allocation.expiryDate
-          },
-          include: {
-            product: true,
-            warehouse: true,
-            unit: true,
-            lot: true
           }
         });
 
@@ -1305,32 +1429,61 @@ salesRoute.post("/", async (c) => {
       ]
     });
 
-    const fullSale = await tx.sale.findUnique({
-      where: { id: sale.id },
-      include: {
-        customer: true,
-        currency: true,
-        cashier: true,
-        posDevice: true,
-        items: {
-          include: {
-            product: true,
-            warehouse: true,
-            unit: true,
-            lot: true
-          }
-        }
-      }
+    const cogsResult = await ensureSaleCogsJournal(tx, {
+      saleId: sale.id,
+      invoiceNo: sale.invoiceNo,
+      createdByUserId: authUser?.id || null
     });
 
     return {
-      sale: fullSale,
+      sale,
       items: createdItems,
       moneyTransactions,
       customerTransaction,
-      journalEntry
+      journalEntry,
+      cogsJournal: cogsResult.journalEntry,
+      cogs: cogsResult.cogs,
+      cogsZeroCost: cogsResult.zeroCost,
+      idempotentReplay: false
     };
+  }, {
+    maxWait: 10_000,
+    timeout: 30_000
   });
+
+  let result: Awaited<ReturnType<typeof runSaleTransaction>>;
+
+  try {
+    result = await runSaleTransaction();
+  } catch (error) {
+    if (parsed.data.clientRequestId && isUniqueConstraintError(error)) {
+      const replay = await loadIdempotentSaleResult(
+        parsed.data.clientRequestId,
+        authUser?.id || null
+      );
+
+      if (replay) {
+        return c.json({ data: replay, idempotentReplay: true }, 200);
+      }
+    }
+
+    throw error;
+  }
+
+  const fullSale = await prisma.sale.findUnique({
+    where: { id: result.sale.id },
+    include: saleResponseInclude
+  });
+
+  if (!fullSale) {
+    throw new Error("Sale was committed but could not be reloaded");
+  }
+
+  result = {
+    ...result,
+    sale: fullSale,
+    items: fullSale.items
+  };
 
   await writeAudit(c, {
     action: "SALE_CREATED",

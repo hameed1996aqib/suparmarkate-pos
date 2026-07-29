@@ -468,8 +468,32 @@ inventoryRoute.get("/movements", async (c) => {
   }),
     prisma.stockMovement.count({ where })
   ]);
+  const movementIds = movements.map((movement) => movement.id);
+  const cancellationTypes = Array.from(
+    new Set(movements.map((movement) => `${movement.type}_CANCEL`)),
+  );
+  const cancellationRows = movementIds.length
+    ? await prisma.stockMovement.findMany({
+        where: {
+          referenceId: { in: movementIds },
+          referenceType: { in: cancellationTypes },
+        },
+        select: { referenceId: true },
+      })
+    : [];
+  const cancelledMovementIds = new Set(
+    cancellationRows
+      .map((movement) => movement.referenceId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const decoratedMovements = movements.map((movement) => ({
+    ...movement,
+    isCancelled:
+      Boolean(movement.referenceType?.endsWith("_CANCEL")) ||
+      cancelledMovementIds.has(movement.id),
+  }));
 
-  return c.json({ data: movements, pagination: createPaginationMeta({ ...pagination, total }) });
+  return c.json({ data: decoratedMovements, pagination: createPaginationMeta({ ...pagination, total }) });
 });
 
 inventoryRoute.get("/transfer-reports", async (c) => {
@@ -506,8 +530,37 @@ inventoryRoute.get("/transfer-reports", async (c) => {
   }),
     prisma.stockMovement.count({ where })
   ]);
+  const transferReferenceIds = Array.from(
+    new Set(
+      movements
+        .map((movement) => movement.referenceId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+  const cancellationRows = transferReferenceIds.length
+    ? await prisma.stockMovement.findMany({
+        where: {
+          referenceType: "TRANSFER_CANCEL",
+          referenceId: { in: transferReferenceIds },
+        },
+        select: { referenceId: true },
+      })
+    : [];
+  const cancelledTransferIds = new Set(
+    cancellationRows
+      .map((movement) => movement.referenceId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const decoratedMovements = movements.map((movement) => ({
+    ...movement,
+    isCancelled:
+      movement.referenceType === "TRANSFER_CANCEL" ||
+      Boolean(
+        movement.referenceId && cancelledTransferIds.has(movement.referenceId),
+      ),
+  }));
 
-  return c.json({ data: movements, pagination: createPaginationMeta({ ...pagination, total }) });
+  return c.json({ data: decoratedMovements, pagination: createPaginationMeta({ ...pagination, total }) });
 });
 
 inventoryRoute.get("/damage-reports", async (c) => {

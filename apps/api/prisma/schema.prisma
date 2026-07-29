@@ -709,6 +709,7 @@ model StockMovement {
   @@index([createdAt])
   @@index([productId, warehouseId, createdAt])
   @@index([type, createdAt])
+  @@index([referenceType, referenceId])
 }
 
 model StockBalance {

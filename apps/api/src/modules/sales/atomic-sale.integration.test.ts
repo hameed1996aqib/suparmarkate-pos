@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { AuthUser } from "../../lib/auth";
 import { prisma } from "../../lib/prisma";
+import { saleReturnsRoute } from "../sale-returns/routes";
 import { salesRoute } from "./routes";
 
 const databaseUrl = process.env.DATABASE_URL || "";
@@ -30,8 +31,9 @@ let unitId = "";
 let adminUserId = "";
 const fixtures: Fixture[] = [];
 const adminSalesApp = new Hono<{ Variables: { authUser: AuthUser } }>();
+const adminReturnsApp = new Hono<{ Variables: { authUser: AuthUser } }>();
 
-adminSalesApp.use("*", async (c, next) => {
+const attachAdmin = async (c: any, next: () => Promise<void>) => {
   c.set("authUser", {
     id: adminUserId,
     username: "admin",
@@ -41,8 +43,11 @@ adminSalesApp.use("*", async (c, next) => {
     employee: null
   });
   await next();
-});
+};
+adminSalesApp.use("*", attachAdmin);
 adminSalesApp.route("/", salesRoute);
+adminReturnsApp.use("*", attachAdmin);
+adminReturnsApp.route("/", saleReturnsRoute);
 
 async function createFixture(
   label: string,
@@ -134,6 +139,10 @@ function saleRequest(
       paymentAccountId: string;
       amount: number;
     }>;
+    discount?: number;
+    itemDiscount?: number;
+    quantity?: number;
+    unitPrice?: number;
   } = {}
 ) {
   const paidAmount = overrides.paidAmount ?? 120;
@@ -146,7 +155,7 @@ function saleRequest(
       invoiceNo: `POS-${clientRequestId}`,
       customerId: overrides.customerId ?? null,
       currencyId: fixture.saleCurrencyId,
-      discount: 0,
+      discount: overrides.discount ?? 0,
       paidAmount,
       paymentAccountType: overrides.paymentAccountType ?? "CASH",
       paymentAccountId: overrides.paymentAccountId ?? fixture.cashAccountId,
@@ -156,9 +165,9 @@ function saleRequest(
           productId: fixture.productId,
           warehouseId,
           unitId,
-          quantity: 6,
-          unitPrice: 20,
-          discount: 0
+          quantity: overrides.quantity ?? 6,
+          unitPrice: overrides.unitPrice ?? 20,
+          discount: overrides.itemDiscount ?? 0
         }
       ]
     })
@@ -173,19 +182,27 @@ async function cleanupFixture(fixture: Fixture) {
   const saleIds = sales.map((sale) => sale.id);
 
   if (saleIds.length > 0) {
-    await prisma.auditLog.deleteMany({
-      where: { entityType: "Sale", entityId: { in: saleIds } }
+    const saleReturns = await prisma.saleReturn.findMany({
+      where: { saleId: { in: saleIds } },
+      select: { id: true }
     });
-    await prisma.journalEntry.deleteMany({ where: { sourceId: { in: saleIds } } });
+    const saleReturnIds = saleReturns.map((saleReturn) => saleReturn.id);
+    const referenceIds = [...saleIds, ...saleReturnIds];
+
+    await prisma.auditLog.deleteMany({
+      where: { entityId: { in: referenceIds } }
+    });
+    await prisma.journalEntry.deleteMany({ where: { sourceId: { in: referenceIds } } });
     await prisma.moneyTransaction.deleteMany({
-      where: { referenceId: { in: saleIds } }
+      where: { referenceId: { in: referenceIds } }
     });
     await prisma.partyTransaction.deleteMany({
-      where: { referenceId: { in: saleIds } }
+      where: { referenceId: { in: referenceIds } }
     });
     await prisma.stockMovement.deleteMany({
-      where: { referenceId: { in: saleIds } }
+      where: { referenceId: { in: referenceIds } }
     });
+    await prisma.saleReturn.deleteMany({ where: { id: { in: saleReturnIds } } });
     await prisma.sale.deleteMany({ where: { id: { in: saleIds } } });
   }
 
@@ -527,6 +544,235 @@ describe("atomic POS sale", () => {
     expect(saleJournal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(8400);
     expect(cogsJournal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(64);
     expect(cogsJournal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(64);
+  });
+
+  it("allocates item and document discounts exactly across lots and refunds the same net total", async () => {
+    const fixture = await createFixture("net-return");
+    const clientRequestId = `atomic-${Date.now()}-net-return`;
+    fixture.clientRequestIds.push(clientRequestId);
+
+    const created = await saleRequest(fixture, clientRequestId, {
+      paidAmount: 101,
+      itemDiscount: 12,
+      discount: 7
+    });
+    expect(created.status).toBe(201);
+    const createdPayload = await created.json() as any;
+    const saleId = createdPayload.data.sale.id as string;
+    const sale = await prisma.sale.findUniqueOrThrow({
+      where: { id: saleId },
+      include: { items: { orderBy: { quantity: "desc" } } }
+    });
+
+    expect(Number(sale.subtotal)).toBe(108);
+    expect(Number(sale.discount)).toBe(7);
+    expect(Number(sale.total)).toBe(101);
+    expect(
+      sale.items.reduce((sum, item) => sum + Number(item.discount), 0)
+    ).toBe(12);
+    expect(
+      sale.items.reduce(
+        (sum, item) => sum + Number(item.documentDiscountAllocated),
+        0
+      )
+    ).toBe(7);
+    expect(
+      sale.items.reduce((sum, item) => sum + Number(item.netTotalPrice), 0)
+    ).toBe(101);
+
+    const returned = await adminReturnsApp.request("http://localhost/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        saleId,
+        refundAccountType: "CASH",
+        refundAccountId: fixture.cashAccountId,
+        refundAmount: 101,
+        note: "Full discounted integration return",
+        items: sale.items.map((item) => ({
+          saleItemId: item.id,
+          quantity: Number(item.quantity)
+        }))
+      })
+    });
+    expect(returned.status).toBe(201);
+    const returnedPayload = await returned.json() as any;
+    const saleReturnId = returnedPayload.data.saleReturn.id as string;
+
+    const [saleReturn, cash, lots, journal] = await Promise.all([
+      prisma.saleReturn.findUniqueOrThrow({
+        where: { id: saleReturnId },
+        include: { items: true }
+      }),
+      prisma.cashRegisterAccount.findUniqueOrThrow({
+        where: { id: fixture.cashAccountId }
+      }),
+      prisma.stockLot.findMany({
+        where: { id: { in: fixture.lotIds } },
+        orderBy: { unitCost: "asc" }
+      }),
+      prisma.journalEntry.findUniqueOrThrow({
+        where: {
+          sourceType_sourceId: {
+            sourceType: "SALE_RETURN",
+            sourceId: saleReturnId
+          }
+        },
+        include: { lines: true }
+      })
+    ]);
+
+    expect(Number(saleReturn.subtotal)).toBe(101);
+    expect(Number(saleReturn.refundAmount)).toBe(101);
+    expect(
+      saleReturn.items.reduce((sum, item) => sum + Number(item.totalPrice), 0)
+    ).toBe(101);
+    expect(Number(cash.balance)).toBe(0);
+    expect(lots.map((lot) => Number(lot.remainingQuantity))).toEqual([4, 5]);
+    expect(journal.lines.reduce((sum, line) => sum + Number(line.baseDebit), 0)).toBe(165);
+    expect(journal.lines.reduce((sum, line) => sum + Number(line.baseCredit), 0)).toBe(165);
+  });
+
+  it("computes legacy returns in memory, preserves rounding, and reports only suspicious old amounts", async () => {
+    const fixture = await createFixture("legacy-return");
+    const clientRequestId = `atomic-${Date.now()}-legacy-return`;
+    fixture.clientRequestIds.push(clientRequestId);
+    const customer = await prisma.party.create({
+      data: {
+        type: "CUSTOMER",
+        name: `Legacy return customer ${Date.now()}`,
+        code: `LRC-${Date.now()}`
+      }
+    });
+    fixture.partyIds.push(customer.id);
+
+    const created = await saleRequest(fixture, clientRequestId, {
+      customerId: customer.id,
+      paidAmount: 0,
+      discount: 10
+    });
+    expect(created.status).toBe(201);
+    const createdPayload = await created.json() as any;
+    const saleId = createdPayload.data.sale.id as string;
+
+    await prisma.saleItem.updateMany({
+      where: { saleId },
+      data: {
+        documentDiscountAllocated: null,
+        netTotalPrice: null
+      }
+    });
+
+    const detailResponse = await salesRoute.request(`http://localhost/${saleId}`);
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json() as any).data;
+    const targetItem = [...detail.items].sort(
+      (left: any, right: any) => Number(right.quantity) - Number(left.quantity)
+    )[0];
+    const effectiveLineNet = Number(targetItem.effectiveNetTotalPrice);
+
+    const firstReturn = await adminReturnsApp.request("http://localhost/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        saleId,
+        refundAmount: 0,
+        items: [{ saleItemId: targetItem.id, quantity: 1 }]
+      })
+    });
+    expect(firstReturn.status).toBe(201);
+    const firstPayload = await firstReturn.json() as any;
+
+    const secondReturn = await adminReturnsApp.request("http://localhost/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        saleId,
+        refundAmount: 0,
+        items: [
+          {
+            saleItemId: targetItem.id,
+            quantity: Number(targetItem.quantity) - 1
+          }
+        ]
+      })
+    });
+    expect(secondReturn.status).toBe(201);
+    const secondPayload = await secondReturn.json() as any;
+
+    const [legacyItem, returnRows, partyAccount] = await Promise.all([
+      prisma.saleItem.findUniqueOrThrow({ where: { id: targetItem.id } }),
+      prisma.saleReturn.findMany({
+        where: {
+          id: {
+            in: [
+              firstPayload.data.saleReturn.id,
+              secondPayload.data.saleReturn.id
+            ]
+          }
+        },
+        include: { items: true }
+      }),
+      prisma.partyAccount.findUniqueOrThrow({
+        where: {
+          partyId_currencyId: {
+            partyId: customer.id,
+            currencyId: baseCurrencyId
+          }
+        }
+      })
+    ]);
+
+    expect(legacyItem.netTotalPrice).toBeNull();
+    expect(legacyItem.documentDiscountAllocated).toBeNull();
+    expect(
+      Number(
+        returnRows
+          .reduce((sum, row) => sum + Number(row.subtotal), 0)
+          .toFixed(4)
+      )
+    ).toBe(effectiveLineNet);
+    expect(Number(partyAccount.creditBalance)).toBe(effectiveLineNet);
+
+    const cleanQuality = await adminReturnsApp.request(
+      "http://localhost/quality?page=1&limit=100"
+    );
+    expect(cleanQuality.status).toBe(200);
+    const cleanQualityPayload = await cleanQuality.json() as any;
+    expect(
+      cleanQualityPayload.data.some(
+        (row: any) => row.saleId === saleId
+      )
+    ).toBe(false);
+
+    const firstReturnItem = returnRows.find(
+      (row) => row.id === firstPayload.data.saleReturn.id
+    )!.items[0]!;
+    const suspiciousAmount = Number(
+      (
+        Number(targetItem.totalPrice) /
+        Number(targetItem.quantity)
+      ).toFixed(4)
+    );
+    await prisma.saleReturnItem.update({
+      where: { id: firstReturnItem.id },
+      data: { totalPrice: suspiciousAmount }
+    });
+
+    const suspiciousQuality = await adminReturnsApp.request(
+      "http://localhost/quality?page=1&limit=100"
+    );
+    expect(suspiciousQuality.status).toBe(200);
+    const suspiciousPayload = await suspiciousQuality.json() as any;
+    expect(suspiciousPayload.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          saleId,
+          returnItemId: firstReturnItem.id
+        })
+      ])
+    );
+    expect(suspiciousPayload.remediation).toBe("REVIEW_AND_CANCEL_RECREATE");
   });
 
   it("reports and repairs one historical sale without COGS only after Admin confirmation", async () => {

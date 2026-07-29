@@ -16,6 +16,8 @@ import {
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
+import { resolveSaleItemPricing, roundMoney4 } from "../../lib/sale-pricing";
+import { Prisma } from "../../generated/prisma/client";
 
 export const saleReturnsRoute = new Hono();
 
@@ -109,6 +111,109 @@ saleReturnsRoute.get("/", async (c) => {
   return c.json({ data: items, pagination: createPaginationMeta({ ...pagination, total }) });
 });
 
+saleReturnsRoute.get("/quality", async (c) => {
+  const authUser = getAuthUser(c);
+
+  if (authUser?.role !== "Admin") {
+    return c.json({ message: "Only Admin can review historical return quality" }, 403);
+  }
+
+  const pagination = getPagePagination(c);
+  const createdAt = getRecentDateRange(c);
+  const rows = await prisma.$queryRaw<Array<{
+    returnId: string;
+    returnNo: string | null;
+    returnItemId: string;
+    saleId: string;
+    invoiceNo: string | null;
+    productId: string;
+    productName: string;
+    createdAt: Date;
+    actualTotal: Prisma.Decimal;
+    expectedNetTotal: Prisma.Decimal;
+    discrepancy: Prisma.Decimal;
+    totalCount: bigint;
+    discrepancyTotal: Prisma.Decimal;
+  }>>(Prisma.sql`
+    WITH quality AS (
+      SELECT
+        sr.id AS "returnId",
+        sr."returnNo",
+        sri.id AS "returnItemId",
+        s.id AS "saleId",
+        s."invoiceNo",
+        p.id AS "productId",
+        p.name AS "productName",
+        sr."createdAt",
+        sri."totalPrice" AS "actualTotal",
+        GREATEST(
+          0,
+          ROUND(
+            CASE
+              WHEN si."quantityBase" > 0
+                THEN (
+                  si."totalPrice" - CASE
+                    WHEN s.subtotal > 0
+                      THEN s.discount * (si."totalPrice" / s.subtotal)
+                    ELSE 0
+                  END
+                ) * (sri."quantityBase" / si."quantityBase")
+              ELSE 0
+            END,
+            4
+          )
+        ) AS "expectedNetTotal"
+      FROM "SaleReturnItem" sri
+      JOIN "SaleReturn" sr ON sr.id = sri."saleReturnId"
+      JOIN "SaleItem" si ON si.id = sri."saleItemId"
+      JOIN "Sale" s ON s.id = si."saleId"
+      JOIN "Product" p ON p.id = sri."productId"
+      WHERE sr."cancelledAt" IS NULL
+        AND sr."createdAt" >= ${createdAt.gte}
+        AND sr."createdAt" <= ${createdAt.lte}
+        AND si."netTotalPrice" IS NULL
+        AND s.discount > 0
+    ), suspicious AS (
+      SELECT
+        *,
+        ROUND("actualTotal" - "expectedNetTotal", 4) AS discrepancy
+      FROM quality
+      WHERE "actualTotal" - "expectedNetTotal" > 0.0001
+    )
+    SELECT
+      *,
+      COUNT(*) OVER() AS "totalCount",
+      COALESCE(SUM(discrepancy) OVER(), 0) AS "discrepancyTotal"
+    FROM suspicious
+    ORDER BY "createdAt" DESC, "returnItemId" DESC
+    LIMIT ${pagination.limit}
+    OFFSET ${pagination.skip}
+  `);
+  const total = Number(rows[0]?.totalCount || 0);
+
+  return c.json({
+    data: rows.map((row) => ({
+      returnId: row.returnId,
+      returnNo: row.returnNo,
+      returnItemId: row.returnItemId,
+      saleId: row.saleId,
+      invoiceNo: row.invoiceNo,
+      productId: row.productId,
+      productName: row.productName,
+      createdAt: row.createdAt,
+      actualTotal: Number(row.actualTotal),
+      expectedNetTotal: Number(row.expectedNetTotal),
+      discrepancy: Number(row.discrepancy),
+    })),
+    pagination: createPaginationMeta({ ...pagination, total }),
+    summary: {
+      suspiciousCount: total,
+      discrepancyTotal: Number(rows[0]?.discrepancyTotal || 0),
+    },
+    remediation: "REVIEW_AND_CANCEL_RECREATE",
+  });
+});
+
 saleReturnsRoute.post("/", async (c) => {
   const authUser = getAuthUser(c);
   const posDevice = await getRequestPosDevice(c, authUser?.id || null);
@@ -144,6 +249,7 @@ saleReturnsRoute.post("/", async (c) => {
 
   const requestedByItem = new Map(parsed.data.items.map((item) => [item.saleItemId, item]));
   const preparedItems: any[] = [];
+  const saleItemPricing = resolveSaleItemPricing(sale.discount, sale.items);
 
   for (const requestItem of parsed.data.items) {
     const saleItem = sale.items.find((item) => item.id === requestItem.saleItemId);
@@ -152,12 +258,20 @@ saleReturnsRoute.post("/", async (c) => {
       return c.json({ message: `Sale item not found: ${requestItem.saleItemId}` }, 404);
     }
 
-    const quantityBase = requestItem.quantity * Number(saleItem.conversionRate);
-    const returnedBase = saleItem.returnItems.filter((item) => !item.saleReturn.cancelledAt).reduce(
-      (sum, item) => sum + Number(item.quantityBase || 0),
-      0
+    const activeReturnItems = saleItem.returnItems.filter(
+      (item) => !item.saleReturn.cancelledAt,
     );
-    const availableBase = Number(saleItem.quantityBase) - returnedBase;
+    const quantityBase = roundMoney4(
+      requestItem.quantity * Number(saleItem.conversionRate),
+    );
+    const returnedBase = roundMoney4(
+      activeReturnItems.reduce(
+        (sum, item) => sum + Number(item.quantityBase || 0),
+        0,
+      ),
+    );
+    const soldBase = Number(saleItem.quantityBase);
+    const availableBase = roundMoney4(soldBase - returnedBase);
 
     if (quantityBase > availableBase + 0.0001) {
       return c.json({
@@ -166,17 +280,79 @@ saleReturnsRoute.post("/", async (c) => {
       }, 400);
     }
 
-    const ratio = requestItem.quantity / Number(saleItem.quantity);
-    const totalPrice = Number(saleItem.totalPrice) * ratio;
-    const totalCost = saleItem.totalCost === null ? null : Number(saleItem.totalCost) * ratio;
-    const baseTotalCost =
+    const pricing = saleItemPricing.get(saleItem.id);
+    const fullNetTotal = roundMoney4(
+      pricing?.netTotalPrice ?? saleItem.totalPrice,
+    );
+    const alreadyReturnedNet = roundMoney4(
+      activeReturnItems.reduce(
+        (sum, item) => sum + Number(item.totalPrice || 0),
+        0,
+      ),
+    );
+    const remainingNet = Math.max(
+      0,
+      roundMoney4(fullNetTotal - alreadyReturnedNet),
+    );
+    const returningAllRemaining = Math.abs(quantityBase - availableBase) <= 0.0001;
+    const quantityRatio = soldBase > 0 ? quantityBase / soldBase : 0;
+    const totalPrice = returningAllRemaining
+      ? remainingNet
+      : Math.min(remainingNet, roundMoney4(fullNetTotal * quantityRatio));
+
+    const fullTotalCost =
+      saleItem.totalCost === null ? null : roundMoney4(saleItem.totalCost);
+    const returnedTotalCost = roundMoney4(
+      activeReturnItems.reduce(
+        (sum, item) => sum + Number(item.totalCost || 0),
+        0,
+      ),
+    );
+    const remainingTotalCost =
+      fullTotalCost === null
+        ? null
+        : Math.max(0, roundMoney4(fullTotalCost - returnedTotalCost));
+    const totalCost =
+      fullTotalCost === null || remainingTotalCost === null
+        ? null
+        : returningAllRemaining
+          ? remainingTotalCost
+          : Math.min(
+              remainingTotalCost,
+              roundMoney4(fullTotalCost * quantityRatio),
+            );
+
+    const fullBaseTotalCost =
       saleItem.baseTotalCost === null
-        ? totalCost
-        : Number(saleItem.baseTotalCost) * ratio;
+        ? fullTotalCost
+        : roundMoney4(saleItem.baseTotalCost);
+    const returnedBaseTotalCost = roundMoney4(
+      activeReturnItems.reduce(
+        (sum, item) =>
+          sum + Number(item.baseTotalCost ?? item.totalCost ?? 0),
+        0,
+      ),
+    );
+    const remainingBaseTotalCost =
+      fullBaseTotalCost === null
+        ? null
+        : Math.max(
+            0,
+            roundMoney4(fullBaseTotalCost - returnedBaseTotalCost),
+          );
+    const baseTotalCost =
+      fullBaseTotalCost === null || remainingBaseTotalCost === null
+        ? null
+        : returningAllRemaining
+          ? remainingBaseTotalCost
+          : Math.min(
+              remainingBaseTotalCost,
+              roundMoney4(fullBaseTotalCost * quantityRatio),
+            );
 
     preparedItems.push({
       saleItem,
-      quantity: requestItem.quantity,
+      quantity: roundMoney4(requestItem.quantity),
       quantityBase,
       unitPrice: Number(saleItem.unitPrice),
       totalPrice,
@@ -190,13 +366,16 @@ saleReturnsRoute.post("/", async (c) => {
     return c.json({ message: "Duplicate return item was provided" }, 400);
   }
 
-  const subtotal = preparedItems.reduce((sum, item) => sum + item.totalPrice, 0);
+  const subtotal = roundMoney4(
+    preparedItems.reduce((sum, item) => sum + item.totalPrice, 0),
+  );
+  const refundAmount = roundMoney4(parsed.data.refundAmount);
 
-  if (parsed.data.refundAmount > subtotal) {
+  if (refundAmount > subtotal) {
     return c.json({ message: "Refund amount cannot exceed return total" }, 400);
   }
 
-  const receivableAdjustment = subtotal - parsed.data.refundAmount;
+  const receivableAdjustment = roundMoney4(subtotal - refundAmount);
   const saleSnapshot = {
     exchangeRate: Number(sale.exchangeRate || 1),
     baseCurrencyId: sale.baseCurrencyId ?? null
@@ -208,7 +387,7 @@ saleReturnsRoute.post("/", async (c) => {
 
   let refundAccount: Awaited<ReturnType<typeof getTreasuryAccount>> = null;
 
-  if (parsed.data.refundAmount > 0) {
+  if (refundAmount > 0) {
     if (!parsed.data.refundAccountType || !parsed.data.refundAccountId) {
       return c.json({ message: "Refund account is required" }, 400);
     }
@@ -223,7 +402,7 @@ saleReturnsRoute.post("/", async (c) => {
       return c.json({ message: "Refund account currency must match sale currency" }, 400);
     }
 
-    if (refundAccount.balance < parsed.data.refundAmount) {
+    if (refundAccount.balance < refundAmount) {
       return c.json({ message: "Not enough balance for refund" }, 400);
     }
   }
@@ -236,11 +415,11 @@ saleReturnsRoute.post("/", async (c) => {
         customerId: sale.customerId,
         currencyId: sale.currencyId,
         subtotal,
-        refundAmount: parsed.data.refundAmount,
+        refundAmount,
         receivableAdjustment,
         ...snapshotBaseFields(saleSnapshot, {
           subtotal,
-          paidAmount: parsed.data.refundAmount,
+          paidAmount: refundAmount,
           remainingAmount: receivableAdjustment
         }),
         note: parsed.data.note ?? null,
@@ -305,11 +484,11 @@ saleReturnsRoute.post("/", async (c) => {
 
     let moneyTransaction = null;
 
-    if (refundAccount && parsed.data.refundAmount > 0) {
+    if (refundAccount && refundAmount > 0) {
       if (refundAccount.type === "CASH") {
         const updated = await tx.cashRegisterAccount.update({
           where: { id: refundAccount.id },
-          data: { balance: { decrement: parsed.data.refundAmount } }
+          data: { balance: { decrement: refundAmount } }
         });
 
         moneyTransaction = await tx.moneyTransaction.create({
@@ -318,10 +497,10 @@ saleReturnsRoute.post("/", async (c) => {
             cashRegisterAccountId: refundAccount.id,
             type: MoneyTransactionType.ADJUSTMENT,
             direction: MoneyDirection.OUT,
-            amount: parsed.data.refundAmount,
+            amount: refundAmount,
             balanceAfter: updated.balance,
             ...snapshotBaseFields(saleSnapshot, {
-              amount: parsed.data.refundAmount,
+              amount: refundAmount,
               balanceAfter: Number(updated.balance)
             }),
             referenceType: "SALE_RETURN",
@@ -334,7 +513,7 @@ saleReturnsRoute.post("/", async (c) => {
       } else {
         const updated = await tx.bankAccount.update({
           where: { id: refundAccount.id },
-          data: { balance: { decrement: parsed.data.refundAmount } }
+          data: { balance: { decrement: refundAmount } }
         });
 
         moneyTransaction = await tx.moneyTransaction.create({
@@ -343,10 +522,10 @@ saleReturnsRoute.post("/", async (c) => {
             bankAccountId: refundAccount.id,
             type: MoneyTransactionType.ADJUSTMENT,
             direction: MoneyDirection.OUT,
-            amount: parsed.data.refundAmount,
+            amount: refundAmount,
             balanceAfter: updated.balance,
             ...snapshotBaseFields(saleSnapshot, {
-              amount: parsed.data.refundAmount,
+              amount: refundAmount,
               balanceAfter: Number(updated.balance)
             }),
             referenceType: "SALE_RETURN",
@@ -413,10 +592,10 @@ saleReturnsRoute.post("/", async (c) => {
       }
     ];
 
-    if (refundAccount && parsed.data.refundAmount > 0) {
+    if (refundAccount && refundAmount > 0) {
       lines.push({
         accountCode: treasuryAccountCode(refundAccount.type),
-        credit: parsed.data.refundAmount,
+        credit: refundAmount,
         exchangeRate: saleSnapshot.exchangeRate,
         baseCurrencyId: saleSnapshot.baseCurrencyId,
         note: "Sale return refund"
@@ -477,7 +656,7 @@ saleReturnsRoute.post("/", async (c) => {
     metadata: {
       saleId: sale.id,
       subtotal,
-      refundAmount: parsed.data.refundAmount
+      refundAmount
     }
   });
 

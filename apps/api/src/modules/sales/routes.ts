@@ -11,6 +11,11 @@ import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { parseKabulDateInput } from "../../lib/kabul-date";
 import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
+import {
+  allocateMoneyByWeight,
+  decorateSaleItemsWithPricing,
+  roundMoney4,
+} from "../../lib/sale-pricing";
 import { Prisma } from "../../generated/prisma/client";
 import {
   MoneyDirection,
@@ -125,8 +130,11 @@ async function loadIdempotentSaleResult(
     ]);
 
   return {
-    sale,
-    items: sale.items,
+    sale: {
+      ...sale,
+      items: decorateSaleItemsWithPricing(sale.discount, sale.items),
+    },
+    items: decorateSaleItemsWithPricing(sale.discount, sale.items),
     moneyTransactions,
     customerTransaction,
     journalEntry,
@@ -197,7 +205,7 @@ salesRoute.get("/", async (c) => {
           product: true,
           warehouse: true,
           unit: true,
-          lot: true
+          lot: true,
         }
       }
     },
@@ -234,6 +242,7 @@ salesRoute.get("/", async (c) => {
   return c.json({
     data: items.map((item) => ({
       ...item,
+      items: decorateSaleItemsWithPricing(item.discount, item.items),
       cogsStatus: !cogsBySaleId.has(item.id)
         ? "MISSING"
         : Number(cogsBySaleId.get(item.id) || 0) === 0
@@ -434,7 +443,12 @@ salesRoute.get("/:id", async (c) => {
           product: true,
           warehouse: true,
           unit: true,
-          lot: true
+          lot: true,
+          returnItems: {
+            include: {
+              saleReturn: true,
+            },
+          },
         }
       }
     }
@@ -444,7 +458,41 @@ salesRoute.get("/:id", async (c) => {
     return c.json({ message: "Sale not found" }, 404);
   }
 
-  return c.json({ data: item });
+  const pricedItems = decorateSaleItemsWithPricing(item.discount, item.items).map(
+    (saleItem) => {
+      const activeReturns = saleItem.returnItems.filter(
+        (returnItem) => !returnItem.saleReturn.cancelledAt,
+      );
+      const returnedQuantity = roundMoney4(
+        activeReturns.reduce(
+          (sum, returnItem) => sum + Number(returnItem.quantity || 0),
+          0,
+        ),
+      );
+      const returnedNetTotal = roundMoney4(
+        activeReturns.reduce(
+          (sum, returnItem) => sum + Number(returnItem.totalPrice || 0),
+          0,
+        ),
+      );
+
+      return {
+        ...saleItem,
+        returnedQuantity,
+        returnableQuantity: Math.max(
+          0,
+          roundMoney4(Number(saleItem.quantity) - returnedQuantity),
+        ),
+        returnedNetTotal,
+        returnableNetTotal: Math.max(
+          0,
+          roundMoney4(saleItem.effectiveNetTotalPrice - returnedNetTotal),
+        ),
+      };
+    },
+  );
+
+  return c.json({ data: { ...item, items: pricedItems } });
 });
 
 salesRoute.post("/:id/repair-cogs", async (c) => {
@@ -1243,9 +1291,10 @@ salesRoute.post("/", async (c) => {
       );
     }
 
-    const grossTotal = rawItem.quantity * rawItem.unitPrice;
+    const grossTotal = roundMoney4(rawItem.quantity * rawItem.unitPrice);
+    const itemDiscount = roundMoney4(rawItem.discount);
 
-    if (rawItem.discount > grossTotal) {
+    if (itemDiscount > grossTotal) {
       return c.json(
         {
           message: `Discount cannot be greater than item total for product: ${product.name}`
@@ -1262,49 +1311,100 @@ salesRoute.post("/", async (c) => {
       conversionRate,
       quantityBase,
       unitPrice: rawItem.unitPrice,
-      discount: rawItem.discount,
-      totalPrice: grossTotal - rawItem.discount,
+      discount: itemDiscount,
+      totalPrice: roundMoney4(grossTotal - itemDiscount),
       allocations
     });
   }
 
-  const subtotal = preparedItems.reduce((sum, item) => sum + item.totalPrice, 0);
-  const total = subtotal - parsed.data.discount;
+  const saleLines = preparedItems.flatMap((preparedItem) => {
+    const weights = preparedItem.allocations.map((allocation) => allocation.quantity);
+    const grossAllocations = allocateMoneyByWeight(
+      roundMoney4(preparedItem.quantity * preparedItem.unitPrice),
+      weights,
+    );
+    const itemDiscountAllocations = allocateMoneyByWeight(
+      preparedItem.discount,
+      weights,
+    );
+
+    return preparedItem.allocations.map((allocation, index) => {
+      const lineDiscount = itemDiscountAllocations[index] ?? 0;
+      const lineGrossTotal = grossAllocations[index] ?? 0;
+
+      return {
+        preparedItem,
+        allocation,
+        lineDiscount,
+        lineTotal: roundMoney4(lineGrossTotal - lineDiscount),
+      };
+    });
+  });
+
+  const subtotal = roundMoney4(
+    saleLines.reduce((sum, line) => sum + line.lineTotal, 0),
+  );
+  const documentDiscount = roundMoney4(parsed.data.discount);
+  const total = roundMoney4(subtotal - documentDiscount);
 
   if (total < 0) {
     return c.json({ message: "Discount cannot be greater than subtotal" }, 400);
   }
 
-  if (parsed.data.paidAmount > total) {
+  const paidAmount = roundMoney4(parsed.data.paidAmount);
+
+  if (paidAmount > total) {
     return c.json({ message: "Paid amount cannot be greater than total" }, 400);
+  }
+
+  const documentDiscountAllocations = allocateMoneyByWeight(
+    documentDiscount,
+    saleLines.map((line) => line.lineTotal),
+  );
+  const pricedSaleLines = saleLines.map((line, index) => ({
+    ...line,
+    documentDiscountAllocated: documentDiscountAllocations[index] ?? 0,
+    netTotalPrice: roundMoney4(
+      line.lineTotal - (documentDiscountAllocations[index] ?? 0),
+    ),
+  }));
+
+  const lineNetTotal = roundMoney4(
+    pricedSaleLines.reduce((sum, line) => sum + line.netTotalPrice, 0),
+  );
+
+  if (lineNetTotal !== total) {
+    return c.json({ message: "Sale line discount allocation is inconsistent" }, 400);
   }
 
   const requestedPaymentLines =
     parsed.data.paymentLines.length > 0
       ? parsed.data.paymentLines
-      : parsed.data.paidAmount > 0 && parsed.data.paymentAccountType && parsed.data.paymentAccountId
+      : paidAmount > 0 && parsed.data.paymentAccountType && parsed.data.paymentAccountId
         ? [
             {
               paymentAccountType: parsed.data.paymentAccountType,
               paymentAccountId: parsed.data.paymentAccountId,
-              amount: parsed.data.paidAmount
+              amount: paidAmount
             }
           ]
         : [];
 
-  const paymentLinesTotal = requestedPaymentLines.reduce((sum, line) => sum + line.amount, 0);
+  const paymentLinesTotal = roundMoney4(
+    requestedPaymentLines.reduce((sum, line) => sum + roundMoney4(line.amount), 0),
+  );
 
-  if (Math.abs(paymentLinesTotal - parsed.data.paidAmount) > 0.0001) {
+  if (paymentLinesTotal !== paidAmount) {
     return c.json({ message: "Payment lines total must equal paidAmount" }, 400);
   }
 
-  const remainingAmount = total - parsed.data.paidAmount;
+  const remainingAmount = roundMoney4(total - paidAmount);
 
   if (remainingAmount > 0 && !parsed.data.customerId) {
     return c.json({ message: "Customer is required for credit sale" }, 400);
   }
 
-  if (parsed.data.paidAmount > 0 && requestedPaymentLines.length === 0) {
+  if (paidAmount > 0 && requestedPaymentLines.length === 0) {
     return c.json({ message: "Payment account is required when paidAmount is greater than zero" }, 400);
   }
 
@@ -1360,14 +1460,14 @@ salesRoute.post("/", async (c) => {
 
     paymentLines.push({
       ...paymentAccount,
-      amount: line.amount
+      amount: roundMoney4(line.amount)
     });
   }
 
   const paymentStatus =
     remainingAmount === 0
       ? SalePaymentStatus.PAID
-      : parsed.data.paidAmount > 0
+      : paidAmount > 0
         ? SalePaymentStatus.PARTIAL
       : SalePaymentStatus.UNPAID;
 
@@ -1392,14 +1492,14 @@ salesRoute.post("/", async (c) => {
         status: SaleStatus.COMPLETED,
         paymentStatus,
         subtotal,
-        discount: parsed.data.discount,
+        discount: documentDiscount,
         total,
-        paidAmount: parsed.data.paidAmount,
+        paidAmount,
         remainingAmount,
         ...snapshotBaseFields(currencySnapshot, {
           subtotal,
           total,
-          paidAmount: parsed.data.paidAmount,
+          paidAmount,
           remainingAmount
         }),
         saleDate: saleDate || new Date(),
@@ -1411,8 +1511,8 @@ salesRoute.post("/", async (c) => {
 
     const createdItems = [];
 
-    for (const preparedItem of preparedItems) {
-      for (const allocation of preparedItem.allocations) {
+    for (const pricedLine of pricedSaleLines) {
+        const { preparedItem, allocation } = pricedLine;
         const stockUpdate = await tx.stockLot.updateMany({
           where: {
             id: allocation.lotId,
@@ -1449,11 +1549,6 @@ salesRoute.post("/", async (c) => {
           }
         });
 
-        const allocationRatio = allocation.quantity / preparedItem.quantity;
-        const lineDiscount = preparedItem.discount * allocationRatio;
-        const lineGrossTotal = allocation.quantity * preparedItem.unitPrice;
-        const lineTotal = lineGrossTotal - lineDiscount;
-
         const saleItem = await tx.saleItem.create({
           data: {
             saleId: sale.id,
@@ -1465,8 +1560,10 @@ salesRoute.post("/", async (c) => {
             conversionRate: preparedItem.conversionRate,
             quantityBase: allocation.quantityBase,
             unitPrice: preparedItem.unitPrice,
-            discount: lineDiscount,
-            totalPrice: lineTotal,
+            discount: pricedLine.lineDiscount,
+            totalPrice: pricedLine.lineTotal,
+            documentDiscountAllocated: pricedLine.documentDiscountAllocated,
+            netTotalPrice: pricedLine.netTotalPrice,
             unitCostBase: allocation.unitCostBase,
             totalCost: allocation.totalCost,
             baseTotalCost: allocation.baseTotalCost,
@@ -1475,7 +1572,6 @@ salesRoute.post("/", async (c) => {
         });
 
         createdItems.push(saleItem);
-      }
     }
 
     const moneyTransactions = [];
@@ -1616,11 +1712,11 @@ salesRoute.post("/", async (c) => {
           baseCurrencyId: currencySnapshot.baseCurrencyId,
           note: "Sales revenue"
         },
-        ...(parsed.data.discount > 0
+        ...(documentDiscount > 0
           ? [{
               accountCode: "4100",
               partyId: parsed.data.customerId || null,
-              debit: parsed.data.discount,
+              debit: documentDiscount,
               exchangeRate: currencySnapshot.exchangeRate,
               baseCurrencyId: currencySnapshot.baseCurrencyId,
               note: "Sales discount"
@@ -1679,10 +1775,15 @@ salesRoute.post("/", async (c) => {
     throw new Error("Sale was committed but could not be reloaded");
   }
 
+  const pricedFullSale = {
+    ...fullSale,
+    items: decorateSaleItemsWithPricing(fullSale.discount, fullSale.items),
+  };
+
   result = {
     ...result,
-    sale: fullSale,
-    items: fullSale.items
+    sale: pricedFullSale,
+    items: pricedFullSale.items
   };
 
   await writeAudit(c, {
@@ -1691,7 +1792,7 @@ salesRoute.post("/", async (c) => {
     entityId: result.sale?.id || null,
     metadata: {
       total,
-      paidAmount: parsed.data.paidAmount,
+      paidAmount,
       invoiceNo: parsed.data.invoiceNo || null
     }
   });

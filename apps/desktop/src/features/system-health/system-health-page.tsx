@@ -17,6 +17,7 @@ import {
   RefreshCcw,
   ServerCog,
   Cpu,
+  Network,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -76,6 +77,24 @@ type HealthData = {
       criticalFreePercent: number;
     };
     uptimeSeconds: number;
+  };
+  redis?: {
+    enabled: boolean;
+    configured: boolean;
+    connected: boolean;
+    status: "connected" | "disabled" | "unconfigured" | "unavailable";
+    latencyMs: number | null;
+    lastConnectedAt: string | null;
+    error: string | null;
+  };
+  security?: {
+    permissionEnforcementMode: "observe" | "enforce";
+  };
+  network?: {
+    storedServerIp: string | null;
+    currentServerIp: string | null;
+    serverIpChanged: boolean;
+    lanApiBaseUrl: string | null;
   };
   database: {
     connected: boolean;
@@ -239,7 +258,7 @@ export function SystemHealthPage() {
         </Button>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           title="وضعیت عمومی"
           value={healthy ? "سالم" : data?.status === "critical" ? "نیاز به اقدام" : "نیاز به بررسی"}
@@ -275,6 +294,18 @@ export function SystemHealthPage() {
           value={`${data?.resources.memory.freePercent ?? 0}%`}
           icon={<MemoryStick />}
           trend={data ? `${bytes(data.resources.memory.freeBytes)} از ${bytes(data.resources.memory.totalBytes)}` : "-"}
+        />
+        <MetricCard
+          title="IP سرور"
+          value={data?.network?.currentServerIp || data?.network?.storedServerIp || "-"}
+          icon={<Network />}
+          trend={
+            !data?.network
+              ? "وضعیت IP از سرور خوانده نشد"
+              : data.network.serverIpChanged
+              ? `IP ذخیره‌شده: ${data.network.storedServerIp}`
+              : "IP فعلی با تنظیمات سرور سازگار است"
+          }
         />
       </div>
 
@@ -365,6 +396,28 @@ export function SystemHealthPage() {
           </CardHeader>
           <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
             <StatusItem label="worker پس‌زمینه" ok={Boolean(data?.worker.running)} value={data?.worker.busy ? "در حال اجرا" : "فعال"} />
+            <StatusItem
+              label="کش Redis"
+              ok={Boolean(data?.redis?.connected)}
+              value={
+                !data?.redis
+                  ? "نامعلوم"
+                  : data.redis.connected
+                  ? `وصل${data.redis.latencyMs == null ? "" : ` - ${data.redis.latencyMs} ms`}`
+                  : data.redis.enabled === false
+                    ? "غیرفعال"
+                    : "اتصال قطع است"
+              }
+            />
+            <StatusItem
+              label="کنترل دسترسی"
+              ok={data?.security?.permissionEnforcementMode === "enforce"}
+              value={
+                data?.security?.permissionEnforcementMode === "enforce"
+                  ? "اجرایی"
+                  : "نظارتی"
+              }
+            />
             <StatusItem label="آخرین بررسی worker" ok={Boolean(data?.worker.lastPollAt)} value={dateTime(data?.worker.lastPollAt)} />
             <StatusItem label="آخرین reconciliation موجودی" ok={data?.reconciliation?.status === "COMPLETED"} value={dateTime(data?.reconciliation?.completedAt)} />
             <StatusItem label="آخرین پاک‌سازی دوره‌ای" ok={data?.retention?.status === "COMPLETED"} value={dateTime(data?.retention?.completedAt)} />

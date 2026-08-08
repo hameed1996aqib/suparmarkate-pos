@@ -5,6 +5,7 @@ import { getMaintenanceMode } from "../../lib/maintenance-mode";
 import { getPersistentJobWorkerHealth } from "../../lib/persistent-jobs";
 import { listBackupFiles } from "../backups/service";
 import { getRuntimeServerConfig } from "../../lib/runtime-server-config";
+import { getRedisHealth } from "../../lib/cache";
 
 export const systemHealthRoute = new Hono();
 
@@ -34,8 +35,28 @@ const checklistMap: Record<string, string> = {
   "cpu-warning": "P2 Load Testing And Observability: CPU saturation",
   "cpu-critical": "P2 Load Testing And Observability: CPU saturation",
   "memory-warning": "P2 Load Testing And Observability: memory pressure",
-  "memory-critical": "P2 Load Testing And Observability: memory pressure"
+  "memory-critical": "P2 Load Testing And Observability: memory pressure",
+  "redis-unavailable": "P1 Redis cache health and PostgreSQL fallback",
+  "redis-disabled": "P1 Redis cache health and PostgreSQL fallback",
+  "permission-observe": "P0 Phase 6 permission policy observation before enforcement",
+  "legacy-public-receipts": "P0 Phase 6 signed short-lived receipt links",
+  "legacy-public-attendance": "P0 Phase 6 authenticated mobile attendance scan",
+  "server-ip-changed": "P1 Server networking: DHCP reservation or static IP",
+  "dhcp-unconfirmed": "P1 Server networking: DHCP reservation or static IP",
+  "ups-unconfirmed": "P1 Server power-loss protection and recovery",
+  "backup-disk-unconfirmed": "P0 Backup isolation on a second physical disk"
 };
+
+function configuredServerIp() {
+  if (process.env.SERVER_LAN_IP?.trim()) return process.env.SERVER_LAN_IP.trim();
+  const configuredUrl = process.env.LAN_API_BASE_URL || process.env.PUBLIC_API_BASE_URL;
+  if (!configuredUrl) return null;
+  try {
+    return new URL(configuredUrl).hostname;
+  } catch {
+    return null;
+  }
+}
 
 function ageHours(value: Date | string | null | undefined) {
   if (!value) return null;
@@ -48,10 +69,11 @@ systemHealthRoute.get("/", async (c) => {
   const failedSince = new Date(Date.now() - 7 * 86400000);
   const partitionRows = Math.max(1000000, Number(process.env.PARTITION_WARNING_ROWS || 10000000));
 
-  const [disk, resources, databaseSize, backups, latestBackupJob, latestReconciliation, latestRetention, failedJobs, pendingJobs, tables] =
+  const [disk, resources, redis, databaseSize, backups, latestBackupJob, latestReconciliation, latestRetention, failedJobs, pendingJobs, tables] =
     await Promise.all([
       getDiskHealth(),
       getServerResourceHealth(),
+      getRedisHealth(),
       prisma.$queryRaw<Array<{ bytes: bigint }>>`SELECT pg_database_size(current_database()) AS bytes`,
       listBackupFiles(),
       prisma.persistentJob.findFirst({
@@ -81,12 +103,108 @@ systemHealthRoute.get("/", async (c) => {
     ]);
 
   const issues: HealthIssue[] = [];
+  const permissionEnforcementMode =
+    process.env.PERMISSION_ENFORCEMENT_MODE?.trim().toLowerCase() === "enforce"
+      ? "enforce"
+      : "observe";
   const lastBackup = backups[0] ?? null;
   const lastBackupAgeHours = ageHours(lastBackup?.date);
   const maxBackupAgeHours = Math.max(1, Number(process.env.BACKUP_MAX_AGE_HOURS || 30));
   const reconcileAgeHours = ageHours(latestReconciliation?.completedAt);
   const reconcileMaxAgeHours = Math.max(1, Number(process.env.RECONCILIATION_MAX_AGE_HOURS || 36));
   const lastPollAgeMs = worker.lastPollAt ? Date.now() - new Date(worker.lastPollAt).getTime() : null;
+  const storedServerIp = configuredServerIp();
+  const currentServerIp = process.env.CURRENT_SERVER_LAN_IP?.trim() || null;
+  const serverIpChanged = Boolean(
+    storedServerIp && currentServerIp && storedServerIp !== currentServerIp
+  );
+
+  if (serverIpChanged) {
+    issues.push({
+      id: "server-ip-changed",
+      severity: "critical",
+      title: "IP کمپیوتر سرور تغییر کرده است",
+      description: `IP ذخیره‌شده ${storedServerIp} است، اما IP فعلی ${currentServerIp} تشخیص شد.`,
+      action: "پیش از ادامه کار، DHCP reservation یا IP ثابت را تنظیم و آدرس کلاینت‌ها را بررسی کنید."
+    });
+  }
+  if (!serverConfig.dhcpReservationConfirmed) {
+    issues.push({
+      id: "dhcp-unconfirmed",
+      severity: "warning",
+      title: "IP ثابت یا DHCP reservation تأیید نشده است",
+      description: "پس از خاموش و روشن‌شدن روتر ممکن است IP سرور تغییر کند و کلاینت‌ها قطع شوند.",
+      action: "رزرو IP را در روتر انجام دهید و سپس این مورد را در تنظیمات سرور تأیید کنید."
+    });
+  }
+  if (!serverConfig.upsConfirmed) {
+    issues.push({
+      id: "ups-unconfirmed",
+      severity: "warning",
+      title: "محافظت UPS تأیید نشده است",
+      description: "قطع ناگهانی برق می‌تواند سیستم‌عامل، Docker یا عملیات در حال اجرا را مختل کند.",
+      action: "UPS را نصب و آزمایش کنید و سپس وضعیت آن را در تنظیمات سرور تأیید کنید."
+    });
+  }
+  if (!serverConfig.backupOnSeparateDiskConfirmed) {
+    issues.push({
+      id: "backup-disk-unconfirmed",
+      severity: "warning",
+      title: "دیسک فیزیکی جدا برای بک‌آپ تأیید نشده است",
+      description: "اگر بک‌آپ و دیتابیس روی یک دیسک باشند، خرابی همان دیسک هر دو نسخه را از بین می‌برد.",
+      action: "مسیر بک‌آپ را روی دیسک فیزیکی دوم تنظیم و این مورد را در تنظیمات سرور تأیید کنید."
+    });
+  }
+
+  if (redis.enabled && !redis.connected) {
+    issues.push({
+      id: "redis-unavailable",
+      severity: "warning",
+      title: "اتصال Redis برقرار نیست",
+      description: "کش Redis در دسترس نیست و سیستم فعلاً مستقیماً از PostgreSQL استفاده می‌کند.",
+      action: "وضعیت کانتینر muhaseb_redis و تنظیم REDIS_URL را بررسی کنید."
+    });
+  } else if (!redis.enabled && process.env.NODE_ENV === "production") {
+    issues.push({
+      id: "redis-disabled",
+      severity: "warning",
+      title: "Redis در سرور پرودکشن غیرفعال است",
+      description: "کش و کنترل نرخ درخواست‌ها بدون Redis کارایی و پایداری کمتری دارد.",
+      action: "REDIS_ENABLED و REDIS_URL را در تنظیمات Docker فعال کنید."
+    });
+  }
+
+  if (permissionEnforcementMode === "observe") {
+    issues.push({
+      id: "permission-observe",
+      severity: "warning",
+      title: "کنترل دسترسی در حالت نظارتی است",
+      description:
+        "تخلف‌های دسترسی ثبت می‌شوند، اما هنوز درخواست کاربر مسدود نمی‌شود.",
+      action:
+        "پس از بررسی لاگ یک چرخه کامل کاری، PERMISSION_ENFORCEMENT_MODE را روی enforce قرار دهید."
+    });
+  }
+
+  if (process.env.ALLOW_LEGACY_PUBLIC_RECEIPTS === "true") {
+    issues.push({
+      id: "legacy-public-receipts",
+      severity: "warning",
+      title: "سازگاری رسیدهای عمومی هنوز فعال است",
+      description: "کلاینت‌های قدیمی هنوز می‌توانند رسید را بدون لینک امضاشده باز کنند.",
+      action: "پس از آپدیت همه Desktopها، ALLOW_LEGACY_PUBLIC_RECEIPTS را false کنید."
+    });
+  }
+
+  if (process.env.ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN === "true") {
+    issues.push({
+      id: "legacy-public-attendance",
+      severity: "warning",
+      title: "روش قدیمی حاضری هنوز فعال است",
+      description: "endpoint حاضری بدون device credential برای سازگاری نسخه قبلی موبایل باز مانده است.",
+      action: "پس از آپدیت همه موبایل‌ها، ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN را false کنید."
+    });
+  }
 
   if (resources.cpu.usedPercent >= resources.cpu.criticalPercent) {
     issues.push({
@@ -255,6 +373,16 @@ systemHealthRoute.get("/", async (c) => {
       })),
       disk,
       resources,
+      redis,
+      security: {
+        permissionEnforcementMode
+      },
+      network: {
+        storedServerIp,
+        currentServerIp,
+        serverIpChanged,
+        lanApiBaseUrl: process.env.LAN_API_BASE_URL || null
+      },
       serverConfig,
       database: {
         connected: true,

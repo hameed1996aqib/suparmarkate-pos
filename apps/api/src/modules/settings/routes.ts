@@ -8,6 +8,7 @@ import { getAuthUser, verifyPassword, writeAudit } from "../../lib/auth";
 import {
   ensureRuntimeServerConfigFile,
   getRuntimeServerConfig,
+  isRuntimeBackupDirChangeAllowed,
   updateRuntimeServerConfig
 } from "../../lib/runtime-server-config";
 import { pruneOldBackups } from "../backups/service";
@@ -27,7 +28,10 @@ const updateCompanySettingSchema = z.object({
 
 const updateServerSettingSchema = z.object({
   backupDir: z.string().trim().min(3).max(500),
-  backupRetentionCount: z.coerce.number().int().min(1).max(365)
+  backupRetentionCount: z.coerce.number().int().min(1).max(365),
+  dhcpReservationConfirmed: z.boolean().optional(),
+  upsConfirmed: z.boolean().optional(),
+  backupOnSeparateDiskConfirmed: z.boolean().optional()
 });
 
 const resetSystemSchema = z.object({
@@ -90,6 +94,17 @@ settingsRoute.patch("/server", async (c) => {
   if (!parsed.success) return c.json(zodError(parsed.error), 400);
   if (!path.isAbsolute(parsed.data.backupDir)) {
     return c.json({ message: "Backup directory must be an absolute path" }, 400);
+  }
+
+  const currentConfig = getRuntimeServerConfig();
+  if (!isRuntimeBackupDirChangeAllowed(currentConfig, parsed.data.backupDir)) {
+    return c.json(
+      {
+        message:
+          "مسیر بک‌آپ Docker از ویندوز mount شده است؛ آن را با start-docker-server.ps1 -BackupDir تغییر دهید"
+      },
+      409
+    );
   }
 
   await mkdir(parsed.data.backupDir, { recursive: true });

@@ -4,6 +4,7 @@ import { hashToken, hasPermission, loadAuthUser, verifyAccessToken } from "./aut
 import { prisma } from "./prisma";
 
 let healthWebSocketStarted = false;
+let healthWebSocketServer: WebSocketServer | null = null;
 
 function send(socket: WebSocket, type: string, payload: unknown) {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -32,9 +33,10 @@ async function authorize(token: string) {
 }
 
 export function startSystemHealthWebSocketServer(port = 4002) {
-  if (healthWebSocketStarted) return;
+  if (healthWebSocketStarted) return healthWebSocketServer;
   healthWebSocketStarted = true;
   const wss = new WebSocketServer({ port });
+  healthWebSocketServer = wss;
 
   wss.on("connection", async (socket, request) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
@@ -62,4 +64,5 @@ export function startSystemHealthWebSocketServer(port = 4002) {
   });
 
   console.log(`System health WebSocket running on ws://localhost:${port}`);
+  return wss;
 }

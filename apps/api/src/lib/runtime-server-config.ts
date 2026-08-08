@@ -5,7 +5,16 @@ import path from "node:path";
 export type RuntimeServerConfig = {
   backupDir: string;
   backupRetentionCount: number;
+  backupHostDir: string | null;
+  backupDirManagedExternally: boolean;
+  dhcpReservationConfirmed: boolean;
+  upsConfirmed: boolean;
+  backupOnSeparateDiskConfirmed: boolean;
 };
+
+function envFlag(name: string) {
+  return String(process.env[name] || "").toLowerCase() === "true";
+}
 
 function configPath() {
   return path.resolve(
@@ -19,7 +28,12 @@ function defaultConfig(): RuntimeServerConfig {
     backupRetentionCount: Math.min(
       365,
       Math.max(1, Number.parseInt(process.env.BACKUP_RETENTION_COUNT || "7", 10) || 7)
-    )
+    ),
+    backupHostDir: process.env.BACKUP_HOST_DIR?.trim() || null,
+    backupDirManagedExternally: Boolean(process.env.BACKUP_HOST_DIR?.trim()),
+    dhcpReservationConfirmed: envFlag("DHCP_RESERVATION_CONFIRMED"),
+    upsConfirmed: envFlag("UPS_CONFIRMED"),
+    backupOnSeparateDiskConfirmed: envFlag("BACKUP_SECOND_DISK_CONFIRMED")
   };
 }
 
@@ -31,7 +45,19 @@ function normalize(input: Partial<RuntimeServerConfig>): RuntimeServerConfig {
     Math.max(1, Number.parseInt(String(input.backupRetentionCount ?? fallback.backupRetentionCount), 10) || 7)
   );
 
-  return { backupDir, backupRetentionCount };
+  return {
+    backupDir,
+    backupRetentionCount,
+    backupHostDir: fallback.backupHostDir,
+    backupDirManagedExternally: fallback.backupDirManagedExternally,
+    dhcpReservationConfirmed: Boolean(
+      input.dhcpReservationConfirmed ?? fallback.dhcpReservationConfirmed
+    ),
+    upsConfirmed: Boolean(input.upsConfirmed ?? fallback.upsConfirmed),
+    backupOnSeparateDiskConfirmed: Boolean(
+      input.backupOnSeparateDiskConfirmed ?? fallback.backupOnSeparateDiskConfirmed
+    )
+  };
 }
 
 function loadConfig() {
@@ -46,6 +72,16 @@ let current = loadConfig();
 
 export function getRuntimeServerConfig() {
   return { ...current };
+}
+
+export function isRuntimeBackupDirChangeAllowed(
+  config: RuntimeServerConfig,
+  requestedBackupDir: string
+) {
+  return (
+    !config.backupDirManagedExternally ||
+    path.resolve(requestedBackupDir) === path.resolve(config.backupDir)
+  );
 }
 
 export async function updateRuntimeServerConfig(input: Partial<RuntimeServerConfig>) {

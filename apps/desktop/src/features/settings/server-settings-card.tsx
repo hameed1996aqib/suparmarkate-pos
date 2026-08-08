@@ -29,6 +29,11 @@ import {
 type ServerBackupSetting = {
   backupDir: string;
   backupRetentionCount: number;
+  backupHostDir: string | null;
+  backupDirManagedExternally: boolean;
+  dhcpReservationConfirmed: boolean;
+  upsConfirmed: boolean;
+  backupOnSeparateDiskConfirmed: boolean;
 };
 
 export function ServerSettingsCard() {
@@ -180,10 +185,19 @@ export function ServerSettingsCard() {
                 dir="ltr"
                 placeholder="D:\MuhasebBackups"
                 value={backup?.backupDir || ""}
+                disabled={Boolean(backup?.backupDirManagedExternally)}
                 onChange={(event) =>
                   setBackup((current) => ({
+                    ...(current || {
+                      backupDir: "",
+                      backupRetentionCount: 7,
+                      backupHostDir: null,
+                      backupDirManagedExternally: false,
+                      dhcpReservationConfirmed: false,
+                      upsConfirmed: false,
+                      backupOnSeparateDiskConfirmed: false,
+                    }),
                     backupDir: event.target.value,
-                    backupRetentionCount: current?.backupRetentionCount || 7,
                   }))
                 }
               />
@@ -197,12 +211,81 @@ export function ServerSettingsCard() {
                 value={backup?.backupRetentionCount || 7}
                 onChange={(event) =>
                   setBackup((current) => ({
-                    backupDir: current?.backupDir || "",
+                    ...(current || {
+                      backupDir: "",
+                      backupRetentionCount: 7,
+                      backupHostDir: null,
+                      backupDirManagedExternally: false,
+                      dhcpReservationConfirmed: false,
+                      upsConfirmed: false,
+                      backupOnSeparateDiskConfirmed: false,
+                    }),
                     backupRetentionCount: Number(event.target.value || 7),
                   }))
                 }
               />
             </label>
+            {backup?.backupDirManagedExternally ? (
+              <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
+                <div className="font-medium">مسیر واقعی بک‌آپ در ویندوز</div>
+                <div className="mt-1 font-mono text-xs" dir="ltr">
+                  {backup.backupHostDir || "-"}
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  این مسیر bind mount داکر است. برای تغییر آن، اسکریپت سرور را با گزینه
+                  <span className="mx-1 font-mono">-BackupDir</span>
+                  در پنجره نگهداری اجرا کنید.
+                </div>
+              </div>
+            ) : null}
+            <div className="grid gap-2 border-y border-border py-3 text-sm">
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 accent-primary"
+                  checked={Boolean(backup?.dhcpReservationConfirmed)}
+                  onChange={(event) =>
+                    setBackup((current) =>
+                      current
+                        ? { ...current, dhcpReservationConfirmed: event.target.checked }
+                        : current,
+                    )
+                  }
+                />
+                <span>DHCP reservation یا IP ثابت سرور تنظیم و آزمایش شده است.</span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 accent-primary"
+                  checked={Boolean(backup?.upsConfirmed)}
+                  onChange={(event) =>
+                    setBackup((current) =>
+                      current ? { ...current, upsConfirmed: event.target.checked } : current,
+                    )
+                  }
+                />
+                <span>UPS نصب شده و روشن‌ماندن سرور هنگام قطع برق آزمایش شده است.</span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 accent-primary"
+                  checked={Boolean(backup?.backupOnSeparateDiskConfirmed)}
+                  onChange={(event) =>
+                    setBackup((current) =>
+                      current
+                        ? {
+                            ...current,
+                            backupOnSeparateDiskConfirmed: event.target.checked,
+                          }
+                        : current,
+                    )
+                  }
+                />
+                <span>مسیر بک‌آپ روی دیسک فیزیکی جدا از دیتابیس قرار دارد.</span>
+              </label>
+            </div>
             <div className="flex items-center justify-between gap-3">
               <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
                 مقدار پیشنهادی: ۷ نسخه

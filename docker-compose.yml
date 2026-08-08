@@ -4,19 +4,20 @@ services:
     container_name: muhaseb_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: supermarket
-      POSTGRES_PASSWORD: supermarket_password
-      POSTGRES_DB: supermarket_db
+      POSTGRES_USER: ${POSTGRES_USER:-supermarket}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supermarket_password}
+      POSTGRES_DB: ${POSTGRES_DB:-supermarket_db}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - supermarket_postgres_data:/var/lib/postgresql/data
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U supermarket -d supermarket_db"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 20
+    stop_grace_period: 60s
 
   redis:
     image: redis:7-alpine
@@ -41,9 +42,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://supermarket:supermarket_password@postgres:5432/supermarket_db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-supermarket}:${POSTGRES_PASSWORD:-supermarket_password}@postgres:5432/${POSTGRES_DB:-supermarket_db}
       PORT: 4000
       POS_WS_PORT: 4001
       SYSTEM_HEALTH_WS_PORT: 4002
@@ -53,9 +56,19 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       LAN_API_BASE_URL: ${LAN_API_BASE_URL:-}
       PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+      SERVER_LAN_IP: ${MUHASEB_SERVER_LAN_IP:-}
+      CURRENT_SERVER_LAN_IP: ${MUHASEB_CURRENT_LAN_IP:-}
       REDIS_ENABLED: "true"
       REDIS_URL: redis://redis:6379
+      PERMISSION_ENFORCEMENT_MODE: ${PERMISSION_ENFORCEMENT_MODE:-observe}
+      LOGIN_RATE_LIMIT_ATTEMPTS: ${LOGIN_RATE_LIMIT_ATTEMPTS:-5}
+      LOGIN_RATE_LIMIT_IP_ATTEMPTS: ${LOGIN_RATE_LIMIT_IP_ATTEMPTS:-30}
+      LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-900}
+      ALLOW_LEGACY_PUBLIC_RECEIPTS: ${ALLOW_LEGACY_PUBLIC_RECEIPTS:-true}
+      RECEIPT_TOKEN_TTL_SECONDS: ${RECEIPT_TOKEN_TTL_SECONDS:-180}
+      ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN: ${ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN:-true}
       BACKUP_DIR: /data/backups
+      BACKUP_HOST_DIR: ${MUHASEB_BACKUP_DIR:-D:\BelalBackups}
       BACKUP_SCHEDULE_ENABLED: ${BACKUP_SCHEDULE_ENABLED:-true}
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
       BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT:-7}
@@ -85,6 +98,9 @@ services:
       BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-30}
       RECONCILIATION_MAX_AGE_HOURS: ${RECONCILIATION_MAX_AGE_HOURS:-36}
       PARTITION_WARNING_ROWS: ${PARTITION_WARNING_ROWS:-10000000}
+      DHCP_RESERVATION_CONFIRMED: ${DHCP_RESERVATION_CONFIRMED:-false}
+      UPS_CONFIRMED: ${UPS_CONFIRMED:-false}
+      BACKUP_SECOND_DISK_CONFIRMED: ${BACKUP_SECOND_DISK_CONFIRMED:-false}
       SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-change-me-now}
     ports:
@@ -102,6 +118,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+      start_period: 30s
+    stop_grace_period: 30s
 
 volumes:
   supermarket_postgres_data:

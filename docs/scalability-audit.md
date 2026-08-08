@@ -231,9 +231,11 @@ Do not partition immediately without measurements. Prepare for it once rows reac
 - [ ] Schedule `ANALYZE`.
 - [ ] Monitor connection count and query latency.
 - [ ] Configure connection pool limits for the Windows server capacity.
-- [ ] Put DB files and backups on separate disks where possible.
+- [ ] Put DB files and backups on separate disks where possible. System Health
+  now keeps this item visible until Admin confirms the physical-disk check.
 - [x] Monitor free disk space and alert before the configured threshold.
-- [ ] Use UPS power protection for the store server.
+- [ ] Use UPS power protection for the store server. System Health now keeps
+  this item visible until the controlled power-loss test is confirmed.
 
 ## P1: Inventory, Alerts And POS
 
@@ -397,6 +399,11 @@ warnings.
 | RAM low | Free RAM at or below `15%`; critical at `5%` | Close unnecessary server apps; upgrade RAM if sustained | `P2 Load Testing And Observability` |
 | Partition review | Any tracked table reaches `10,000,000` estimated rows | Run readiness SQL on staging and schedule support review | `P1.7 Partition the largest append-only tables when needed` |
 | Maintenance mode active | Restore or maintenance flag remains active | Verify restore completion and API state | `P0.1 Restore maintenance mode` |
+| Redis unavailable | Redis is enabled but ping fails | Inspect `muhaseb_redis`; POS falls back to PostgreSQL while it is repaired | `P1 Redis cache health and PostgreSQL fallback` |
+| Server IP changed | Current LAN IP differs from the stored installation IP | Stop client rollout, restore the DHCP reservation/static IP, then verify all clients | `P1 Server networking` |
+| Stable IP unconfirmed | Admin has not confirmed DHCP reservation/static IP | Reserve the server IP in the router and test after router/server restart | `P1 Server networking` |
+| UPS unconfirmed | Controlled power-loss protection has not been confirmed | Install/test UPS and record the confirmation in Server Settings | `P1 Server power-loss protection` |
+| Separate backup disk unconfirmed | Backup destination has not been confirmed as a second physical disk | Move the bind-mounted backup directory to another disk and confirm it | `P0 Backup isolation` |
 
 Thresholds are configurable through `.env`: `DISK_WARNING_PERCENT`,
 `BACKUP_MAX_AGE_HOURS`, `RECONCILIATION_MAX_AGE_HOURS`,
@@ -577,6 +584,12 @@ expensive vacuum/index maintenance, or degraded query latency.
 - [ ] Run the documented load tests, restore rehearsal and `EXPLAIN (ANALYZE,
   BUFFERS)` review on production-like data before claiming hundreds-of-GB
   readiness.
+
+Release tooling now includes a concurrent read-heavy dashboard/report/ledger
+test, a read-only query-plan capture for barcode, journals and sales, and an
+isolated integration test for ten concurrent sales on one product. This item
+remains unchecked until the scripts and restore rehearsal have actually passed
+against a full customer-data copy and their artifacts are attached to a release.
 
 ## Production Readiness Gate For Hundreds Of GB
 

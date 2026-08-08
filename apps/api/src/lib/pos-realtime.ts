@@ -93,6 +93,7 @@ type HeldPosCart = {
 const heldCartsBySession = new Map<string, HeldPosCart[]>();
 
 let wsServerStarted = false;
+let posWebSocketServer: WebSocketServer | null = null;
 
 function safeJson(value: unknown) {
   return JSON.stringify(value, (_key, data) => {
@@ -803,11 +804,12 @@ export function deleteHeldPosCart(input: {
 }
 
 export function startPosWebSocketServer(port = 4001) {
-  if (wsServerStarted) return;
+  if (wsServerStarted) return posWebSocketServer;
 
   wsServerStarted = true;
 
   const wss = new WebSocketServer({ port });
+  posWebSocketServer = wss;
 
   wss.on("connection", (socket, request) => {
     const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
@@ -999,4 +1001,5 @@ export function startPosWebSocketServer(port = 4001) {
   });
 
   console.log(`POS WebSocket running on ws://localhost:${port}`);
+  return wss;
 }

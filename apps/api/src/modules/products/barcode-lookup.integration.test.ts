@@ -25,11 +25,15 @@ function toPersianDigits(value: string) {
 }
 
 beforeAll(async () => {
-  const [unit, warehouse, currency] = await Promise.all([
-    prisma.unit.findFirst({ where: { deletedAt: null, isActive: true } }),
-    prisma.warehouse.findFirst({ where: { deletedAt: null, isActive: true } }),
-    prisma.currency.findFirst({ where: { deletedAt: null, isBase: true } }),
-  ]);
+  const unit = await prisma.unit.findFirst({
+    where: { deletedAt: null, isActive: true },
+  });
+  const warehouse = await prisma.warehouse.findFirst({
+    where: { deletedAt: null, isActive: true },
+  });
+  const currency = await prisma.currency.findFirst({
+    where: { deletedAt: null, isBase: true },
+  });
 
   if (!unit || !warehouse || !currency) {
     throw new Error("Seeded unit, warehouse and base currency are required for product lookup tests.");
@@ -54,94 +58,74 @@ describe("normalized product barcode lookup", () => {
     const secondRawBarcode = toPersianDigits(`${digits.slice(0, 4)} ${digits.slice(4)}`);
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    const [first, second] = await Promise.all([
-      prisma.product.create({
-        data: {
-          name: `Legacy barcode first ${suffix}`,
-          sku: `LEGACY-BARCODE-A-${suffix}`,
-          barcode: firstRawBarcode,
-          barcodeNormalized: null,
-          baseUnitId: unitId,
-          defaultWarehouseId: warehouseId,
-          units: {
-            create: {
-              unitId,
-              conversionRate: 1,
-              purchasePrice: 5,
-              salePrice: 10,
-              isDefaultPurchase: true,
-              isDefaultSale: true,
-            },
+    const first = await prisma.product.create({
+      data: {
+        name: `Legacy barcode first ${suffix}`,
+        sku: `LEGACY-BARCODE-A-${suffix}`,
+        barcode: firstRawBarcode,
+        barcodeNormalized: null,
+        baseUnitId: unitId,
+        defaultWarehouseId: warehouseId,
+        units: {
+          create: {
+            unitId,
+            conversionRate: 1,
+            purchasePrice: 5,
+            salePrice: 10,
+            isDefaultPurchase: true,
+            isDefaultSale: true,
           },
         },
-      }),
-      prisma.product.create({
-        data: {
-          name: `Legacy barcode second ${suffix}`,
-          sku: `LEGACY-BARCODE-B-${suffix}`,
-          barcode: secondRawBarcode,
-          barcodeNormalized: null,
-          baseUnitId: unitId,
-          defaultWarehouseId: warehouseId,
-          units: {
-            create: {
-              unitId,
-              conversionRate: 1,
-              purchasePrice: 6,
-              salePrice: 12,
-              isDefaultPurchase: true,
-              isDefaultSale: true,
-            },
+      },
+    });
+    const second = await prisma.product.create({
+      data: {
+        name: `Legacy barcode second ${suffix}`,
+        sku: `LEGACY-BARCODE-B-${suffix}`,
+        barcode: secondRawBarcode,
+        barcodeNormalized: null,
+        baseUnitId: unitId,
+        defaultWarehouseId: warehouseId,
+        units: {
+          create: {
+            unitId,
+            conversionRate: 1,
+            purchasePrice: 6,
+            salePrice: 12,
+            isDefaultPurchase: true,
+            isDefaultSale: true,
           },
         },
-      }),
-    ]);
+      },
+    });
     productIds.push(first.id, second.id);
 
-    await Promise.all([
-      prisma.stockLot.create({
-        data: {
-          productId: first.id,
-          warehouseId,
-          initialQuantity: 8,
-          remainingQuantity: 8,
-          unitCost: 5,
-          currencyId,
-          exchangeRate: 1,
-          baseUnitCost: 5,
-          sourceType: "BARCODE_LOOKUP_TEST",
-        },
-      }),
-      prisma.stockBalance.create({
-        data: {
-          productId: first.id,
-          warehouseId,
-          quantityBase: 8,
-          valueBase: 40,
-        },
-      }),
-      prisma.stockLot.create({
-        data: {
-          productId: second.id,
-          warehouseId,
-          initialQuantity: 3,
-          remainingQuantity: 3,
-          unitCost: 6,
-          currencyId,
-          exchangeRate: 1,
-          baseUnitCost: 6,
-          sourceType: "BARCODE_LOOKUP_TEST",
-        },
-      }),
-      prisma.stockBalance.create({
-        data: {
-          productId: second.id,
-          warehouseId,
-          quantityBase: 3,
-          valueBase: 18,
-        },
-      }),
-    ]);
+    await prisma.stockLot.create({
+      data: {
+        productId: first.id,
+        warehouseId,
+        initialQuantity: 8,
+        remainingQuantity: 8,
+        unitCost: 5,
+        currencyId,
+        exchangeRate: 1,
+        baseUnitCost: 5,
+        sourceType: "BARCODE_LOOKUP_TEST",
+      },
+    });
+    await prisma.stockLot.create({
+      data: {
+        productId: second.id,
+        warehouseId,
+        initialQuantity: 3,
+        remainingQuantity: 3,
+        unitCost: 6,
+        currencyId,
+        exchangeRate: 1,
+        baseUnitCost: 6,
+        sourceType: "BARCODE_LOOKUP_TEST",
+      },
+    });
 
     const lookupResponse = await productsRoute.request(
       `http://localhost/barcode-lookup?barcode=${encodeURIComponent(toPersianDigits(firstRawBarcode))}&warehouseId=${warehouseId}`,

@@ -55,6 +55,12 @@ const updateProductSchema = createProductSchema.partial().extend({
   units: z.array(productUnitSchema).optional(),
 });
 
+const mergeProductSchema = z.object({
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
+  confirm: z.literal(true),
+});
+
 const imageMimeTypes = new Set([
   "image/jpeg",
   "image/png",
@@ -220,6 +226,213 @@ const productLookupInclude = {
     orderBy: { createdAt: "asc" as const },
   },
 };
+
+const productMergeInclude = {
+  units: {
+    include: { unit: true },
+    orderBy: { unitId: "asc" as const },
+  },
+  stockBalances: {
+    include: { warehouse: true },
+    orderBy: { warehouseId: "asc" as const },
+  },
+  _count: {
+    select: {
+      stockLots: true,
+      stockMovements: true,
+      purchaseItems: true,
+      purchaseReturnItems: true,
+      saleItems: true,
+      saleReturnItems: true,
+    },
+  },
+} satisfies Prisma.ProductInclude;
+
+type ProductMergeCandidate = Prisma.ProductGetPayload<{
+  include: typeof productMergeInclude;
+}>;
+
+function productUnitSignature(product: ProductMergeCandidate) {
+  return product.units
+    .map(
+      (unit) =>
+        `${unit.unitId}:${Number(unit.conversionRate).toFixed(4)}`,
+    )
+    .sort();
+}
+
+function productMergeCounts(product: ProductMergeCandidate) {
+  return {
+    stockBalances: product.stockBalances.length,
+    stockLots: product._count.stockLots,
+    stockMovements: product._count.stockMovements,
+    purchaseItems: product._count.purchaseItems,
+    purchaseReturnItems: product._count.purchaseReturnItems,
+    saleItems: product._count.saleItems,
+    saleReturnItems: product._count.saleReturnItems,
+  };
+}
+
+function productMergeSummary(product: ProductMergeCandidate) {
+  return {
+    id: product.id,
+    name: product.name,
+    sku: product.sku,
+    barcode: product.barcode,
+    barcodeNormalized: product.barcodeNormalized,
+    baseUnitId: product.baseUnitId,
+    categoryId: product.categoryId,
+    defaultWarehouseId: product.defaultWarehouseId,
+    hasExpiry: product.hasExpiry,
+    isActive: product.isActive,
+    deletedAt: product.deletedAt,
+    units: product.units.map((unit) => ({
+      unitId: unit.unitId,
+      unitName: unit.unit.shortName || unit.unit.name,
+      conversionRate: Number(unit.conversionRate),
+      purchasePrice:
+        unit.purchasePrice === null ? null : Number(unit.purchasePrice),
+      salePrice: unit.salePrice === null ? null : Number(unit.salePrice),
+    })),
+    stock: product.stockBalances.map((balance) => ({
+      warehouseId: balance.warehouseId,
+      warehouseName: balance.warehouse.name,
+      quantityBase: Number(balance.quantityBase),
+      valueBase: Number(balance.valueBase),
+      earliestExpiryAt: balance.earliestExpiryAt,
+    })),
+    counts: productMergeCounts(product),
+  };
+}
+
+function buildProductMergePreview(
+  source: ProductMergeCandidate,
+  target: ProductMergeCandidate,
+  normalizedOwner: { id: string; name: string } | null,
+) {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  const sourceNormalized = normalizeBarcodeText(source.barcode || "");
+  const targetNormalized = normalizeBarcodeText(target.barcode || "");
+
+  if (source.id === target.id) {
+    blockers.push("محصول مبدا و مقصد نمی‌تواند یک محصول باشد");
+  }
+  if (source.deletedAt || target.deletedAt) {
+    blockers.push("محصول حذف‌شده قابل ادغام نیست");
+  }
+  if (!sourceNormalized || sourceNormalized !== targetNormalized) {
+    blockers.push("بارکد نرمال‌شده دو محصول یکسان نیست");
+  }
+  if (source.baseUnitId !== target.baseUnitId) {
+    blockers.push("واحد پایه دو محصول یکسان نیست");
+  }
+  if (
+    JSON.stringify(productUnitSignature(source)) !==
+    JSON.stringify(productUnitSignature(target))
+  ) {
+    blockers.push("واحدها یا نسبت تبدیل دو محصول یکسان نیست");
+  }
+  if (normalizedOwner) {
+    blockers.push(
+      `محصول «${normalizedOwner.name}» مالک فعلی بارکد نرمال‌شده است؛ آن را به‌عنوان مقصد انتخاب کنید`,
+    );
+  }
+
+  if (source.name !== target.name) warnings.push("نام دو محصول متفاوت است؛ نام مقصد حفظ می‌شود");
+  if (source.categoryId !== target.categoryId) {
+    warnings.push("کتگوری دو محصول متفاوت است؛ کتگوری مقصد حفظ می‌شود");
+  }
+  if (source.hasExpiry !== target.hasExpiry) {
+    warnings.push("تنظیم تاریخ انقضای دو محصول متفاوت است؛ تنظیم مقصد حفظ می‌شود");
+  }
+  if (!source.isActive || !target.isActive) {
+    warnings.push("حداقل یکی از محصولات غیرفعال است");
+  }
+
+  const sourcePrices = source.units.map((unit) => [
+    unit.unitId,
+    Number(unit.purchasePrice || 0),
+    Number(unit.salePrice || 0),
+  ]);
+  const targetPrices = target.units.map((unit) => [
+    unit.unitId,
+    Number(unit.purchasePrice || 0),
+    Number(unit.salePrice || 0),
+  ]);
+  if (JSON.stringify(sourcePrices) !== JSON.stringify(targetPrices)) {
+    warnings.push("قیمت واحدها متفاوت است؛ قیمت‌های محصول مقصد حفظ می‌شود");
+  }
+
+  const sourceSummary = productMergeSummary(source);
+  const targetSummary = productMergeSummary(target);
+
+  return {
+    canMerge: blockers.length === 0,
+    normalizedBarcode: sourceNormalized || targetNormalized,
+    blockers,
+    warnings,
+    source: sourceSummary,
+    target: targetSummary,
+    combined: {
+      quantityBase:
+        sourceSummary.stock.reduce((sum, row) => sum + row.quantityBase, 0) +
+        targetSummary.stock.reduce((sum, row) => sum + row.quantityBase, 0),
+      valueBase:
+        sourceSummary.stock.reduce((sum, row) => sum + row.valueBase, 0) +
+        targetSummary.stock.reduce((sum, row) => sum + row.valueBase, 0),
+      counts: Object.fromEntries(
+        Object.keys(sourceSummary.counts).map((key) => [
+          key,
+          sourceSummary.counts[key as keyof typeof sourceSummary.counts] +
+            targetSummary.counts[key as keyof typeof targetSummary.counts],
+        ]),
+      ),
+    },
+    policy: {
+      retainedProductId: target.id,
+      retainedName: target.name,
+      retainedPrices: "TARGET",
+      historicalRelations: "MOVE_TO_TARGET",
+      sourceProduct: "SOFT_DELETE_AND_CLEAR_IDENTIFIERS",
+    },
+  };
+}
+
+async function loadProductMergeCandidates(
+  tx: Prisma.TransactionClient,
+  sourceId: string,
+  targetId: string,
+) {
+  const source = await tx.product.findUnique({
+    where: { id: sourceId },
+    include: productMergeInclude,
+  });
+  const target = await tx.product.findUnique({
+    where: { id: targetId },
+    include: productMergeInclude,
+  });
+
+  if (!source || !target) return { source, target, normalizedOwner: null };
+
+  const normalized = normalizeBarcodeText(source.barcode || "");
+  const normalizedOwner = normalized
+    ? await tx.product.findFirst({
+        where: {
+          id: { notIn: [sourceId, targetId] },
+          deletedAt: null,
+          barcodeNormalized: normalized,
+        },
+        select: { id: true, name: true },
+      })
+    : null;
+
+  return { source, target, normalizedOwner };
+}
+
+function isAdminUser(c: Parameters<typeof getAuthUser>[0]) {
+  return getAuthUser(c)?.role === "Admin";
+}
 
 productsRoute.get("/", async (c) => {
   const pagination = getPagePagination(c, {
@@ -554,6 +767,10 @@ productsRoute.get("/barcode-lookup", async (c) => {
 });
 
 productsRoute.get("/barcode-duplicates", async (c) => {
+  if (!isAdminUser(c)) {
+    return c.json({ message: "این ابزار فقط برای مدیر سیستم قابل استفاده است" }, 403);
+  }
+
   const rows = await prisma.$queryRaw<
     Array<{
       normalized: string;
@@ -613,6 +830,181 @@ productsRoute.get("/barcode-duplicates", async (c) => {
   `;
 
   return c.json({ data: rows });
+});
+
+productsRoute.get("/merge-preview", async (c) => {
+  if (!isAdminUser(c)) {
+    return c.json({ message: "این ابزار فقط برای مدیر سیستم قابل استفاده است" }, 403);
+  }
+
+  const sourceId = (c.req.query("sourceId") || "").trim();
+  const targetId = (c.req.query("targetId") || "").trim();
+  if (!sourceId || !targetId) {
+    return c.json({ message: "محصول مبدا و مقصد ضروری است" }, 400);
+  }
+
+  const candidates = await prisma.$transaction((tx) =>
+    loadProductMergeCandidates(tx, sourceId, targetId),
+  );
+  if (!candidates.source || !candidates.target) {
+    return c.json({ message: "یکی از محصولات پیدا نشد" }, 404);
+  }
+
+  return c.json({
+    data: buildProductMergePreview(
+      candidates.source,
+      candidates.target,
+      candidates.normalizedOwner,
+    ),
+  });
+});
+
+productsRoute.post("/merge", async (c) => {
+  const authUser = getAuthUser(c);
+  if (authUser?.role !== "Admin") {
+    return c.json({ message: "این ابزار فقط برای مدیر سیستم قابل استفاده است" }, 403);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = mergeProductSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(zodError(parsed.error), 400);
+  }
+
+  const { sourceId, targetId } = parsed.data;
+  try {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT id
+          FROM "Product"
+          WHERE id IN (${Prisma.join([sourceId, targetId])})
+          ORDER BY id
+          FOR UPDATE
+        `);
+
+        const candidates = await loadProductMergeCandidates(tx, sourceId, targetId);
+        if (!candidates.source || !candidates.target) {
+          return { status: "NOT_FOUND" as const };
+        }
+
+        const preview = buildProductMergePreview(
+          candidates.source,
+          candidates.target,
+          candidates.normalizedOwner,
+        );
+        if (!preview.canMerge) {
+          return { status: "BLOCKED" as const, preview };
+        }
+
+        // StockBalance is a database-maintained projection of StockLot. Moving
+        // the lots lets the stock trigger rebuild both products atomically.
+        await tx.stockLot.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.stockMovement.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.purchaseItem.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.purchaseReturnItem.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.saleItem.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.saleReturnItem.updateMany({
+          where: { productId: sourceId },
+          data: { productId: targetId },
+        });
+        await tx.productUnit.deleteMany({ where: { productId: sourceId } });
+
+        await tx.product.update({
+          where: { id: sourceId },
+          data: {
+            barcode: null,
+            barcodeNormalized: null,
+            sku: null,
+            ...auditDeleteData(authUser.id),
+          },
+        });
+        await tx.product.update({
+          where: { id: targetId },
+          data: {
+            barcodeNormalized: preview.normalizedBarcode,
+            ...auditUpdateData(authUser.id),
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId: authUser.id,
+            action: "PRODUCT_MERGED",
+            entityType: "Product",
+            entityId: targetId,
+            description: `Product ${sourceId} merged into ${targetId}`,
+            metadata: {
+              sourceId,
+              targetId,
+              normalizedBarcode: preview.normalizedBarcode,
+              sourceCounts: preview.source.counts,
+              combined: preview.combined,
+              warnings: preview.warnings,
+            },
+            ipAddress: c.req.header("x-forwarded-for") || null,
+            userAgent: c.req.header("user-agent") || null,
+          },
+        });
+
+        return { status: "MERGED" as const, preview };
+      },
+      { isolationLevel: "Serializable" },
+    );
+
+    if (result.status === "NOT_FOUND") {
+      return c.json({ message: "یکی از محصولات پیدا نشد" }, 404);
+    }
+    if (result.status === "BLOCKED") {
+      return c.json(
+        {
+          message: "این دو محصول با شرایط امن قابل ادغام نیست",
+          data: result.preview,
+        },
+        409,
+      );
+    }
+
+    await cacheDeleteByPattern("pos:products:*");
+    return c.json({
+      message: "محصولات با موفقیت ادغام شدند",
+      data: {
+        sourceId,
+        targetId,
+        preview: result.preview,
+      },
+    });
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      ["P2002", "P2034"].includes(String((error as { code?: string }).code))
+    ) {
+      return c.json(
+        {
+          message:
+            "اطلاعات هم‌زمان تغییر کرده است؛ صفحه را تازه کنید و preview را دوباره بررسی کنید",
+        },
+        409,
+      );
+    }
+    throw error;
+  }
 });
 
 productsRoute.get("/:id", async (c) => {

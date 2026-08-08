@@ -1781,6 +1781,15 @@ salesRoute.post("/", async (c) => {
       }
     }
 
+    if (error instanceof Error && error.message === "Not enough stock for concurrent sale") {
+      return c.json(
+        {
+          message: "Stock changed while this sale was being saved. Refresh the product and try again."
+        },
+        409
+      );
+    }
+
     throw error;
   }
 

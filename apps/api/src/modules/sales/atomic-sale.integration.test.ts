@@ -269,8 +269,8 @@ describe("atomic POS sale", () => {
     const responses = await Promise.all(
       requestIds.map((requestId) =>
         saleRequest(fixture, requestId, {
-          quantity: 0.5,
-          paidAmount: 10,
+          quantity: 0.4,
+          paidAmount: 8,
           unitPrice: 20
         })
       )
@@ -294,11 +294,16 @@ describe("atomic POS sale", () => {
       })
     ]);
 
-    expect(lots.reduce((sum, lot) => sum + Number(lot.remainingQuantity), 0)).toBe(4);
-    expect(movements.reduce((sum, movement) => sum + Math.abs(Number(movement.quantity)), 0)).toBe(5);
+    expect(lots.reduce((sum, lot) => sum + Number(lot.remainingQuantity), 0)).toBe(5);
+    expect(
+      movements.reduce(
+        (sum, movement) => sum + Math.abs(Number(movement.quantity)),
+        0
+      )
+    ).toBeCloseTo(4, 4);
     expect(journals.filter((journal) => journal.sourceType === "POS_SALE")).toHaveLength(10);
     expect(journals.filter((journal) => journal.sourceType === "POS_SALE_COGS")).toHaveLength(10);
-    expect(Number(cashAccount.balance)).toBe(100);
+    expect(Number(cashAccount.balance)).toBe(80);
   });
 
   it("creates stock, money, revenue and COGS exactly once for concurrent retries", async () => {
@@ -631,10 +636,18 @@ describe("atomic POS sale", () => {
       cacheDeleteByPattern("dashboard:summary:*"),
       cacheDeleteByPattern("reports:management:*")
     ]);
+    const receiptTokenResponse = await posReceiptsRoute.request(
+      `http://localhost/sales/${saleId}/token`,
+      { method: "POST" }
+    );
+    expect(receiptTokenResponse.status).toBe(200);
+    const receiptTokenPayload = await receiptTokenResponse.json() as any;
     const [dashboardResponse, managementResponse, receiptResponse] = await Promise.all([
       dashboardRoute.request("http://localhost/summary?period=today"),
       reportsRoute.request("http://localhost/management"),
-      posReceiptsRoute.request(`http://localhost/sales/${saleId}/html?width=80`)
+      posReceiptsRoute.request(
+        `http://localhost/sales/${saleId}/html?accessToken=${encodeURIComponent(receiptTokenPayload.data.token)}&width=80`
+      )
     ]);
     expect(dashboardResponse.status).toBe(200);
     expect(managementResponse.status).toBe(200);

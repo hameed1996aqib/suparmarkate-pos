@@ -16,6 +16,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import {
   ArchiveRestore,
@@ -33,6 +34,7 @@ import {
   FileBarChart,
   FileText,
   Expand,
+  History,
   Home,
   HeartPulse,
   Landmark,
@@ -169,6 +171,11 @@ const SettingsPageRoute = lazy(() =>
 const DashboardPageRoute = lazy(() =>
   import("@/features/dashboard/dashboard-page").then((module) => ({
     default: module.DashboardPage,
+  })),
+);
+const ProductHistoryPageRoute = lazy(() =>
+  import("@/features/products/product-history-page").then((module) => ({
+    default: module.ProductHistoryPage,
   })),
 );
 const CurrencyHistoryPageRoute = lazy(() =>
@@ -860,6 +867,16 @@ function App() {
             <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/cash-bank" element={<CashBankPage />} />
             <Route path="/products" element={<ProductsPage />} />
+            <Route
+              path="/products/:productId/history"
+              element={
+                <Suspense
+                  fallback={<PageLoading label="در حال خواندن سابقه محصول..." />}
+                >
+                  <ProductHistoryPageRoute />
+                </Suspense>
+              }
+            />
             <Route path="/inventory" element={<InventoryPage />} />
             <Route
               path="/settings"
@@ -9481,6 +9498,7 @@ function ReportsPage() {
 }
 
 function ProductsPage() {
+  const navigate = useNavigate();
   const isAdmin = useMemo(() => {
     try {
       const user = JSON.parse(localStorage.getItem(AUTH_USER_KEY) || "null");
@@ -10019,6 +10037,11 @@ function ProductsPage() {
               onSecondary={printProductBarcode}
               secondaryLabel="چاپ بارکود"
               extraActions={[
+                {
+                  label: "سابقه محصول",
+                  icon: <History className="size-4" />,
+                  onClick: (row) => navigate(`/products/${row.id}/history`),
+                },
                 {
                   label: "دوپلیکیت",
                   icon: <Copy className="size-4" />,

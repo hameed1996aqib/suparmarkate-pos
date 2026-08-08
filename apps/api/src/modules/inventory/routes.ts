@@ -57,6 +57,43 @@ const updateOpeningStockSchema = z.object({
   note: z.string().trim().max(500).optional().nullable()
 });
 
+const inboundMovementTypes = [
+  StockMovementType.OPENING_STOCK,
+  StockMovementType.PURCHASE,
+  StockMovementType.SALE_RETURN,
+  StockMovementType.ADJUSTMENT_IN,
+  StockMovementType.TRANSFER_IN
+] as const;
+
+const outboundMovementTypes = [
+  StockMovementType.SALE,
+  StockMovementType.PURCHASE_RETURN,
+  StockMovementType.ADJUSTMENT_OUT,
+  StockMovementType.DAMAGE,
+  StockMovementType.TRANSFER_OUT
+] as const;
+
+function movementDirection(type: StockMovementType) {
+  if (inboundMovementTypes.includes(type as (typeof inboundMovementTypes)[number])) {
+    return "IN" as const;
+  }
+
+  if (outboundMovementTypes.includes(type as (typeof outboundMovementTypes)[number])) {
+    return "OUT" as const;
+  }
+
+  throw new Error(`Unsupported stock movement type: ${type}`);
+}
+
+function movementNetTotal(
+  rows: Array<{ type: StockMovementType; _sum: { quantity: unknown } }>
+) {
+  return rows.reduce((total, row) => {
+    const quantity = Number(row._sum.quantity || 0);
+    return total + (movementDirection(row.type) === "IN" ? quantity : -quantity);
+  }, 0);
+}
+
 function parseExpiryDate(value: string | null | undefined) {
   if (!value) return null;
 
@@ -494,6 +531,151 @@ inventoryRoute.get("/movements", async (c) => {
   }));
 
   return c.json({ data: decoratedMovements, pagination: createPaginationMeta({ ...pagination, total }) });
+});
+
+inventoryRoute.get("/product-history/:productId", async (c) => {
+  const productId = c.req.param("productId");
+  const range = getRecentDateRange(c);
+  const pagination = getPagePagination(c, { defaultLimit: 30, maxLimit: 200 });
+
+  if (range.gte > range.lte) {
+    return c.json({ message: "From date must be before to date" }, 400);
+  }
+
+  const product = await prisma.product.findFirst({
+    where: { id: productId, deletedAt: null },
+    include: { baseUnit: true, category: true }
+  });
+
+  if (!product) {
+    return c.json({ message: "Product not found" }, 404);
+  }
+
+  const periodWhere = {
+    productId,
+    createdAt: { gte: range.gte, lte: range.lte }
+  };
+
+  const [openingGroups, periodGroups, movements, total] = await Promise.all([
+    prisma.stockMovement.groupBy({
+      by: ["type"],
+      where: { productId, createdAt: { lt: range.gte } },
+      _sum: { quantity: true }
+    }),
+    prisma.stockMovement.groupBy({
+      by: ["type"],
+      where: periodWhere,
+      _sum: { quantity: true }
+    }),
+    prisma.stockMovement.findMany({
+      where: periodWhere,
+      include: {
+        warehouse: true,
+        lot: true,
+        createdByUser: true
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: pagination.skip,
+      take: pagination.limit
+    }),
+    prisma.stockMovement.count({ where: periodWhere })
+  ]);
+
+  const currencyIds = Array.from(
+    new Set(
+      movements
+        .map((movement) => movement.currencyId)
+        .filter((id): id is string => Boolean(id))
+    )
+  );
+  const currencies = currencyIds.length
+    ? await prisma.currency.findMany({
+        where: { id: { in: currencyIds } },
+        select: { id: true, code: true, symbol: true }
+      })
+    : [];
+  const currencyById = new Map(currencies.map((currency) => [currency.id, currency]));
+
+  const opening = movementNetTotal(openingGroups);
+  const totalIn = periodGroups
+    .filter((row) => movementDirection(row.type) === "IN")
+    .reduce((sum, row) => sum + Number(row._sum.quantity || 0), 0);
+  const totalOut = periodGroups
+    .filter((row) => movementDirection(row.type) === "OUT")
+    .reduce((sum, row) => sum + Number(row._sum.quantity || 0), 0);
+
+  const movementIds = movements.map((movement) => movement.id);
+  const cancellationRows = movementIds.length
+    ? await prisma.stockMovement.findMany({
+        where: {
+          referenceId: { in: movementIds },
+          referenceType: { endsWith: "_CANCEL" }
+        },
+        select: { referenceId: true }
+      })
+    : [];
+  const cancelledMovementIds = new Set(
+    cancellationRows
+      .map((movement) => movement.referenceId)
+      .filter((id): id is string => Boolean(id))
+  );
+
+  return c.json({
+    data: {
+      product: {
+        id: product.id,
+        name: product.name,
+        barcode: product.barcode,
+        sku: product.sku,
+        categoryName: product.category?.name || null,
+        baseUnitName: product.baseUnit.shortName || product.baseUnit.name
+      },
+      range: { from: range.gte, to: range.lte },
+      summary: {
+        opening,
+        totalIn,
+        totalOut,
+        closing: opening + totalIn - totalOut
+      },
+      movements: movements.map((movement) => {
+        const direction = movementDirection(movement.type);
+        const quantity = Number(movement.quantity);
+        const baseUnitCost = Number(movement.baseUnitCost ?? movement.unitCost ?? 0);
+        const currency = movement.currencyId
+          ? currencyById.get(movement.currencyId)
+          : null;
+
+        return {
+          id: movement.id,
+          type: movement.type,
+          direction,
+          quantity,
+          signedQuantity: direction === "IN" ? quantity : -quantity,
+          unitCost: movement.unitCost == null ? null : Number(movement.unitCost),
+          baseUnitCost:
+            movement.baseUnitCost == null ? null : Number(movement.baseUnitCost),
+          totalBaseCost: quantity * baseUnitCost,
+          exchangeRate: Number(movement.exchangeRate || 1),
+          currencyCode: currency?.code || currency?.symbol || null,
+          warehouseName: movement.warehouse.name,
+          lotId: movement.lotId,
+          expiryDate: movement.lot?.expiryDate || null,
+          referenceType: movement.referenceType,
+          referenceId: movement.referenceId,
+          note: movement.note,
+          createdAt: movement.createdAt,
+          createdBy:
+            movement.createdByUser?.displayName ||
+            movement.createdByUser?.username ||
+            null,
+          isCancelled:
+            Boolean(movement.referenceType?.endsWith("_CANCEL")) ||
+            cancelledMovementIds.has(movement.id)
+        };
+      })
+    },
+    pagination: createPaginationMeta({ ...pagination, total })
+  });
 });
 
 inventoryRoute.get("/transfer-reports", async (c) => {

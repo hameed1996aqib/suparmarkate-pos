@@ -105,6 +105,19 @@ describe("route permission policies", () => {
     ).toBe(false);
   });
 
+  it("restricts product history to inventory permissions", () => {
+    const requirement = resolvePermissionRequirement(
+      "/api/inventory/product-history/product-1",
+      "GET",
+    );
+    expect(
+      requirement && satisfiesPermissionRequirement(user(["inventory.view"]), requirement),
+    ).toBe(true);
+    expect(
+      requirement && satisfiesPermissionRequirement(user(["pos.sell"]), requirement),
+    ).toBe(false);
+  });
+
   it("restricts mobile device administration to users.manage", () => {
     const listRequirement = resolvePermissionRequirement("/api/users/devices", "GET");
     const revokeRequirement = resolvePermissionRequirement(

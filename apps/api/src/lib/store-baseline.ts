@@ -87,6 +87,7 @@ export async function bootstrapStore(
       username: admin.username,
       displayName: admin.displayName,
       passwordHash: admin.passwordHash,
+      mustChangePassword: true,
       roleId: adminRole.id,
       isActive: true
     }

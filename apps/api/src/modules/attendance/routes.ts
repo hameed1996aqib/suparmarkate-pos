@@ -8,6 +8,7 @@ import { zodError } from "../../lib/api";
 import { getAuthUser, hasPermission, writeAudit } from "../../lib/auth";
 import { auditCreateData, auditUpdateData } from "../../lib/audit-meta";
 import { AttendanceStatus } from "../../generated/prisma/enums";
+import { verifyDeviceCredential } from "../../lib/device-credentials";
 
 export const attendanceRoute = new Hono();
 
@@ -803,6 +804,9 @@ attendanceRoute.post("/qr-token", async (c) => {
 });
 
 attendanceRoute.post("/scan", async (c) => {
+  if (process.env.ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN !== "true") {
+    return c.json({ message: "روش قدیمی حاضری غیرفعال شده است؛ اپ موبایل را آپدیت کنید" }, 410);
+  }
   const body = await c.req.json().catch(() => null);
   const parsed = scanSchema.safeParse(body);
 
@@ -828,6 +832,15 @@ attendanceRoute.post("/scan-auth", async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = scanAuthSchema.safeParse(body);
   if (!parsed.success) return c.json(zodError(parsed.error), 400);
+
+  const verifiedDevice = await verifyDeviceCredential({
+    userId: authUser.id,
+    deviceId: parsed.data.deviceId,
+    credential: c.req.header("x-device-credential") || ""
+  });
+  if (!verifiedDevice) {
+    return c.json({ message: "این موبایل معتبر نیست یا دسترسی آن لغو شده است؛ دوباره وارد شوید" }, 403);
+  }
 
   const employee = await prisma.employee.findFirst({
     where: {

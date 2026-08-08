@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../../lib/prisma";
 import { PartyTransactionType } from "../../generated/prisma/enums";
+import { issueReceiptAccess, requireReceiptAccess } from "../../lib/receipt-access";
 
 export const receiptsRoute = new Hono();
 
@@ -212,6 +213,14 @@ function receiptCss() {
   `;
 }
 
+receiptsRoute.post("/sales/:id/token", (c) =>
+  issueReceiptAccess(c, {
+    resource: "sale-receipt",
+    id: c.req.param("id"),
+    htmlPath: `/api/receipts/sales/${encodeURIComponent(c.req.param("id"))}/html`
+  })
+);
+
 receiptsRoute.get("/sales/:id", async (c) => {
   const id = c.req.param("id");
 
@@ -250,6 +259,8 @@ receiptsRoute.get("/sales/:id", async (c) => {
 
 receiptsRoute.get("/sales/:id/html", async (c) => {
   const id = c.req.param("id");
+  const accessError = requireReceiptAccess(c, { resource: "sale-receipt", id });
+  if (accessError) return accessError;
 
   const setting = await getSetting();
 
@@ -368,6 +379,14 @@ receiptsRoute.get("/sales/:id/html", async (c) => {
   return c.html(html);
 });
 
+receiptsRoute.post("/party-payments/:id/token", (c) =>
+  issueReceiptAccess(c, {
+    resource: "party-payment-receipt",
+    id: c.req.param("id"),
+    htmlPath: `/api/receipts/party-payments/${encodeURIComponent(c.req.param("id"))}/html`
+  })
+);
+
 receiptsRoute.get("/party-payments/:id", async (c) => {
   const id = c.req.param("id");
 
@@ -415,6 +434,11 @@ receiptsRoute.get("/party-payments/:id", async (c) => {
 
 receiptsRoute.get("/party-payments/:id/html", async (c) => {
   const id = c.req.param("id");
+  const accessError = requireReceiptAccess(c, {
+    resource: "party-payment-receipt",
+    id
+  });
+  if (accessError) return accessError;
 
   const setting = await getSetting();
 

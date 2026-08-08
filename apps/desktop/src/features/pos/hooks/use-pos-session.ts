@@ -34,6 +34,7 @@ import type {
   Warehouse,
 } from "../types";
 import { getApiBaseUrl } from "../utils";
+import { refreshReceiptAccessUrl } from "@/lib/receipt-access";
 
 type SubmitSaleOptions = {
   printReceipt?: boolean;
@@ -1225,9 +1226,11 @@ export function usePosSession() {
       return;
     }
 
+    let secureUrl: string | null = null;
     try {
+      secureUrl = await refreshReceiptAccessUrl(url);
       if (window.electronAPI?.printReceipt) {
-        await window.electronAPI.printReceipt(url, {
+        await window.electronAPI.printReceipt(secureUrl, {
           widthMm: receiptWidthMm,
           marginLeftMm: receiptMarginLeftMm,
           marginRightMm: receiptMarginRightMm,
@@ -1238,10 +1241,18 @@ export function usePosSession() {
         return;
       }
 
-      window.open(url, "_blank");
-    } catch {
-      window.open(url, "_blank");
-      toast.error("چاپ مستقیم ناکام شد؛ رسید در مرورگر باز شد");
+      window.open(secureUrl, "_blank");
+    } catch (error) {
+      if (secureUrl) {
+        const fallbackWindow = window.open(secureUrl, "_blank");
+        if (fallbackWindow) {
+          toast.warning("چاپ مستقیم ناکام شد؛ رسید امن در مرورگر باز شد");
+          return;
+        }
+      }
+      toast.error(
+        error instanceof Error ? error.message : "ساخت لینک امن یا چاپ رسید ناکام شد",
+      );
     }
   }
 
@@ -1249,13 +1260,17 @@ export function usePosSession() {
     await printReceiptUrl(lastReceiptUrl);
   }
 
-  function openLastReceipt() {
+  async function openLastReceipt() {
     if (!lastReceiptUrl) {
       toast.error("رسیدی برای بازکردن وجود ندارد");
       return;
     }
 
-    window.open(lastReceiptUrl, "_blank");
+    try {
+      window.open(await refreshReceiptAccessUrl(lastReceiptUrl), "_blank");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "بازکردن رسید ناکام شد");
+    }
   }
 
   async function printShiftReport() {

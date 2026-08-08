@@ -60,6 +60,7 @@ async function main() {
       username: adminUsername,
       displayName: "System Admin",
       passwordHash: await hashPassword(adminPassword),
+      mustChangePassword: true,
       roleId: adminRole.id
     }
   });

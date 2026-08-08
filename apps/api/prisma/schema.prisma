@@ -63,6 +63,7 @@ model User {
   roleId       String?
   role         Role?     @relation(fields: [roleId], references: [id])
   isActive     Boolean   @default(true)
+  mustChangePassword Boolean @default(false)
   lastLoginAt  DateTime?
   createdByUserId String?
   updatedByUserId String?
@@ -180,6 +181,9 @@ model PosDevice {
   userId     String?
   user       User?    @relation(fields: [userId], references: [id])
   lastSeenAt DateTime?
+  credentialHash String? @unique
+  credentialIssuedAt DateTime?
+  credentialRevokedAt DateTime?
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt

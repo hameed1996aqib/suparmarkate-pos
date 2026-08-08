@@ -13,7 +13,11 @@ import { permissionMiddleware } from "./lib/permissions";
 import { startBackupScheduler } from "./lib/backup-scheduler";
 import { getDiskHealth, slowRequestMiddleware } from "./lib/monitoring";
 import { getMaintenanceMode, maintenanceModeMiddleware } from "./lib/maintenance-mode";
-import { invalidateReadCachesAfterWrite } from "./lib/cache";
+import {
+  closeRedisCache,
+  getRedisHealth,
+  invalidateReadCachesAfterWrite
+} from "./lib/cache";
 import { startStockBalanceReconciliationScheduler } from "./lib/stock-balance-reconciliation";
 
 import { currenciesRoute } from "./modules/currencies/routes";
@@ -129,7 +133,8 @@ app.use(
   })
 );
 
-app.use("/uploads/*", serveStatic({ root: "./" }));
+app.use("/uploads/products/*", serveStatic({ root: "./" }));
+app.use("/uploads/receipts/*", serveStatic({ root: "./" }));
 app.use("*", slowRequestMiddleware);
 app.use("/api/*", maintenanceModeMiddleware);
 app.use("/api/*", invalidateReadCachesAfterWrite);
@@ -153,8 +158,9 @@ app.get("/health", async (c) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
 
-    const [disk, databaseSize] = await Promise.all([
+    const [disk, redis, databaseSize] = await Promise.all([
       getDiskHealth(),
+      getRedisHealth(),
       prisma.$queryRaw<Array<{ bytes: bigint }>>`SELECT pg_database_size(current_database()) AS bytes`
     ]);
 
@@ -163,6 +169,7 @@ app.get("/health", async (c) => {
       database: "connected",
       databaseSizeBytes: Number(databaseSize[0]?.bytes || 0),
       disk,
+      redis,
       maintenanceMode: getMaintenanceMode(),
       time: new Date().toISOString()
     });
@@ -276,13 +283,13 @@ const port = Number(process.env.PORT || 4000);
 const posWebSocketPort = Number(process.env.POS_WS_PORT || 4001);
 const systemHealthWebSocketPort = Number(process.env.SYSTEM_HEALTH_WS_PORT || 4002);
 
-serve({
+const apiServer = serve({
   fetch: app.fetch,
   port
 });
 
-startPosWebSocketServer(posWebSocketPort);
-startSystemHealthWebSocketServer(systemHealthWebSocketPort);
+const posWebSocketServer = startPosWebSocketServer(posWebSocketPort);
+const systemHealthWebSocketServer = startSystemHealthWebSocketServer(systemHealthWebSocketPort);
 startBackupScheduler(() => enqueueJob("BACKUP_CREATE", { source: "schedule" }));
 startStockBalanceReconciliationScheduler();
 void startPersistentJobWorker();
@@ -290,3 +297,57 @@ void ensureRuntimeServerConfigFile();
 
 console.log(`API running on http://localhost:${port}`);
 console.log(`POS WebSocket running on ws://localhost:${posWebSocketPort}`);
+
+async function closeWebSocketServer(
+  server: ReturnType<typeof startPosWebSocketServer>
+) {
+  if (!server) return;
+  for (const socket of server.clients) {
+    socket.close(1001, "Server shutting down");
+  }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      for (const socket of server.clients) socket.terminate();
+      finish();
+    }, 3000);
+    timeout.unref();
+    server.close(() => {
+      clearTimeout(timeout);
+      finish();
+    });
+  });
+}
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received; closing Muhaseb services...`);
+
+  const forceExit = setTimeout(() => {
+    console.error("[shutdown] graceful shutdown timed out");
+    process.exit(1);
+  }, 12_000);
+  forceExit.unref();
+
+  await Promise.allSettled([
+    new Promise<void>((resolve) => apiServer.close(() => resolve())),
+    closeWebSocketServer(posWebSocketServer),
+    closeWebSocketServer(systemHealthWebSocketServer),
+    closeRedisCache(),
+    prisma.$disconnect()
+  ]);
+  clearTimeout(forceExit);
+  console.log("[shutdown] Muhaseb services closed cleanly");
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));

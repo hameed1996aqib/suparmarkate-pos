@@ -23,6 +23,8 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useFonts } from "expo-font";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 
 const APP_LOGO = require("./assets/logo.png");
 const FONT_REGULAR = "Zain-Regular";
@@ -64,6 +66,7 @@ type EmployeeUser = {
   username: string;
   displayName?: string | null;
   role?: string | null;
+  mustChangePassword?: boolean;
   employee?: {
     id: string;
     code?: string | null;
@@ -233,6 +236,17 @@ const T = {
   invalidServerAddress: "آدرس سرور معتبر نیست",
   username: "\u0646\u0627\u0645 \u06a9\u0627\u0631\u0628\u0631\u06cc",
   password: "\u0631\u0645\u0632 \u0639\u0628\u0648\u0631",
+  currentPassword: "\u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u0641\u0639\u0644\u06cc",
+  newPassword: "\u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u062c\u062f\u06cc\u062f",
+  confirmPassword: "\u062a\u06a9\u0631\u0627\u0631 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u062c\u062f\u06cc\u062f",
+  changePassword: "\u062a\u063a\u06cc\u06cc\u0631 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631",
+  changePasswordTitle: "\u0631\u0645\u0632 \u0627\u0648\u0644\u06cc\u0647 \u0631\u0627 \u062a\u063a\u06cc\u06cc\u0631 \u062f\u0647\u06cc\u062f",
+  changePasswordHint:
+    "\u0628\u0631\u0627\u06cc \u0627\u0645\u0646\u06cc\u062a \u062d\u0633\u0627\u0628\u060c \u067e\u06cc\u0634 \u0627\u0632 \u0627\u062f\u0627\u0645\u0647 \u0631\u0645\u0632 \u062c\u062f\u06cc\u062f \u062a\u0639\u06cc\u06cc\u0646 \u06a9\u0646\u06cc\u062f.",
+  passwordMismatch: "\u062a\u06a9\u0631\u0627\u0631 \u0631\u0645\u0632 \u0639\u0628\u0648\u0631 \u06cc\u06a9\u0633\u0627\u0646 \u0646\u06cc\u0633\u062a",
+  passwordTooShort: "\u0631\u0645\u0632 \u062c\u062f\u06cc\u062f \u0628\u0627\u06cc\u062f \u062d\u062f\u0627\u0642\u0644 \u06f8 \u062d\u0631\u0641 \u0628\u0627\u0634\u062f",
+  deviceNotReady: "\u0634\u0646\u0627\u0633\u0647 \u0645\u0648\u0628\u0627\u06cc\u0644 \u0622\u0645\u0627\u062f\u0647 \u0646\u06cc\u0633\u062a\u061b \u0627\u067e \u0631\u0627 \u062f\u0648\u0628\u0627\u0631\u0647 \u0628\u0627\u0632 \u06a9\u0646\u06cc\u062f",
+  deviceLoginRequired: "\u0627\u0639\u062a\u0628\u0627\u0631 \u0627\u06cc\u0646 \u0645\u0648\u0628\u0627\u06cc\u0644 \u062b\u0628\u062a \u0646\u0634\u062f\u0647 \u0627\u0633\u062a\u061b \u062e\u0627\u0631\u062c \u0634\u062f\u0647 \u0648 \u062f\u0648\u0628\u0627\u0631\u0647 \u0648\u0627\u0631\u062f \u0634\u0648\u06cc\u062f",
   login: "\u0648\u0631\u0648\u062f",
   logout: "\u062e\u0631\u0648\u062c",
   loggedInAs: "\u0648\u0627\u0631\u062f \u0634\u062f\u0647",
@@ -438,6 +452,7 @@ const AUTH_TOKEN_KEY = "belal_mobile_employee_token";
 const AUTH_USER_KEY = "belal_mobile_employee_user";
 const API_BASE_URL_KEY = "belal_mobile_api_base_url";
 const DEVICE_ID_KEY = "belal_mobile_device_id";
+const DEVICE_CREDENTIAL_KEY = "belal_mobile_device_credential";
 const DEFAULT_API_BASE_URL = trimEndSlash(
   process.env.EXPO_PUBLIC_API_BASE_URL || "",
 );
@@ -452,28 +467,45 @@ function makeDeviceId() {
 }
 
 const memoryStore = new Map<string, string>();
+const secureStorageKeys = new Set([AUTH_TOKEN_KEY, DEVICE_CREDENTIAL_KEY]);
+
+async function canUseSecureStore() {
+  if (Platform.OS === "web") return false;
+  try {
+    return await SecureStore.isAvailableAsync();
+  } catch {
+    return false;
+  }
+}
 
 async function readStoredValue(key: string) {
-  if (typeof globalThis.localStorage !== "undefined") {
-    return globalThis.localStorage.getItem(key);
+  try {
+    const value =
+      secureStorageKeys.has(key) && (await canUseSecureStore())
+        ? await SecureStore.getItemAsync(key)
+        : await AsyncStorage.getItem(key);
+    if (value !== null) memoryStore.set(key, value);
+    return value;
+  } catch {
+    return memoryStore.get(key) || null;
   }
-
-  return memoryStore.get(key) || null;
 }
 
 async function writeStoredValue(key: string, value: string) {
   memoryStore.set(key, value);
-
-  if (typeof globalThis.localStorage !== "undefined") {
-    globalThis.localStorage.setItem(key, value);
+  if (secureStorageKeys.has(key) && (await canUseSecureStore())) {
+    await SecureStore.setItemAsync(key, value);
+  } else {
+    await AsyncStorage.setItem(key, value);
   }
 }
 
 async function deleteStoredValue(key: string) {
   memoryStore.delete(key);
-
-  if (typeof globalThis.localStorage !== "undefined") {
-    globalThis.localStorage.removeItem(key);
+  if (secureStorageKeys.has(key) && (await canUseSecureStore())) {
+    await SecureStore.deleteItemAsync(key);
+  } else {
+    await AsyncStorage.removeItem(key);
   }
 }
 
@@ -504,6 +536,7 @@ export default function App() {
   const [attendanceIntent, setAttendanceIntent] =
     useState<AttendanceIntent>("CHECK_IN");
   const [deviceId, setDeviceId] = useState("");
+  const [deviceCredential, setDeviceCredential] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<EmployeeUser | null>(null);
   const [employeeSummary, setEmployeeSummary] =
@@ -515,6 +548,9 @@ export default function App() {
   const [isReportsLoading, setIsReportsLoading] = useState(false);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
 
@@ -538,17 +574,25 @@ export default function App() {
     let mounted = true;
 
     async function restoreAuth() {
-      const [savedToken, savedUser, savedApiBaseUrl, savedDeviceId] =
+      const [
+        savedToken,
+        savedUser,
+        savedApiBaseUrl,
+        savedDeviceId,
+        savedDeviceCredential,
+      ] =
         await Promise.all([
           readStoredValue(AUTH_TOKEN_KEY),
           readStoredValue(AUTH_USER_KEY),
           readStoredValue(API_BASE_URL_KEY),
           readStoredValue(DEVICE_ID_KEY),
+          readStoredValue(DEVICE_CREDENTIAL_KEY),
         ]);
 
       if (!mounted) return;
 
       if (savedToken) setAuthToken(savedToken);
+      if (savedDeviceCredential) setDeviceCredential(savedDeviceCredential);
       if (savedApiBaseUrl) {
         setServerApiBaseUrl(savedApiBaseUrl);
         setServerSettingsValue(savedApiBaseUrl);
@@ -600,6 +644,50 @@ export default function App() {
     const value = fromConnection || fromInput;
     return value ? trimEndSlash(value) : null;
   }, [connection?.apiBaseUrl, serverApiBaseUrl]);
+
+  useEffect(() => {
+    if (
+      !authToken ||
+      !authUser ||
+      authUser.mustChangePassword ||
+      !deviceId ||
+      deviceCredential
+    ) {
+      return;
+    }
+    const apiBaseUrl = getApiBaseUrl();
+    if (!apiBaseUrl) return;
+
+    let cancelled = false;
+    async function registerExistingSessionDevice() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/auth/register-device`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            deviceId,
+            deviceName: `Muhaseb ${Platform.OS}`,
+          }),
+        });
+        const json = await response.json();
+        if (!response.ok) throw new Error(json?.message || T.deviceLoginRequired);
+        const credential = String(json?.data?.credential || "");
+        if (!credential) throw new Error(T.deviceLoginRequired);
+        if (cancelled) return;
+        setDeviceCredential(credential);
+        await writeStoredValue(DEVICE_CREDENTIAL_KEY, credential);
+      } catch (error: any) {
+        if (!cancelled) showToast(error?.message || T.deviceLoginRequired, "error");
+      }
+    }
+    void registerExistingSessionDevice();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, authUser, deviceCredential, deviceId, getApiBaseUrl, showToast]);
 
   const openServerSettings = useCallback(() => {
     setServerSettingsValue(serverApiBaseUrl || "");
@@ -711,6 +799,11 @@ export default function App() {
       return;
     }
 
+    if (!deviceId) {
+      showToast(T.deviceNotReady, "error");
+      return;
+    }
+
     setIsAuthBusy(true);
 
     try {
@@ -722,6 +815,9 @@ export default function App() {
         body: JSON.stringify({
           username: loginUsername.trim(),
           password: loginPassword,
+          deviceId,
+          deviceName: `Muhaseb ${Platform.OS}`,
+          deviceType: "MOBILE",
         }),
       });
       const json = await response.json();
@@ -732,24 +828,34 @@ export default function App() {
 
       const nextToken = String(json?.data?.token || "");
       const nextUser = json?.data?.user as EmployeeUser | undefined;
+      const nextDeviceCredential = String(json?.data?.device?.credential || "");
       const nextIsAdmin = isAdminUser(nextUser || null);
 
-      if (!nextToken || !nextUser || (!nextIsAdmin && !nextUser.employee)) {
+      if (
+        !nextToken ||
+        !nextUser ||
+        !nextDeviceCredential ||
+        (!nextIsAdmin && !nextUser.employee)
+      ) {
         throw new Error(T.needEmployeeLogin);
       }
 
       setAuthToken(nextToken);
       setAuthUser(nextUser);
+      setDeviceCredential(nextDeviceCredential);
       setLoginPassword("");
       await writeStoredValue(API_BASE_URL_KEY, apiBaseUrl);
       await writeStoredValue(AUTH_TOKEN_KEY, nextToken);
       await writeStoredValue(AUTH_USER_KEY, JSON.stringify(nextUser));
+      await writeStoredValue(DEVICE_CREDENTIAL_KEY, nextDeviceCredential);
       showToast(T.loginOk, "success");
-      if (nextUser.employee) {
+      if (nextUser.employee && !nextUser.mustChangePassword) {
         await loadEmployeeSummary(nextToken);
       }
 
-      if (pendingAttendanceToken && nextUser.employee) {
+      if (nextUser.mustChangePassword) {
+        setScreen("connect");
+      } else if (pendingAttendanceToken && nextUser.employee) {
         await submitAttendanceQrRef.current?.(
           pendingAttendanceToken,
           nextToken,
@@ -766,6 +872,7 @@ export default function App() {
     }
   }, [
     getApiBaseUrl,
+    deviceId,
     loadEmployeeSummary,
     loginPassword,
     loginUsername,
@@ -774,12 +881,24 @@ export default function App() {
   ]);
 
   const logoutEmployee = useCallback(async () => {
+    const apiBaseUrl = getApiBaseUrl();
+    if (apiBaseUrl && authToken) {
+      try {
+        await fetch(`${apiBaseUrl}/api/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+      } catch {
+        // Local logout must still complete when the server is unreachable.
+      }
+    }
     if (socketRef.current) {
       socketRef.current.close();
       socketRef.current = null;
     }
     setAuthToken(null);
     setAuthUser(null);
+    setDeviceCredential(null);
     setEmployeeSummary(null);
     setLoginPassword("");
     setConnection(null);
@@ -790,10 +909,64 @@ export default function App() {
     await Promise.all([
       deleteStoredValue(AUTH_TOKEN_KEY),
       deleteStoredValue(AUTH_USER_KEY),
+      deleteStoredValue(DEVICE_CREDENTIAL_KEY),
     ]);
     setCameraMode(null);
     showToast(T.logout, "info");
-  }, [showToast]);
+  }, [authToken, getApiBaseUrl, showToast]);
+
+  const changeInitialPassword = useCallback(async () => {
+    const apiBaseUrl = getApiBaseUrl();
+    if (!apiBaseUrl || !authToken || !authUser) return;
+    if (newPassword.length < 8) {
+      showToast(T.passwordTooShort, "error");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      showToast(T.passwordMismatch, "error");
+      return;
+    }
+
+    setIsAuthBusy(true);
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/auth/change-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.message || T.loginFail);
+      const nextUser: EmployeeUser = {
+        ...authUser,
+        ...(json?.data?.user || {}),
+        mustChangePassword: false,
+      };
+      setAuthUser(nextUser);
+      await writeStoredValue(AUTH_USER_KEY, JSON.stringify(nextUser));
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      showToast(json?.message || T.changePassword, "success");
+      if (nextUser.employee) await loadEmployeeSummary(authToken);
+      setScreen(isAdminUser(nextUser) ? "reports" : "connect");
+    } catch (error: any) {
+      showToast(error?.message || T.loginFail, "error");
+    } finally {
+      setIsAuthBusy(false);
+    }
+  }, [
+    authToken,
+    authUser,
+    confirmPassword,
+    currentPassword,
+    getApiBaseUrl,
+    loadEmployeeSummary,
+    newPassword,
+    showToast,
+  ]);
 
   const submitAttendanceQr = useCallback(
     async (
@@ -817,7 +990,12 @@ export default function App() {
       }
 
       if (!deviceId) {
-        showToast("شناسه موبایل آماده نیست؛ اپ را دوباره باز کنید", "error");
+        showToast(T.deviceNotReady, "error");
+        return;
+      }
+
+      if (!deviceCredential) {
+        showToast(T.deviceLoginRequired, "error");
         return;
       }
 
@@ -844,6 +1022,7 @@ export default function App() {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${tokenValue}`,
+            "x-device-credential": deviceCredential,
           },
           body: JSON.stringify({
             token: attendanceToken,
@@ -884,6 +1063,7 @@ export default function App() {
       attendanceIntent,
       authToken,
       deviceId,
+      deviceCredential,
       getApiBaseUrl,
       loadEmployeeSummary,
       showToast,
@@ -1423,7 +1603,65 @@ export default function App() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
       >
-        {screen === "login" ? (
+        {authUser?.mustChangePassword ? (
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
+            <View style={styles.header}>
+              <Image
+                source={APP_LOGO}
+                style={styles.headerLogo}
+                resizeMode="contain"
+              />
+              <Text style={styles.title}>{T.changePasswordTitle}</Text>
+              <Text style={styles.subtitle}>{T.changePasswordHint}</Text>
+            </View>
+
+            <View style={styles.mainCard}>
+              <TextInput
+                value={currentPassword}
+                onChangeText={setCurrentPassword}
+                placeholder={T.currentPassword}
+                placeholderTextColor={COLORS.textSoft}
+                secureTextEntry
+                style={styles.input}
+                textAlign="right"
+              />
+              <TextInput
+                value={newPassword}
+                onChangeText={setNewPassword}
+                placeholder={T.newPassword}
+                placeholderTextColor={COLORS.textSoft}
+                secureTextEntry
+                style={styles.input}
+                textAlign="right"
+              />
+              <TextInput
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                placeholder={T.confirmPassword}
+                placeholderTextColor={COLORS.textSoft}
+                secureTextEntry
+                style={styles.input}
+                textAlign="right"
+              />
+              <TouchableOpacity
+                style={[styles.primaryButton, isAuthBusy && styles.disabledButton]}
+                disabled={isAuthBusy}
+                onPress={changeInitialPassword}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {isAuthBusy ? T.connecting : T.changePassword}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.outlineButton} onPress={logoutEmployee}>
+                <Text style={styles.ghostButtonText}>{T.logout}</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        ) : screen === "login" ? (
           <ScrollView
             contentContainerStyle={styles.scroll}
             keyboardShouldPersistTaps="handled"

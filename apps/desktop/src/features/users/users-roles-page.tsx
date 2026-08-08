@@ -5,6 +5,7 @@ import {
   RefreshCcw,
   Settings,
   ShieldCheck,
+  Smartphone,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -71,6 +72,22 @@ type User = {
   roleId?: string | null;
   role?: Role | null;
   lastLoginAt?: string | null;
+};
+
+type MobileDevice = {
+  id: string;
+  code?: string | null;
+  name: string;
+  type: string;
+  isActive: boolean;
+  lastSeenAt?: string | null;
+  credentialIssuedAt?: string | null;
+  credentialRevokedAt?: string | null;
+  user?: {
+    id: string;
+    username: string;
+    displayName: string;
+  } | null;
 };
 
 type UserForm = {
@@ -148,6 +165,7 @@ export function UsersRolesPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [mobileDevices, setMobileDevices] = useState<MobileDevice[]>([]);
   const [userForm, setUserForm] = useState<UserForm>(emptyUserForm);
   const [roleForm, setRoleForm] = useState<RoleForm>(emptyRoleForm);
   const [userDialogOpen, setUserDialogOpen] = useState(false);
@@ -170,16 +188,18 @@ export function UsersRolesPage() {
   async function loadData() {
     setIsLoading(true);
     try {
-      const [usersResponse, rolesResponse, permissionsResponse] =
+      const [usersResponse, rolesResponse, permissionsResponse, devicesResponse] =
         await Promise.all([
           fetch(`${API_BASE_URL}/api/users`),
           fetch(`${API_BASE_URL}/api/users/roles`),
           fetch(`${API_BASE_URL}/api/users/permissions`),
+          fetch(`${API_BASE_URL}/api/users/devices`),
         ]);
-      const [usersJson, rolesJson, permissionsJson] = await Promise.all([
+      const [usersJson, rolesJson, permissionsJson, devicesJson] = await Promise.all([
         usersResponse.json().catch(() => null),
         rolesResponse.json().catch(() => null),
         permissionsResponse.json().catch(() => null),
+        devicesResponse.json().catch(() => null),
       ]);
 
       if (!usersResponse.ok)
@@ -188,10 +208,13 @@ export function UsersRolesPage() {
         throw new Error(rolesJson?.message || "رول‌ها خوانده نشد");
       if (!permissionsResponse.ok)
         throw new Error(permissionsJson?.message || "صلاحیت‌ها خوانده نشد");
+      if (!devicesResponse.ok)
+        throw new Error(devicesJson?.message || "دستگاه‌های موبایل خوانده نشد");
 
       setUsers(usersJson?.data || []);
       setRoles(rolesJson?.data || []);
       setPermissions(permissionsJson?.data || []);
+      setMobileDevices(devicesJson?.data || []);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "داده‌های کاربران خوانده نشد",
@@ -337,13 +360,32 @@ export function UsersRolesPage() {
     }
   }
 
+  async function revokeMobileDevice(device: MobileDevice) {
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/users/devices/${device.id}/revoke`,
+        { method: "POST" },
+      );
+      const json = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(json?.message || "لغو دسترسی موبایل ناکام شد");
+      }
+      toast.success("دسترسی موبایل لغو شد");
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "لغو دسترسی موبایل ناکام شد",
+      );
+    }
+  }
+
   useEffect(() => {
     void loadData();
   }, []);
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <Card className="border-border bg-card">
           <CardHeader className="space-y-0 pb-2">
             <CardDescription>کاربران فعال</CardDescription>
@@ -371,12 +413,22 @@ export function UsersRolesPage() {
             </CardTitle>
           </CardHeader>
         </Card>
+        <Card className="border-border bg-card">
+          <CardHeader className="space-y-0 pb-2">
+            <CardDescription>موبایل‌های ثبت‌شده</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Smartphone className="size-4 text-primary" />
+              {mobileDevices.length}
+            </CardTitle>
+          </CardHeader>
+        </Card>
       </div>
 
-      <Tabs>
+      <Tabs defaultValue="user">
         <TabsList>
           <TabsTrigger value={"user"}> کاربران</TabsTrigger>
           <TabsTrigger value={"role"}> نقش ها</TabsTrigger>
+          <TabsTrigger value={"devices"}> دستگاه‌های موبایل</TabsTrigger>
         </TabsList>
         <TabsContent value={"user"}>
           <Card className="border-border bg-card">
@@ -562,6 +614,112 @@ export function UsersRolesPage() {
                       </TableCell>
                     </TableRow>
                   ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value={"devices"}>
+          <Card className="border-border bg-card">
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Smartphone className="size-5 text-primary" />
+                  دستگاه‌های موبایل
+                </CardTitle>
+                <CardDescription>
+                  موبایل‌های متصل به حساب کاربران را ببینید و دسترسی دستگاه گم‌شده یا نامعتبر را لغو کنید.
+                </CardDescription>
+              </div>
+              <Button variant="outline" onClick={loadData} disabled={isLoading}>
+                <RefreshCcw className="size-4" />
+                تازه‌سازی
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <Table className="text-xs">
+                <TableHeader>
+                  <TableRow className="border-border bg-muted/40 hover:bg-muted/40">
+                    <TableHead>دستگاه</TableHead>
+                    <TableHead>کاربر</TableHead>
+                    <TableHead>آخرین استفاده</TableHead>
+                    <TableHead>تاریخ صدور</TableHead>
+                    <TableHead>وضعیت</TableHead>
+                    <TableHead className="w-16 text-center">عملیات</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                        در حال خواندن دستگاه‌ها...
+                      </TableCell>
+                    </TableRow>
+                  ) : mobileDevices.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                        هنوز موبایلی ثبت نشده است.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    mobileDevices.map((device) => {
+                      const revoked = Boolean(device.credentialRevokedAt || !device.isActive);
+                      return (
+                        <TableRow key={device.id} className="border-border">
+                          <TableCell>
+                            <div className="font-medium">{device.name || "Muhaseb Mobile"}</div>
+                            <div className="max-w-64 break-all text-muted-foreground">
+                              {device.code || "-"}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div>{device.user?.displayName || "-"}</div>
+                            <div className="text-muted-foreground">
+                              {device.user?.username || "-"}
+                            </div>
+                          </TableCell>
+                          <TableCell>{formatDate(device.lastSeenAt)}</TableCell>
+                          <TableCell>{formatDate(device.credentialIssuedAt)}</TableCell>
+                          <TableCell>
+                            <Badge
+                              className={
+                                revoked
+                                  ? "bg-destructive/15 text-destructive"
+                                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                              }
+                            >
+                              {revoked ? "لغو شده" : "فعال"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {revoked ? (
+                              <span className="text-muted-foreground">-</span>
+                            ) : (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button size="icon-sm" variant="outline" title="عملیات">
+                                    <MoreHorizontal className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" sideOffset={6} className="w-48" dir="rtl">
+                                  <DropdownMenuLabel>عملیات دستگاه</DropdownMenuLabel>
+                                  <ConfirmDropdownItem
+                                    title="لغو دسترسی موبایل"
+                                    description="این موبایل فوراً دیگر نمی‌تواند حاضری ثبت کند. برای فعال‌سازی دوباره، کاربر باید مجدداً وارد شود."
+                                    confirmLabel="لغو دسترسی"
+                                    onConfirm={() => revokeMobileDevice(device)}
+                                  >
+                                    <Trash2 className="size-4" />
+                                    <span>لغو دسترسی</span>
+                                  </ConfirmDropdownItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
                 </TableBody>
               </Table>
             </CardContent>

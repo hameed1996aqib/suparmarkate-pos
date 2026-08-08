@@ -241,6 +241,7 @@ employeesRoute.post("/", async (c) => {
           username: parsed.data.username!,
           displayName: parsed.data.fullName,
           passwordHash: await hashPassword(parsed.data.password!),
+          mustChangePassword: true,
           roleId: parsed.data.roleId || null,
           isActive: true,
           ...auditCreateData(authUser?.id)
@@ -319,6 +320,7 @@ employeesRoute.patch("/:id", async (c) => {
           username: parsed.data.username,
           displayName: parsed.data.fullName || parsed.data.username,
           passwordHash: await hashPassword(parsed.data.password),
+          mustChangePassword: true,
           roleId: parsed.data.roleId || null,
           isActive: true,
           ...auditCreateData(authUser?.id)

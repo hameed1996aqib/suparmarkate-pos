@@ -12,6 +12,7 @@ export type AuthUser = {
   displayName: string;
   role: string | null;
   permissions: string[];
+  mustChangePassword: boolean;
   employee: {
     id: string;
     code: string | null;
@@ -151,6 +152,7 @@ export async function loadAuthUser(userId: string): Promise<AuthUser | null> {
     displayName: user.displayName,
     role: user.role?.name || null,
     permissions: user.role?.permissions.map((permission) => permission.key) || [],
+    mustChangePassword: user.mustChangePassword,
     employee: user.employee
       ? {
           id: user.employee.id,
@@ -176,23 +178,31 @@ export async function authMiddleware(c: Context, next: Next) {
     "/",
     "/health",
     "/api/auth/login",
-    "/api/pos/scan",
-    "/api/attendance/scan"
+    "/api/pos/scan"
   ];
+  if (process.env.ALLOW_LEGACY_PUBLIC_ATTENDANCE_SCAN === "true") {
+    publicPaths.push("/api/attendance/scan");
+  }
   const isPublicPosSessionAsset =
     c.req.method === "GET" &&
     /^\/api\/pos\/sessions\/[^/]+\/(qr\.svg|connect|test)$/.test(path);
   const isPublicBarcodeAsset =
     c.req.method === "GET" && path.startsWith("/api/barcodes/");
+  const isPublicUploadAsset =
+    c.req.method === "GET" &&
+    (path.startsWith("/uploads/products/") || path.startsWith("/uploads/receipts/"));
+  const isReceiptHtml =
+    c.req.method === "GET" &&
+    (/^\/api\/receipts\/(sales|party-payments)\/[^/]+\/html$/.test(path) ||
+      /^\/api\/pos-receipts\/sales\/[^/]+\/html$/.test(path));
 
   if (
     c.req.method === "OPTIONS" ||
     publicPaths.includes(path) ||
     isPublicPosSessionAsset ||
     isPublicBarcodeAsset ||
-    path.startsWith("/uploads/") ||
-    path.startsWith("/api/receipts/") ||
-    path.startsWith("/api/pos-receipts/")
+    isPublicUploadAsset ||
+    isReceiptHtml
   ) {
     await next();
     return;
@@ -236,6 +246,20 @@ export async function authMiddleware(c: Context, next: Next) {
   c.set("authUser", user);
   c.set("authToken", token);
   c.set("authSessionId", payload.sessionId);
+
+  const passwordChangeAllowed =
+    path === "/api/auth/me" ||
+    path === "/api/auth/logout" ||
+    path === "/api/auth/change-password";
+  if (user.mustChangePassword && !passwordChangeAllowed) {
+    return c.json(
+      {
+        code: "PASSWORD_CHANGE_REQUIRED",
+        message: "پیش از ادامه باید رمز عبور اولیه خود را تغییر دهید"
+      },
+      403
+    );
+  }
 
   await next();
 }

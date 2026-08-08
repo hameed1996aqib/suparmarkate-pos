@@ -49,7 +49,8 @@
         }
       ],
       "expo-splash-screen",
-      "expo-font"
+      "expo-font",
+      "expo-secure-store"
     ],
     "extra": {
       "appRole": "pos-mobile-scanner",

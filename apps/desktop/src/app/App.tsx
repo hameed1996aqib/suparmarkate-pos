@@ -120,6 +120,7 @@ import {
 } from "@/components/ui/sidebar";
 import { AccountingPage } from "@/features/accounting/components/accounting-page";
 import { PosPage } from "@/features/pos/components/pos-page";
+import { ProductDuplicatesDialog } from "@/features/products/product-duplicates-dialog";
 import {
   API_BASE_URL,
   getStoredApiBaseUrl,
@@ -133,6 +134,7 @@ import {
 import { kabulDateString } from "@/lib/kabul-date";
 import { dateRangeQuery, recentDateRange } from "@/lib/recent-date-filter";
 import { allocateMoneyByWeight } from "@/lib/money-allocation";
+import { refreshReceiptAccessUrl } from "@/lib/receipt-access";
 
 const ReportsPageRoute = lazy(() =>
   import("@/features/reports/reports-page").then((module) => ({
@@ -223,6 +225,7 @@ type AuthUser = {
   displayName: string;
   role: string | null;
   permissions: string[];
+  mustChangePassword?: boolean;
 };
 
 type AuthState = {
@@ -790,6 +793,20 @@ function App() {
     );
   }
 
+  if (auth.user.mustChangePassword) {
+    return (
+      <ChangePasswordPage
+        user={auth.user}
+        onChanged={(user) => {
+          const nextAuth = { ...auth, user };
+          localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+          setAuth(nextAuth);
+        }}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
     <HashRouter>
       <div dir="rtl" className={themeClassName}>
@@ -978,6 +995,77 @@ function App() {
         </AdminShell>
       </div>
     </HashRouter>
+  );
+}
+
+function ChangePasswordPage({
+  user,
+  onChanged,
+  onLogout,
+}: {
+  user: AuthUser;
+  onChanged: (user: AuthUser) => void;
+  onLogout: () => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (newPassword.length < 8) {
+      toast.error("رمز جدید باید حداقل ۸ حرف باشد");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error("تکرار رمز جدید یکسان نیست");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/change-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const json = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(json?.message || "تغییر رمز ناکام شد");
+      onChanged(json.data.user);
+      toast.success("رمز عبور تغییر کرد");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "تغییر رمز ناکام شد");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div dir="rtl" className="grid min-h-screen place-items-center bg-background p-4 text-foreground">
+      <Toaster richColors position="top-center" />
+      <Card className="w-full max-w-md border-border bg-card">
+        <CardHeader>
+          <CardTitle>تغییر رمز عبور اولیه</CardTitle>
+          <CardDescription>
+            {user.displayName}، پیش از ورود به سیستم یک رمز شخصی تعیین کنید.
+          </CardDescription>
+        </CardHeader>
+        <form onSubmit={submit}>
+          <CardContent className="space-y-4">
+            <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="رمز فعلی" autoFocus />
+            <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="رمز جدید، حداقل ۸ حرف" />
+            <Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="تکرار رمز جدید" />
+            <Button className="w-full" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "در حال ذخیره..." : "ذخیره رمز و ادامه"}
+            </Button>
+            <Button className="w-full" type="button" variant="outline" onClick={onLogout}>
+              خروج
+            </Button>
+          </CardContent>
+        </form>
+      </Card>
+    </div>
   );
 }
 
@@ -2824,10 +2912,10 @@ function attachmentTypeFor(title: string, raw: Record<string, any>) {
   const text =
     `${title} ${raw.referenceType || ""} ${raw.type || ""}`.toLowerCase();
 
-  if (text.includes("فروش") || raw.saleDate) return "SALE";
-  if (text.includes("خرید") || raw.purchaseDate) return "PURCHASE";
   if (text.includes("برگشت فروش")) return "SALE_RETURN";
   if (text.includes("برگشت خرید")) return "PURCHASE_RETURN";
+  if (text.includes("فروش") || raw.saleDate) return "SALE";
+  if (text.includes("خرید") || raw.purchaseDate) return "PURCHASE";
   if (text.includes("عواید") || text.includes("مصارف")) return "INCOME_EXPENSE";
   if (
     text.includes("صندوق") ||
@@ -2939,6 +3027,26 @@ function TransactionAttachments({
     }
   }
 
+  async function openAttachment(item: DocumentAttachment) {
+    const popup = window.open("about:blank", "_blank");
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/attachments/${item.id}/download`,
+      );
+      if (!response.ok) {
+        const json = await response.json().catch(() => null);
+        throw new Error(json?.message || "بازکردن سند ناکام شد");
+      }
+      const objectUrl = URL.createObjectURL(await response.blob());
+      if (popup) popup.location.href = objectUrl;
+      else window.open(objectUrl, "_blank");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      popup?.close();
+      toast.error(error instanceof Error ? error.message : "بازکردن سند ناکام شد");
+    }
+  }
+
   return (
     <div className="rounded-xl border border-border bg-muted/20 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -3037,14 +3145,14 @@ function TransactionAttachments({
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
-                      <a
-                        href={attachmentUrl(item.url)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex h-7 items-center justify-center border border-border bg-background px-2.5 text-[0.8rem] font-medium hover:bg-muted"
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void openAttachment(item)}
                       >
                         باز کردن
-                      </a>
+                      </Button>
                       <ConfirmButton
                         size="icon-sm"
                         variant="destructive"
@@ -4260,7 +4368,9 @@ function SalesPage() {
   const printSaleReceipt = async (row: DataRow) => {
     const receiptWidthMm = Number(localStorage.getItem("muhaseb_receipt_width_mm") || 80);
     const safeReceiptWidthMm = receiptWidthMm === 58 ? 58 : 80;
-    const url = `${API_BASE_URL}/api/pos-receipts/sales/${row.id}/html?width=${safeReceiptWidthMm}`;
+    const url = await refreshReceiptAccessUrl(
+      `${API_BASE_URL}/api/pos-receipts/sales/${row.id}/html?width=${safeReceiptWidthMm}`,
+    );
     try {
       if (window.electronAPI?.printReceipt) {
         await window.electronAPI.printReceipt(url, {
@@ -8051,8 +8161,11 @@ function CashBankPage() {
       );
       const receiptId = json?.data?.partyTransaction?.id;
       if (receiptId) {
-        window.open(
+        const receiptUrl = await refreshReceiptAccessUrl(
           `${API_BASE_URL}/api/receipts/party-payments/${receiptId}/html`,
+        );
+        window.open(
+          receiptUrl,
           "_blank",
         );
       }
@@ -9368,6 +9481,14 @@ function ReportsPage() {
 }
 
 function ProductsPage() {
+  const isAdmin = useMemo(() => {
+    try {
+      const user = JSON.parse(localStorage.getItem(AUTH_USER_KEY) || "null");
+      return user?.role === "Admin";
+    } catch {
+      return false;
+    }
+  }, []);
   const [products, setProducts] = useState<DataRow[]>([]);
   const [productsSummary, setProductsSummary] = useState({
     total: 0,
@@ -9382,6 +9503,7 @@ function ProductsPage() {
   const [query, setQuery] = useState("");
   const [barcodeFilter, setBarcodeFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [duplicatesDialogOpen, setDuplicatesDialogOpen] = useState(false);
   const [form, setForm] = useState<ProductFormState>(emptyProductForm);
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [productImagePreview, setProductImagePreview] = useState("");
@@ -9859,6 +9981,15 @@ function ProductsPage() {
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
+            {isAdmin ? (
+              <Button
+                variant="outline"
+                onClick={() => setDuplicatesDialogOpen(true)}
+              >
+                <ShieldCheck className="size-4" />
+                بارکدهای تکراری
+              </Button>
+            ) : null}
             <Button onClick={openCreate}>
               <Plus className="size-4" />
               ثبت کالا
@@ -9899,6 +10030,13 @@ function ProductsPage() {
           )}
         </CardContent>
       </Card>
+
+      <ProductDuplicatesDialog
+        open={duplicatesDialogOpen}
+        onOpenChange={setDuplicatesDialogOpen}
+        onEditProduct={(productId) => openEdit({ id: productId })}
+        onMerged={() => loadProductsData(1)}
+      />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent dir="rtl" className="sm:max-w-6xl">

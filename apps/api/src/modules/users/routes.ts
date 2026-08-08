@@ -155,6 +155,56 @@ usersRoute.get("/permissions", async (c) => {
   });
 });
 
+usersRoute.get("/devices", async (c) => {
+  if (!requireUsersPermission(c)) {
+    return c.json({ message: "Permission denied" }, 403);
+  }
+  const data = await prisma.posDevice.findMany({
+    where: { type: "MOBILE" },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      type: true,
+      isActive: true,
+      lastSeenAt: true,
+      credentialIssuedAt: true,
+      credentialRevokedAt: true,
+      user: { select: { id: true, username: true, displayName: true } }
+    },
+    orderBy: { lastSeenAt: "desc" }
+  });
+  return c.json({ data });
+});
+
+usersRoute.post("/devices/:id/revoke", async (c) => {
+  if (!requireUsersPermission(c)) {
+    return c.json({ message: "Permission denied" }, 403);
+  }
+  const authUser = getAuthUser(c);
+  const existing = await prisma.posDevice.findUnique({
+    where: { id: c.req.param("id") }
+  });
+  if (!existing) {
+    return c.json({ message: "Device not found" }, 404);
+  }
+  const device = await prisma.posDevice.update({
+    where: { id: c.req.param("id") },
+    data: {
+      credentialHash: null,
+      credentialRevokedAt: new Date(),
+      isActive: false
+    }
+  });
+  await writeAudit(c, {
+    action: "MOBILE_DEVICE_REVOKED",
+    entityType: "PosDevice",
+    entityId: device.id,
+    metadata: { code: device.code, revokedBy: authUser?.id || null }
+  });
+  return c.json({ data: device });
+});
+
 usersRoute.post("/roles", async (c) => {
   if (!requireUsersPermission(c)) {
     return c.json({ message: "Permission denied" }, 403);
@@ -367,6 +417,7 @@ usersRoute.post("/", async (c) => {
       username: parsed.data.username,
       displayName: parsed.data.displayName,
       passwordHash: await hashPassword(parsed.data.password),
+      mustChangePassword: true,
       roleId: role?.id || null,
       isActive: parsed.data.isActive ?? true,
       ...auditCreateData(authUser?.id)
@@ -423,6 +474,7 @@ usersRoute.patch("/:id", async (c) => {
 
   if (parsed.data.password) {
     data.passwordHash = await hashPassword(parsed.data.password);
+    data.mustChangePassword = true;
   }
 
   const user = await prisma.user.update({

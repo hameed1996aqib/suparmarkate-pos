@@ -6,7 +6,7 @@ import { stream } from "hono/streaming";
 import { z } from "zod";
 import sharp from "sharp";
 import { prisma } from "../../lib/prisma";
-import { getAuthUser } from "../../lib/auth";
+import { getAuthUser, hasPermission, type AuthUser } from "../../lib/auth";
 import { zodError } from "../../lib/api";
 
 export const attachmentsRoute = new Hono();
@@ -23,6 +23,73 @@ const allowedMimeTypes = new Set([
   "image/webp",
   "image/gif"
 ]);
+
+const entityPermissions: Record<string, { read: string[]; write: string[] }> = {
+  SALE: {
+    read: ["pos.sell", "sales.view", "sales.manage"],
+    write: ["pos.sell", "sales.manage"]
+  },
+  SALE_RETURN: {
+    read: ["sales.view", "sales.manage"],
+    write: ["sales.manage"]
+  },
+  PURCHASE: {
+    read: ["purchases.view", "purchases.manage"],
+    write: ["purchases.manage"]
+  },
+  PURCHASE_RETURN: {
+    read: ["purchases.view", "purchases.manage"],
+    write: ["purchases.manage"]
+  },
+  INCOME_EXPENSE: {
+    read: ["cashbank.manage"],
+    write: ["cashbank.manage"]
+  },
+  MONEY_TRANSACTION: {
+    read: ["cashbank.manage"],
+    write: ["cashbank.manage"]
+  },
+  INVENTORY_MOVEMENT: {
+    read: ["inventory.view", "inventory.manage"],
+    write: ["inventory.manage"]
+  },
+  PAYROLL: {
+    read: ["payroll.view", "payroll.manage"],
+    write: ["payroll.manage"]
+  },
+  TRANSACTION: {
+    read: [
+      "sales.view",
+      "sales.manage",
+      "purchases.view",
+      "purchases.manage",
+      "cashbank.manage",
+      "inventory.view",
+      "inventory.manage",
+      "accounting.view",
+      "accounting.manage"
+    ],
+    write: [
+      "sales.manage",
+      "purchases.manage",
+      "cashbank.manage",
+      "inventory.manage",
+      "accounting.manage"
+    ]
+  }
+};
+
+function canAccessEntity(user: AuthUser | null, entityType: string, write = false) {
+  const policy = entityPermissions[entityType.trim().toUpperCase()];
+  if (!policy) return false;
+  return (write ? policy.write : policy.read).some((permission) =>
+    hasPermission(user, permission)
+  );
+}
+
+function denyEntityAccess(c: any) {
+  return c.json({ message: "برای دسترسی به سند این بخش صلاحیت ندارید" }, 403);
+}
 
 function safeEntityType(value: string) {
   return value.trim().replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
@@ -49,6 +116,9 @@ attachmentsRoute.get("/", async (c) => {
   });
 
   if (!parsed.success) return c.json(zodError(parsed.error), 400);
+  if (!canAccessEntity(getAuthUser(c), parsed.data.entityType)) {
+    return denyEntityAccess(c);
+  }
 
   const data = await prisma.documentAttachment.findMany({
     where: {
@@ -80,6 +150,9 @@ attachmentsRoute.post("/", async (c) => {
   const parsed = querySchema.safeParse({ entityType, entityId });
 
   if (!parsed.success) return c.json(zodError(parsed.error), 400);
+  if (!canAccessEntity(getAuthUser(c), parsed.data.entityType, true)) {
+    return denyEntityAccess(c);
+  }
 
   const file = body.file as any;
   if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
@@ -148,10 +221,11 @@ attachmentsRoute.post("/", async (c) => {
 attachmentsRoute.get("/:id/download", async (c) => {
   const attachment = await prisma.documentAttachment.findUnique({ where: { id: c.req.param("id") } });
   if (!attachment || attachment.deletedAt) return c.json({ message: "Attachment not found" }, 404);
+  if (!canAccessEntity(getAuthUser(c), attachment.entityType)) return denyEntityAccess(c);
   const relative = attachment.url.replace(/^\/uploads\//, "");
   const filePath = path.resolve(process.cwd(), "uploads", relative);
   const uploadsRoot = path.resolve(process.cwd(), "uploads");
-  if (!filePath.startsWith(uploadsRoot)) return c.json({ message: "Invalid attachment path" }, 400);
+  if (!filePath.startsWith(`${uploadsRoot}${path.sep}`)) return c.json({ message: "Invalid attachment path" }, 400);
   try {
     await access(filePath);
   } catch {
@@ -169,6 +243,7 @@ attachmentsRoute.get("/:id/thumbnail", async (c) => {
   if (!attachment || attachment.deletedAt || !attachment.mimeType.startsWith("image/")) {
     return c.json({ message: "Thumbnail not found" }, 404);
   }
+  if (!canAccessEntity(getAuthUser(c), attachment.entityType)) return denyEntityAccess(c);
   const safeType = safeEntityType(attachment.entityType);
   const filePath = path.join(process.cwd(), "uploads", "thumbnails", safeType, `${attachment.fileName}.webp`);
   try {
@@ -186,6 +261,10 @@ attachmentsRoute.get("/:id/thumbnail", async (c) => {
 attachmentsRoute.delete("/:id", async (c) => {
   const authUser = getAuthUser(c);
   const id = c.req.param("id");
+
+  const attachment = await prisma.documentAttachment.findUnique({ where: { id } });
+  if (!attachment || attachment.deletedAt) return c.json({ message: "Attachment not found" }, 404);
+  if (!canAccessEntity(authUser, attachment.entityType, true)) return denyEntityAccess(c);
 
   const data = await prisma.documentAttachment.update({
     where: { id },

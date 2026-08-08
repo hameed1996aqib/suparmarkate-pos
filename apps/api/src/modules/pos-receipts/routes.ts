@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../../lib/prisma";
+import { issueReceiptAccess, requireReceiptAccess } from "../../lib/receipt-access";
 
 export const posReceiptsRoute = new Hono();
 
@@ -99,8 +100,18 @@ function groupReceiptItems(items: any[]) {
   return Array.from(grouped.values());
 }
 
+posReceiptsRoute.post("/sales/:id/token", (c) =>
+  issueReceiptAccess(c, {
+    resource: "pos-sale-receipt",
+    id: c.req.param("id"),
+    htmlPath: `/api/pos-receipts/sales/${encodeURIComponent(c.req.param("id"))}/html`
+  })
+);
+
 posReceiptsRoute.get("/sales/:id/html", async (c) => {
   const id = c.req.param("id");
+  const accessError = requireReceiptAccess(c, { resource: "pos-sale-receipt", id });
+  if (accessError) return accessError;
   const widthMm = getReceiptWidth(c.req.query("width") || null);
 
   const sale = await prisma.sale.findUnique({

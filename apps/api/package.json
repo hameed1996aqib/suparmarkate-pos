@@ -20,12 +20,12 @@
     "db:metrics": "tsx src/scripts/database-metrics.ts"
   },
   "dependencies": {
-    "@hono/node-server": "1.19.14",
+    "@hono/node-server": "2.1.0",
     "@prisma/adapter-pg": "7.8.0",
     "@prisma/client": "7.8.0",
     "bwip-js": "^4.10.1",
     "dotenv": "16.6.1",
-    "hono": "4.12.23",
+    "hono": "4.13.1",
     "pg": "8.13.1",
     "qrcode": "^1.5.4",
     "redis": "^6.0.0",

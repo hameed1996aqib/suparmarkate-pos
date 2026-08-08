@@ -258,6 +258,49 @@ afterAll(async () => {
 });
 
 describe("atomic POS sale", () => {
+  it("serializes ten distinct concurrent sales against the same product stock", async () => {
+    const fixture = await createFixture("ten-concurrent-sales");
+    const requestIds = Array.from(
+      { length: 10 },
+      (_, index) => `atomic-${Date.now()}-concurrent-${index}`
+    );
+    fixture.clientRequestIds.push(...requestIds);
+
+    const responses = await Promise.all(
+      requestIds.map((requestId) =>
+        saleRequest(fixture, requestId, {
+          quantity: 0.5,
+          paidAmount: 10,
+          unitPrice: 20
+        })
+      )
+    );
+    const payloads = await Promise.all(
+      responses.map((response) => response.json() as Promise<any>)
+    );
+
+    expect(responses.every((response) => response.status === 201)).toBe(true);
+    expect(new Set(payloads.map((payload) => payload.data.sale.id)).size).toBe(10);
+
+    const saleIds = payloads.map((payload) => payload.data.sale.id as string);
+    const [lots, movements, journals, cashAccount] = await Promise.all([
+      prisma.stockLot.findMany({ where: { id: { in: fixture.lotIds } } }),
+      prisma.stockMovement.findMany({
+        where: { referenceType: "SALE", referenceId: { in: saleIds } }
+      }),
+      prisma.journalEntry.findMany({ where: { sourceId: { in: saleIds } } }),
+      prisma.cashRegisterAccount.findUniqueOrThrow({
+        where: { id: fixture.cashAccountId }
+      })
+    ]);
+
+    expect(lots.reduce((sum, lot) => sum + Number(lot.remainingQuantity), 0)).toBe(4);
+    expect(movements.reduce((sum, movement) => sum + Math.abs(Number(movement.quantity)), 0)).toBe(5);
+    expect(journals.filter((journal) => journal.sourceType === "POS_SALE")).toHaveLength(10);
+    expect(journals.filter((journal) => journal.sourceType === "POS_SALE_COGS")).toHaveLength(10);
+    expect(Number(cashAccount.balance)).toBe(100);
+  });
+
   it("creates stock, money, revenue and COGS exactly once for concurrent retries", async () => {
     const fixture = await createFixture("idempotent");
     const clientRequestId = `atomic-${Date.now()}-same-request`;

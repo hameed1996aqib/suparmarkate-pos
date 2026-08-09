@@ -23,6 +23,13 @@ import {
 } from "@/components/ui/card";
 import { DatePicker } from "@/components/ui/date-picker";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -165,9 +172,10 @@ export function ProductHistoryPage() {
   const [from, setFrom] = useState(initialRange.from);
   const [to, setTo] = useState(initialRange.to);
   const [data, setData] = useState<ProductHistoryData | null>(null);
+  const [pageSize, setPageSize] = useState(20);
   const [pagination, setPagination] = useState<Pagination>({
     page: 1,
-    limit: 30,
+    limit: 20,
     total: 0,
     totalPages: 1,
   });
@@ -179,7 +187,7 @@ export function ProductHistoryPage() {
 
   const requestPage = async (
     page: number,
-    limit = 30,
+    limit = 20,
     signal?: AbortSignal,
   ) => {
     const query = new URLSearchParams({
@@ -205,7 +213,7 @@ export function ProductHistoryPage() {
     requestRef.current = controller;
     setIsLoading(true);
     try {
-      const result = await requestPage(page, 30, controller.signal);
+      const result = await requestPage(page, pageSize, controller.signal);
       setData(result.data);
       setPagination(result.pagination);
     } catch (error: any) {
@@ -225,7 +233,7 @@ export function ProductHistoryPage() {
   useEffect(() => {
     void loadHistory(1);
     return () => requestRef.current?.abort();
-  }, [productId, from, to]);
+  }, [productId, from, to, pageSize]);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/settings/company`)
@@ -388,6 +396,26 @@ export function ProductHistoryPage() {
             <span>
               نمایش {pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1} تا {Math.min(pagination.page * pagination.limit, pagination.total)} از {pagination.total}
             </span>
+            <div className="flex items-center gap-2">
+              <span>{"\u062a\u0639\u062f\u0627\u062f \u062f\u0631 \u0635\u0641\u062d\u0647"}</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  const nextSize = Number(value);
+                  if ([20, 50, 100, 500, 1000].includes(nextSize)) setPageSize(nextSize);
+                }}
+                disabled={isLoading}
+              >
+                <SelectTrigger size="sm" className="min-w-20">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {[20, 50, 100, 500, 1000].map((size) => (
+                    <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" disabled={pagination.page <= 1 || isLoading} onClick={() => void loadHistory(pagination.page - 1)}>قبلی</Button>
               <span>صفحه {pagination.page} از {pagination.totalPages}</span>

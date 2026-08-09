@@ -1,4 +1,9 @@
 {
   "backupDir": "D:\\BelalBackups\\new",
-  "backupRetentionCount": 10
+  "backupRetentionCount": 10,
+  "backupHostDir": null,
+  "backupDirManagedExternally": false,
+  "dhcpReservationConfirmed": true,
+  "upsConfirmed": false,
+  "backupOnSeparateDiskConfirmed": false
 }

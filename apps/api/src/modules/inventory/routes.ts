@@ -536,7 +536,7 @@ inventoryRoute.get("/movements", async (c) => {
 inventoryRoute.get("/product-history/:productId", async (c) => {
   const productId = c.req.param("productId");
   const range = getRecentDateRange(c);
-  const pagination = getPagePagination(c, { defaultLimit: 30, maxLimit: 200 });
+  const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 1000 });
 
   if (range.gte > range.lte) {
     return c.json({ message: "From date must be before to date" }, 400);

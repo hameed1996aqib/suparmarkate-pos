@@ -123,5 +123,18 @@ describe("product stock history", () => {
       direction: "IN",
       signedQuantity: 2,
     });
+    const expandedResponse = await inventoryRoute.request(
+      `http://localhost/product-history/${productId}?from=2026-07-01&to=2026-07-31&page=1&limit=1000`,
+    );
+    expect(expandedResponse.status).toBe(200);
+    const expandedPayload = (await expandedResponse.json()) as any;
+
+    expect(expandedPayload.data.movements).toHaveLength(4);
+    expect(expandedPayload.pagination).toMatchObject({
+      page: 1,
+      limit: 1000,
+      total: 4,
+      totalPages: 1,
+    });
   });
 });

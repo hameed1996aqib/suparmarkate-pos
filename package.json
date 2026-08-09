@@ -41,16 +41,13 @@
     "server:startup": "powershell -ExecutionPolicy Bypass -File scripts/windows/register-startup.ps1",
     "server:firewall": "powershell -ExecutionPolicy Bypass -File scripts/windows/configure-firewall.ps1"
   },
-  "dependencies": {
-    "expo": "~54.0.34",
-    "react": "19.1.0",
-    "react-native": "0.81.5"
-  },
   "devDependencies": {
     "@playwright/test": "1.62.0",
+    "shell-quote": "1.10.0",
     "vitest": "4.1.10"
   },
   "overrides": {
-    "fast-uri": "3.1.5"
+    "fast-uri": "3.1.5",
+    "shell-quote": "1.10.0"
   }
 }

@@ -224,9 +224,15 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 21.0.2
+          token: ${{ secrets.EXPO_TOKEN }}
+
       - name: Build APK on EAS
         working-directory: apps/mobile-scanner
-        run: npx eas-cli@21.0.2 build --platform android --profile preview --non-interactive --wait --json > eas-build.json
+        run: eas build --platform android --profile preview --non-interactive --wait --json > eas-build.json
 
       - name: Resolve APK download URL
         id: eas

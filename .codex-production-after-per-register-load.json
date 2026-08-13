@@ -1,0 +1,78 @@
+{
+  "formatVersion": 1,
+  "label": "production-after-per-register-load",
+  "generatedAt": "2026-08-10T00:02:31.805Z",
+  "database": {
+    "name": "supermarket_db",
+    "serverVersion": "16.13",
+    "latestMigration": "20260730130000_security_credentials",
+    "latestMigrationFinishedAt": "2026-08-09T10:04:17.992Z"
+  },
+  "metrics": {
+    "unbalancedJournals": 0,
+    "salesMissingCogs": 5088,
+    "negativeStockBalances": 0,
+    "negativeStockLots": 1,
+    "stockBalanceMismatches": 0,
+    "salesMissingBaseSnapshot": 0,
+    "moneyTransactionsMissingBaseSnapshot": 0,
+    "journalLinesMissingBaseSnapshot": 0,
+    "activeBaseCurrencies": 1,
+    "activeAfnBaseCurrencies": 1,
+    "duplicateJournalSources": 0,
+    "duplicateNormalizedBarcodeGroups": 63,
+    "barcodesMissingNormalizedValue": 131
+  },
+  "issues": [
+    {
+      "code": "NEGATIVE_STOCK_LOTS",
+      "severity": "blocker",
+      "count": 1,
+      "description": "One or more stock lots have a negative remaining quantity."
+    },
+    {
+      "code": "SALES_MISSING_COGS",
+      "severity": "warning",
+      "count": 5088,
+      "description": "Completed sales with a known cost are missing a COGS journal."
+    },
+    {
+      "code": "DUPLICATE_NORMALIZED_BARCODES",
+      "severity": "warning",
+      "count": 63,
+      "description": "Active products share the same normalized barcode."
+    },
+    {
+      "code": "BARCODES_MISSING_NORMALIZED_VALUE",
+      "severity": "warning",
+      "count": 131,
+      "description": "Legacy products have a barcode but no normalized barcode value."
+    }
+  ],
+  "summary": {
+    "status": "blocked",
+    "blockers": 1,
+    "warnings": 3
+  },
+  "businessSnapshot": {
+    "counts": {
+      "products": 7247,
+      "stockLots": 11658,
+      "stockMovements": 79192,
+      "sales": 27683,
+      "saleReturns": 357,
+      "purchases": 6,
+      "purchaseReturns": 0,
+      "journalEntries": 50468
+    },
+    "totals": {
+      "stockQuantityBase": "212922.2461",
+      "stockValueBase": "13409505.4662",
+      "journalBaseDebit": "18781026.0901",
+      "journalBaseCredit": "18781026.0901",
+      "completedSaleBaseTotal": "10592421.4669",
+      "completedPurchaseBaseTotal": "910"
+    },
+    "fingerprint": "0bdefdf19102e34d47847e63f0e1be7cadd34d0d7b84b2f7a69fe41a31a64c5d"
+  }
+}

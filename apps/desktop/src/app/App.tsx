@@ -44,6 +44,7 @@ import {
   Package,
   Paperclip,
   Plus,
+  Printer,
   RefreshCcw,
   Search,
   Settings,
@@ -9519,6 +9520,7 @@ function ProductsPage() {
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [query, setQuery] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [barcodeFilter, setBarcodeFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [duplicatesDialogOpen, setDuplicatesDialogOpen] = useState(false);
@@ -9544,7 +9546,13 @@ function ProductsPage() {
     try {
       const [productRes, lookupResults] = await Promise.all([
           fetch(
-            `${API_BASE_URL}/api/products?page=${page}&limit=20&search=${encodeURIComponent(query.trim())}&barcodeFilter=${encodeURIComponent(barcodeFilter)}`,
+            `${API_BASE_URL}/api/products?${new URLSearchParams({
+              page: String(page),
+              limit: "20",
+              search: query.trim(),
+              barcodeFilter,
+              ...(categoryFilter !== "all" ? { categoryId: categoryFilter } : {}),
+            }).toString()}`,
             { signal: abortController.signal },
           ).then((res) => res.json()),
           productLookupsLoadedRef.current
@@ -9612,9 +9620,16 @@ function ProductsPage() {
     }
     const timer = window.setTimeout(() => void loadProductsData(1), 250);
     return () => window.clearTimeout(timer);
-  }, [query, barcodeFilter]);
+  }, [query, barcodeFilter, categoryFilter]);
 
   const filteredProducts = products;
+  const printCurrentProductsPage = () => {
+    if (filteredProducts.length === 0) {
+      toast.warning("برای چاپ، محصولی در این صفحه وجود ندارد");
+      return;
+    }
+    window.print();
+  };
 
   const openCreate = () => {
     const baseCurrency =
@@ -9933,7 +9948,7 @@ function ProductsPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="app-print-page space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="کل اجناس"
@@ -9970,7 +9985,7 @@ function ProductsPage() {
               تعریف کالا، بارکود، قیمت خرید/فروش، واحد پایه و موجودی اولیه.
             </CardDescription>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 print:hidden">
             <div className="relative">
               <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -9995,6 +10010,25 @@ function ProductsPage() {
                 ]}
               />
             </div>
+            <div className="w-52">
+              <Combobox
+                value={categoryFilter}
+                onValueChange={setCategoryFilter}
+                placeholder="فیلتر کتگوری"
+                searchPlaceholder="جستجوی کتگوری..."
+                options={[
+                  { value: "all", label: "همه کتگوری‌ها" },
+                  ...categories.map((category) => ({
+                    value: category.id,
+                    label: category.name,
+                  })),
+                ]}
+              />
+            </div>
+            <Button variant="outline" onClick={printCurrentProductsPage}>
+              <Printer className="size-4" />
+              چاپ این صفحه
+            </Button>
             <Button variant="outline" onClick={() => void loadProductsData(1)}>
               <RefreshCcw className="size-4" />
               تازه‌سازی

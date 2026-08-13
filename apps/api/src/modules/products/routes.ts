@@ -441,6 +441,7 @@ productsRoute.get("/", async (c) => {
   });
   const search = c.req.query("search");
   const barcodeFilter = c.req.query("barcodeFilter");
+  const categoryId = c.req.query("categoryId")?.trim();
   const exactBarcodeIds = search
     ? await findProductIdsByBarcode(search)
     : [];
@@ -483,6 +484,7 @@ productsRoute.get("/", async (c) => {
       },
       ...(searchWhere ? [searchWhere] : []),
       buildBarcodeFilterWhere(barcodeFilter),
+      ...(categoryId ? [{ categoryId }] : []),
     ],
   };
   const [items, total, active, barcodeCount] = await Promise.all([

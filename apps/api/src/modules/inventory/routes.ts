@@ -1,21 +1,25 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
-import { resolveCurrencySnapshot } from "../../lib/currency-rates";
+import { resolveCurrencySnapshot, roundMoney } from "../../lib/currency-rates";
 import { StockMovementType } from "../../generated/prisma/enums";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
 import { findProductIdsByBarcode } from "../../lib/product-barcode-lookup";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { roundStockQuantity } from "../../lib/stock-quantity";
 
 export const inventoryRoute = new Hono();
 
 const openingStockSchema = z.object({
   productId: z.string().min(1),
   warehouseId: z.string().min(1),
+  unitId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().positive(),
   unitCost: z.coerce.number().nonnegative(),
   currencyId: z.string().optional().nullable(),
@@ -41,6 +45,7 @@ const transferSchema = z.object({
   fromWarehouseId: z.string().min(1),
   toWarehouseId: z.string().min(1),
   lotId: z.string().trim().optional().nullable(),
+  unitId: z.string().trim().optional().nullable(),
   quantity: z.coerce.number().positive(),
   note: z.string().trim().max(500).optional().nullable()
 });
@@ -847,28 +852,58 @@ inventoryRoute.post("/movements/:id/cancel", async (c) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    await tx.stockLot.update({
-      where: { id: movement.lotId! },
-      data: addedStock
-        ? { remainingQuantity: { decrement: amount } }
-        : { remainingQuantity: { increment: amount } }
+    await acquireTransactionLock(tx, "stock-movement-cancel", movement.id);
+    const current = await tx.stockMovement.findUnique({
+      where: { id: movement.id },
+      include: { lot: true }
     });
+    if (!current || !current.lotId || !current.lot) {
+      throw new Error("حرکت موجودی یا لات آن پیدا نشد.");
+    }
+    const duplicateCancel = await tx.stockMovement.findFirst({
+      where: {
+        referenceType: `${current.type}_CANCEL`,
+        referenceId: current.id
+      }
+    });
+    if (duplicateCancel) {
+      throw new Error("این حرکت موجودی قبلاً ابطال شده است.");
+    }
+
+    const currentAmount = roundStockQuantity(Number(current.quantity));
+    if (addedStock) {
+      const changed = await tx.stockLot.updateMany({
+        where: {
+          id: current.lotId,
+          remainingQuantity: { gte: currentAmount }
+        },
+        data: { remainingQuantity: { decrement: currentAmount } }
+      });
+      if (changed.count !== 1) {
+        throw new Error("این لات مصرف شده و ابطال حرکت ممکن نیست.");
+      }
+    } else {
+      await tx.stockLot.update({
+        where: { id: current.lotId },
+        data: { remainingQuantity: { increment: currentAmount } }
+      });
+    }
 
     const cancelMovement = await tx.stockMovement.create({
       data: {
-        productId: movement.productId,
-        warehouseId: movement.warehouseId,
-        lotId: movement.lotId,
+        productId: current.productId,
+        warehouseId: current.warehouseId,
+        lotId: current.lotId,
         type: addedStock
           ? StockMovementType.ADJUSTMENT_OUT
           : StockMovementType.ADJUSTMENT_IN,
-        quantity: amount,
-        unitCost: movement.unitCost,
-        currencyId: movement.currencyId,
-        exchangeRate: movement.exchangeRate,
-        baseUnitCost: movement.baseUnitCost,
-        referenceType: `${movement.type}_CANCEL`,
-        referenceId: movement.id,
+        quantity: currentAmount,
+        unitCost: current.unitCost,
+        currencyId: current.currencyId,
+        exchangeRate: current.exchangeRate,
+        baseUnitCost: current.baseUnitCost,
+        referenceType: `${current.type}_CANCEL`,
+        referenceId: current.id,
         note: parsed.data.reason ?? "Stock movement cancellation",
         createdByUserId: authUser?.id || null
       }
@@ -946,22 +981,56 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "stock-transfer-cancel", referenceId);
+    const currentMovements = await tx.stockMovement.findMany({
+      where: {
+        referenceType: "TRANSFER",
+        referenceId,
+        type: {
+          in: [StockMovementType.TRANSFER_OUT, StockMovementType.TRANSFER_IN]
+        }
+      },
+      include: { lot: true }
+    });
+    if (currentMovements.length === 0) {
+      throw new Error("انتقال موجودی پیدا نشد.");
+    }
+    const duplicateCancel = await tx.stockMovement.findFirst({
+      where: { referenceType: "TRANSFER_CANCEL", referenceId }
+    });
+    if (duplicateCancel) {
+      throw new Error("این انتقال قبلاً ابطال شده است.");
+    }
+
     const cancelMovements = [];
 
-    for (const movement of movements) {
-      const amount = Number(movement.quantity);
+    for (const movement of currentMovements) {
+      const amount = roundStockQuantity(Number(movement.quantity));
       const wasTransferIn = movement.type === StockMovementType.TRANSFER_IN;
 
       if (!movement.lotId) {
         throw new Error("Transfer movement has no lot to reverse");
       }
 
-      await tx.stockLot.update({
-        where: { id: movement.lotId },
-        data: wasTransferIn
-          ? { remainingQuantity: { decrement: amount } }
-          : { remainingQuantity: { increment: amount } }
-      });
+      if (wasTransferIn) {
+        const changed = await tx.stockLot.updateMany({
+          where: {
+            id: movement.lotId,
+            remainingQuantity: { gte: amount }
+          },
+          data: { remainingQuantity: { decrement: amount } }
+        });
+        if (changed.count !== 1) {
+          throw new Error(
+            "موجودی مقصد مصرف شده و ابطال انتقال ممکن نیست."
+          );
+        }
+      } else {
+        await tx.stockLot.update({
+          where: { id: movement.lotId },
+          data: { remainingQuantity: { increment: amount } }
+        });
+      }
 
       const cancelMovement = await tx.stockMovement.create({
         data: {
@@ -1013,25 +1082,40 @@ inventoryRoute.post("/opening-stock", async (c) => {
     return c.json(zodError(parsed.error), 400);
   }
 
-  const product = await prisma.product.findUnique({
-    where: {
-      id: parsed.data.productId
-    }
-  });
+  const { product, warehouse } = await ensureProductAndWarehouse(
+    parsed.data.productId,
+    parsed.data.warehouseId
+  );
 
   if (!product) {
     return c.json({ message: "Product not found" }, 404);
   }
 
-  const warehouse = await prisma.warehouse.findUnique({
-    where: {
-      id: parsed.data.warehouseId
-    }
-  });
-
   if (!warehouse) {
     return c.json({ message: "Warehouse not found" }, 404);
   }
+
+  let unitConversion;
+  try {
+    unitConversion = resolveProductUnitConversion(product, parsed.data.unitId);
+  } catch (error) {
+    return c.json(
+      {
+        message:
+          error instanceof Error
+            ? error.message
+            : "Selected unit is not configured for this product"
+      },
+      400
+    );
+  }
+
+  const quantityBase = roundStockQuantity(
+    parsed.data.quantity * unitConversion.conversionRate
+  );
+  const unitCostBase = roundMoney(
+    parsed.data.unitCost / unitConversion.conversionRate
+  );
 
   const expiryDate = parseExpiryDate(parsed.data.expiryDate);
 
@@ -1066,14 +1150,17 @@ inventoryRoute.post("/opening-stock", async (c) => {
         productId: parsed.data.productId,
         warehouseId: parsed.data.warehouseId,
         expiryDate,
-        initialQuantity: parsed.data.quantity,
-        remainingQuantity: parsed.data.quantity,
-        unitCost: parsed.data.unitCost,
+        initialQuantity: quantityBase,
+        remainingQuantity: quantityBase,
+        unitCost: unitCostBase,
         currencyId: parsed.data.currencyId ?? null,
         exchangeRate: stockSnapshot.exchangeRate,
-        baseUnitCost: parsed.data.unitCost * stockSnapshot.exchangeRate,
+        baseUnitCost: roundMoney(unitCostBase * stockSnapshot.exchangeRate),
         sourceType: "OPENING_STOCK",
-        note: parsed.data.note ?? null
+        note: [
+          parsed.data.note ?? null,
+          `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+        ].filter(Boolean).join(" | ") || null
       }
     });
 
@@ -1083,14 +1170,17 @@ inventoryRoute.post("/opening-stock", async (c) => {
         warehouseId: parsed.data.warehouseId,
         lotId: lot.id,
         type: StockMovementType.OPENING_STOCK,
-        quantity: parsed.data.quantity,
-        unitCost: parsed.data.unitCost,
+        quantity: quantityBase,
+        unitCost: unitCostBase,
         currencyId: parsed.data.currencyId ?? null,
         exchangeRate: stockSnapshot.exchangeRate,
-        baseUnitCost: parsed.data.unitCost * stockSnapshot.exchangeRate,
+        baseUnitCost: roundMoney(unitCostBase * stockSnapshot.exchangeRate),
         referenceType: "OPENING_STOCK",
         referenceId: lot.id,
-        note: parsed.data.note ?? null,
+        note: [
+          parsed.data.note ?? null,
+          `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+        ].filter(Boolean).join(" | ") || null,
         createdByUserId: authUser?.id || null
       }
     });
@@ -1108,7 +1198,10 @@ inventoryRoute.post("/opening-stock", async (c) => {
     metadata: {
       productId: parsed.data.productId,
       warehouseId: parsed.data.warehouseId,
-      quantity: parsed.data.quantity
+      quantity: quantityBase,
+      enteredQuantity: parsed.data.quantity,
+      enteredUnitId: unitConversion.unitId,
+      conversionRate: unitConversion.conversionRate
     }
   });
 
@@ -1137,17 +1230,6 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
     return c.json({ message: "Opening stock movement not found" }, 404);
   }
 
-  const existingCancel = await prisma.stockMovement.findFirst({
-    where: {
-      referenceType: "OPENING_STOCK_CANCEL",
-      referenceId: movement.id
-    }
-  });
-
-  if (existingCancel) {
-    return c.json({ message: "Cancelled opening stock cannot be edited" }, 400);
-  }
-
   const expiryDate = parseExpiryDate(parsed.data.expiryDate);
   if (expiryDate === "INVALID_DATE") {
     return c.json({ message: "Invalid expiryDate" }, 400);
@@ -1157,22 +1239,8 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
     return c.json({ message: "Expiry date is required for this product" }, 400);
   }
 
-  const oldInitial = Number(movement.lot.initialQuantity);
-  const oldRemaining = Number(movement.lot.remainingQuantity);
-  const usedQuantity = Math.max(0, oldInitial - oldRemaining);
-  const newQuantity = parsed.data.quantity;
-
-  if (newQuantity < usedQuantity) {
-    return c.json(
-      {
-        message: "Opening stock cannot be reduced below already used quantity",
-        usedQuantity
-      },
-      400
-    );
-  }
-
-  const newRemaining = newQuantity - usedQuantity;
+  const newQuantity = roundStockQuantity(parsed.data.quantity);
+  const newUnitCost = roundMoney(parsed.data.unitCost);
   let stockSnapshot;
   try {
     stockSnapshot = parsed.data.currencyId
@@ -1186,28 +1254,57 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "opening-stock-edit", movementId);
+    const current = await tx.stockMovement.findUnique({
+      where: { id: movementId },
+      include: { lot: true }
+    });
+    if (!current || current.type !== StockMovementType.OPENING_STOCK || !current.lot) {
+      throw new Error("موجودی اولیه پیدا نشد.");
+    }
+
+    const existingCancel = await tx.stockMovement.findFirst({
+      where: {
+        referenceType: "OPENING_STOCK_CANCEL",
+        referenceId: current.id
+      }
+    });
+    if (existingCancel) {
+      throw new Error("موجودی اولیه ابطال‌شده قابل ویرایش نیست.");
+    }
+
+    const oldInitial = roundStockQuantity(Number(current.lot.initialQuantity));
+    const oldRemaining = roundStockQuantity(Number(current.lot.remainingQuantity));
+    const usedQuantity = roundStockQuantity(Math.max(0, oldInitial - oldRemaining));
+    if (newQuantity < usedQuantity) {
+      throw new Error(
+        `موجودی اولیه از مقدار مصرف‌شده (${usedQuantity}) کمتر شده نمی‌تواند.`
+      );
+    }
+    const newRemaining = roundStockQuantity(newQuantity - usedQuantity);
+
     const lot = await tx.stockLot.update({
-      where: { id: movement.lotId! },
+      where: { id: current.lotId! },
       data: {
         initialQuantity: newQuantity,
         remainingQuantity: newRemaining,
-        unitCost: parsed.data.unitCost,
+        unitCost: newUnitCost,
         currencyId: parsed.data.currencyId ?? null,
         exchangeRate: stockSnapshot.exchangeRate,
-        baseUnitCost: parsed.data.unitCost * stockSnapshot.exchangeRate,
+        baseUnitCost: roundMoney(newUnitCost * stockSnapshot.exchangeRate),
         expiryDate,
         note: parsed.data.note ?? null
       }
     });
 
     const updatedMovement = await tx.stockMovement.update({
-      where: { id: movement.id },
+      where: { id: current.id },
       data: {
         quantity: newQuantity,
-        unitCost: parsed.data.unitCost,
+        unitCost: newUnitCost,
         currencyId: parsed.data.currencyId ?? null,
         exchangeRate: stockSnapshot.exchangeRate,
-        baseUnitCost: parsed.data.unitCost * stockSnapshot.exchangeRate,
+        baseUnitCost: roundMoney(newUnitCost * stockSnapshot.exchangeRate),
         note: parsed.data.note ?? null
       },
       include: {
@@ -1222,7 +1319,12 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
       }
     });
 
-    return { lot, movement: updatedMovement };
+    return {
+      lot,
+      movement: updatedMovement,
+      oldInitial,
+      usedQuantity
+    };
   });
 
   await writeAudit(c, {
@@ -1230,9 +1332,9 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
     entityType: "StockMovement",
     entityId: movement.id,
     metadata: {
-      oldQuantity: oldInitial,
+      oldQuantity: result.oldInitial,
       newQuantity,
-      usedQuantity,
+      usedQuantity: result.usedQuantity,
       updatedByUserId: authUser?.id || null
     }
   });
@@ -1277,10 +1379,12 @@ inventoryRoute.post("/adjustments", async (c) => {
     );
   }
 
-  const quantityBase = parsed.data.quantity * unitConversion.conversionRate;
+  const quantityBase = roundStockQuantity(
+    parsed.data.quantity * unitConversion.conversionRate
+  );
   const unitCostBase =
     parsed.data.unitCost !== null && parsed.data.unitCost !== undefined
-      ? Number(parsed.data.unitCost) / unitConversion.conversionRate
+      ? roundMoney(Number(parsed.data.unitCost) / unitConversion.conversionRate)
       : 0;
 
   const expiryDate = parseExpiryDate(parsed.data.expiryDate);
@@ -1313,7 +1417,7 @@ inventoryRoute.post("/adjustments", async (c) => {
           unitCost: unitCostBase,
           currencyId: parsed.data.currencyId ?? null,
           exchangeRate: stockSnapshot.exchangeRate,
-          baseUnitCost: unitCostBase * stockSnapshot.exchangeRate,
+          baseUnitCost: roundMoney(unitCostBase * stockSnapshot.exchangeRate),
           sourceType: "ADJUSTMENT_IN",
           note: [
             parsed.data.note ?? null,
@@ -1332,7 +1436,7 @@ inventoryRoute.post("/adjustments", async (c) => {
           unitCost: unitCostBase,
           currencyId: parsed.data.currencyId ?? null,
           exchangeRate: stockSnapshot.exchangeRate,
-          baseUnitCost: unitCostBase * stockSnapshot.exchangeRate,
+          baseUnitCost: roundMoney(unitCostBase * stockSnapshot.exchangeRate),
           referenceType: "ADJUSTMENT",
           referenceId: lot.id,
           note: [
@@ -1363,59 +1467,60 @@ inventoryRoute.post("/adjustments", async (c) => {
     return c.json({ data: result }, 201);
   }
 
-  const lots = await prisma.stockLot.findMany({
-    where: {
-      productId: parsed.data.productId,
-      warehouseId: parsed.data.warehouseId,
-      remainingQuantity: { gt: 0 },
-      ...(parsed.data.lotId ? { id: parsed.data.lotId } : {})
-    },
-    orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }]
-  });
-
-  let remaining = quantityBase;
-  const allocations: Array<{ lot: (typeof lots)[number]; quantity: number }> = [];
-
-  for (const lot of lots) {
-    if (remaining <= 0) break;
-
-    const available = Number(lot.remainingQuantity);
-    const quantity = Math.min(available, remaining);
-
-    allocations.push({ lot, quantity });
-    remaining -= quantity;
-  }
-
-  if (remaining > 0) {
-    return c.json(
-      {
-        message: "Not enough stock for adjustment",
-        required: quantityBase,
-        enteredQuantity: parsed.data.quantity,
-        conversionRate: unitConversion.conversionRate,
-        missing: remaining
-      },
-      400
-    );
-  }
-
   const movementType =
     parsed.data.type === "DAMAGE"
       ? StockMovementType.DAMAGE
       : StockMovementType.ADJUSTMENT_OUT;
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(
+      tx,
+      "stock",
+      `${parsed.data.productId}:${parsed.data.warehouseId}`
+    );
+    const lots = await tx.stockLot.findMany({
+      where: {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.warehouseId,
+        remainingQuantity: { gt: 0 },
+        ...(parsed.data.lotId ? { id: parsed.data.lotId } : {})
+      },
+      orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }]
+    });
+    let remaining = quantityBase;
+    const allocations: Array<{ lot: (typeof lots)[number]; quantity: number }> = [];
+    for (const lot of lots) {
+      if (remaining <= 0) break;
+      const available = roundStockQuantity(Number(lot.remainingQuantity));
+      const quantity = roundStockQuantity(Math.min(available, remaining));
+      if (quantity <= 0) continue;
+      allocations.push({ lot, quantity });
+      remaining = roundStockQuantity(remaining - quantity);
+    }
+    if (remaining > 0) {
+      throw new Error(
+        `موجودی کافی نیست؛ ${remaining} واحد پایه کمبود است.`
+      );
+    }
+
     const movements = [];
+    const referenceId = `ADJUSTMENT-${randomUUID()}`;
 
     for (const allocation of allocations) {
-      await tx.stockLot.update({
-        where: { id: allocation.lot.id },
+      const changed = await tx.stockLot.updateMany({
+        where: {
+          id: allocation.lot.id,
+          remainingQuantity: { gte: allocation.quantity }
+        },
         data: {
           remainingQuantity: {
             decrement: allocation.quantity
           }
         }
       });
+      if (changed.count !== 1) {
+        throw new Error("موجودی هم‌زمان تغییر کرد؛ عملیات دوباره بررسی شود.");
+      }
 
       const movement = await tx.stockMovement.create({
         data: {
@@ -1429,7 +1534,7 @@ inventoryRoute.post("/adjustments", async (c) => {
           exchangeRate: allocation.lot.exchangeRate,
           baseUnitCost: allocation.lot.baseUnitCost,
           referenceType: parsed.data.type,
-          referenceId: allocation.lot.id,
+          referenceId,
           note: [
             parsed.data.note ?? null,
             `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
@@ -1474,7 +1579,10 @@ inventoryRoute.post("/transfers", async (c) => {
   }
 
   const [product, fromWarehouse, toWarehouse] = await Promise.all([
-    prisma.product.findUnique({ where: { id: parsed.data.productId } }),
+    prisma.product.findUnique({
+      where: { id: parsed.data.productId },
+      include: { units: true, baseUnit: true }
+    }),
     prisma.warehouse.findUnique({ where: { id: parsed.data.fromWarehouseId } }),
     prisma.warehouse.findUnique({ where: { id: parsed.data.toWarehouseId } })
   ]);
@@ -1487,55 +1595,82 @@ inventoryRoute.post("/transfers", async (c) => {
     return c.json({ message: "Warehouse not found" }, 404);
   }
 
-  const lots = await prisma.stockLot.findMany({
-    where: {
-      productId: parsed.data.productId,
-      warehouseId: parsed.data.fromWarehouseId,
-      remainingQuantity: { gt: 0 },
-      ...(parsed.data.lotId ? { id: parsed.data.lotId } : {})
-    },
-    orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }]
-  });
-
-  let remaining = parsed.data.quantity;
-  const allocations: Array<{ lot: (typeof lots)[number]; quantity: number }> = [];
-
-  for (const lot of lots) {
-    if (remaining <= 0) break;
-
-    const available = Number(lot.remainingQuantity);
-    const quantity = Math.min(available, remaining);
-
-    allocations.push({ lot, quantity });
-    remaining -= quantity;
-  }
-
-  if (remaining > 0) {
+  let unitConversion;
+  try {
+    unitConversion = resolveProductUnitConversion(product, parsed.data.unitId);
+  } catch (error) {
     return c.json(
       {
-        message: "Not enough stock for transfer",
-        required: parsed.data.quantity,
-        missing: remaining
+        message:
+          error instanceof Error
+            ? error.message
+            : "Selected unit is not configured for this product"
       },
       400
     );
   }
-
-  const referenceId = `TRANSFER-${Date.now()}`;
+  const quantityBase = roundStockQuantity(
+    parsed.data.quantity * unitConversion.conversionRate
+  );
+  const referenceId = `TRANSFER-${randomUUID()}`;
 
   const result = await prisma.$transaction(async (tx) => {
+    const lockKeys = [
+      `${parsed.data.productId}:${parsed.data.fromWarehouseId}`,
+      `${parsed.data.productId}:${parsed.data.toWarehouseId}`
+    ].sort();
+    for (const key of lockKeys) {
+      await acquireTransactionLock(tx, "stock", key);
+    }
+
+    const lots = await tx.stockLot.findMany({
+      where: {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.fromWarehouseId,
+        remainingQuantity: { gt: 0 },
+        ...(parsed.data.lotId ? { id: parsed.data.lotId } : {})
+      },
+      orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }]
+    });
+    let remaining = quantityBase;
+    const allocations: Array<{ lot: (typeof lots)[number]; quantity: number }> = [];
+    for (const lot of lots) {
+      if (remaining <= 0) break;
+      const available = roundStockQuantity(Number(lot.remainingQuantity));
+      const quantity = roundStockQuantity(Math.min(available, remaining));
+      if (quantity <= 0) continue;
+      allocations.push({ lot, quantity });
+      remaining = roundStockQuantity(remaining - quantity);
+    }
+    if (remaining > 0) {
+      throw new Error(
+        `موجودی کافی برای انتقال نیست؛ ${remaining} واحد پایه کمبود است.`
+      );
+    }
+
     const movements = [];
     const destinationLots = [];
 
     for (const allocation of allocations) {
-      await tx.stockLot.update({
-        where: { id: allocation.lot.id },
+      const changed = await tx.stockLot.updateMany({
+        where: {
+          id: allocation.lot.id,
+          remainingQuantity: { gte: allocation.quantity }
+        },
         data: {
           remainingQuantity: {
             decrement: allocation.quantity
           }
         }
       });
+      if (changed.count !== 1) {
+        throw new Error("موجودی هم‌زمان تغییر کرد؛ انتقال دوباره بررسی شود.");
+      }
+
+      const operationNote = [
+        parsed.data.note ?? null,
+        `واحد ثبت: ${parsed.data.quantity} x ${unitConversion.conversionRate}`
+      ].filter(Boolean).join(" | ") || null;
 
       const destinationLot = await tx.stockLot.create({
         data: {
@@ -1550,7 +1685,7 @@ inventoryRoute.post("/transfers", async (c) => {
           baseUnitCost: allocation.lot.baseUnitCost,
           sourceType: "TRANSFER",
           sourceId: allocation.lot.id,
-          note: parsed.data.note ?? null
+          note: operationNote
         }
       });
 
@@ -1567,7 +1702,7 @@ inventoryRoute.post("/transfers", async (c) => {
           baseUnitCost: allocation.lot.baseUnitCost,
           referenceType: "TRANSFER",
           referenceId,
-          note: parsed.data.note ?? null,
+          note: operationNote,
           createdByUserId: authUser?.id || null
         }
       });
@@ -1581,9 +1716,11 @@ inventoryRoute.post("/transfers", async (c) => {
           quantity: allocation.quantity,
           unitCost: allocation.lot.unitCost,
           currencyId: allocation.lot.currencyId,
+          exchangeRate: allocation.lot.exchangeRate,
+          baseUnitCost: allocation.lot.baseUnitCost,
           referenceType: "TRANSFER",
           referenceId,
-          note: parsed.data.note ?? null,
+          note: operationNote,
           createdByUserId: authUser?.id || null
         }
       });
@@ -1607,7 +1744,10 @@ inventoryRoute.post("/transfers", async (c) => {
       productId: parsed.data.productId,
       fromWarehouseId: parsed.data.fromWarehouseId,
       toWarehouseId: parsed.data.toWarehouseId,
-      quantity: parsed.data.quantity
+      quantity: quantityBase,
+      enteredQuantity: parsed.data.quantity,
+      enteredUnitId: unitConversion.unitId,
+      conversionRate: unitConversion.conversionRate
     }
   });
 

@@ -6,6 +6,7 @@ import { getAuthUser, writeAudit } from "../../lib/auth";
 import { getBaseCurrency } from "../../lib/currency-rates";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
+import { createOperationReference } from "../../lib/operation-id";
 
 export const accountingRoute = new Hono();
 
@@ -405,7 +406,7 @@ function normalizePartyType(value?: string | null) {
 }
 
 function makeEntryNo() {
-  return `JE-${Date.now()}`;
+  return createOperationReference("JE");
 }
 
 function round4(value: number) {
@@ -1010,7 +1011,7 @@ accountingRoute.post("/post-sale", async (c) => {
   const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
   const entry = await prisma.journalEntry.create({
     data: {
-      entryNo: `JE-POS-${Date.now()}`,
+      entryNo: createOperationReference("JE-POS"),
       date: new Date(),
       description: `POS Sale ${parsed.data.invoiceNo}`,
       sourceType: "POS_SALE",
@@ -1237,7 +1238,7 @@ accountingRoute.post("/post-purchase", async (c) => {
   const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
   const entry = await prisma.journalEntry.create({
     data: {
-      entryNo: `JE-PUR-${Date.now()}`,
+      entryNo: createOperationReference("JE-PUR"),
       date: new Date(),
       description: `Purchase ${parsed.data.invoiceNo}`,
       sourceType: "PURCHASE",
@@ -1339,7 +1340,7 @@ accountingRoute.post("/post-expense", async (c) => {
   const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
   const entry = await prisma.journalEntry.create({
     data: {
-      entryNo: `JE-EXP-${Date.now()}`,
+      entryNo: createOperationReference("JE-EXP"),
       date: new Date(),
       description: `Expense: ${parsed.data.title}`,
       sourceType: "EXPENSE",
@@ -1441,7 +1442,7 @@ accountingRoute.post("/post-customer-receipt", async (c) => {
   const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
   const entry = await prisma.journalEntry.create({
     data: {
-      entryNo: `JE-REC-${Date.now()}`,
+      entryNo: createOperationReference("JE-REC"),
       date: new Date(),
       description: "Customer receipt",
       sourceType: "CUSTOMER_RECEIPT",
@@ -1543,7 +1544,7 @@ accountingRoute.post("/post-supplier-payment", async (c) => {
   const baseCurrencyId = (await getBaseCurrency(prisma))?.id || null;
   const entry = await prisma.journalEntry.create({
     data: {
-      entryNo: `JE-PAY-${Date.now()}`,
+      entryNo: createOperationReference("JE-PAY"),
       date: new Date(),
       description: "Supplier payment",
       sourceType: "SUPPLIER_PAYMENT",

@@ -1,4 +1,5 @@
 import type { Prisma } from "../generated/prisma/client";
+import { createOperationReference } from "./operation-id";
 
 import { getBaseCurrency, roundMoney } from "./currency-rates";
 import { createPostedJournal } from "./journal";
@@ -75,7 +76,7 @@ async function createZeroCostMarker(
 ) {
   return tx.journalEntry.create({
     data: {
-      entryNo: `JE-COGS-ZERO-${Date.now()}`,
+      entryNo: createOperationReference("JE-COGS-ZERO"),
       date: new Date(),
       description: `COGS checked with zero cost for POS Sale ${input.invoiceNo || input.saleId}`,
       sourceType: "POS_SALE_COGS",

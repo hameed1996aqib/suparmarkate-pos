@@ -1,4 +1,5 @@
 import type { Prisma } from "../generated/prisma/client";
+import { createOperationReference } from "./operation-id";
 
 type JournalTx = Prisma.TransactionClient;
 
@@ -134,7 +135,7 @@ export async function createPostedJournal(
 
   const entry = await tx.journalEntry.create({
     data: {
-      entryNo: `${input.entryNoPrefix}-${Date.now()}`,
+      entryNo: createOperationReference(input.entryNoPrefix),
       date: new Date(),
       description: input.description,
       sourceType: input.sourceType,
@@ -213,7 +214,7 @@ export async function createReversalJournal(
 
     const reversal = await tx.journalEntry.create({
       data: {
-        entryNo: `${input.entryNoPrefix}-${Date.now()}`,
+        entryNo: createOperationReference(input.entryNoPrefix),
         date: new Date(),
         description: input.description,
         sourceType: input.reversalSourceType,

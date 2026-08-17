@@ -344,7 +344,6 @@ export async function runIntegrityAudit(
           COALESCE(SUM("remainingQuantity"), 0) AS quantity,
           COALESCE(SUM("remainingQuantity" * "baseUnitCost"), 0) AS value
         FROM "StockLot"
-        WHERE "remainingQuantity" > 0
         GROUP BY "productId", "warehouseId"
       ),
       keys AS (

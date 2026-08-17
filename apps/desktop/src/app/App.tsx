@@ -267,6 +267,91 @@ function createClientId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+const IDEMPOTENT_WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const RECENT_MUTATION_OPERATIONS_KEY = "muhaseb_recent_mutation_operations_v1";
+type RecentMutationOperation = { operationId: string; expiresAt: number };
+
+function loadRecentMutationOperations() {
+  const operations = new Map<string, RecentMutationOperation>();
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(RECENT_MUTATION_OPERATIONS_KEY) || "[]",
+    ) as Array<[string, RecentMutationOperation]>;
+    const now = Date.now();
+    for (const [signature, operation] of parsed) {
+      if (
+        signature &&
+        operation?.operationId &&
+        Number(operation.expiresAt) > now
+      ) {
+        operations.set(signature, operation);
+      }
+    }
+  } catch {
+    localStorage.removeItem(RECENT_MUTATION_OPERATIONS_KEY);
+  }
+  return operations;
+}
+
+const recentMutationOperations: Map<
+  string,
+  RecentMutationOperation
+> = loadRecentMutationOperations();
+
+function persistRecentMutationOperations() {
+  try {
+    localStorage.setItem(
+      RECENT_MUTATION_OPERATIONS_KEY,
+      JSON.stringify(Array.from(recentMutationOperations.entries())),
+    );
+  } catch {
+    // Idempotency still works for the current process when storage is unavailable.
+  }
+}
+
+function pruneRecentMutationOperations(now: number) {
+  let changed = false;
+  for (const [key, entry] of recentMutationOperations) {
+    if (entry.expiresAt <= now) {
+      recentMutationOperations.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) persistRecentMutationOperations();
+}
+
+function shortStableHash(value: string) {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
+  }
+  return `${first.toString(16).padStart(8, "0")}${second.toString(16).padStart(8, "0")}`;
+}
+
+function mutationBodySignature(body: BodyInit | null | undefined) {
+  if (body == null) return "empty";
+  if (typeof body === "string") return `text:${body}`;
+  if (body instanceof URLSearchParams) return `params:${body.toString()}`;
+  if (body instanceof FormData) {
+    const entries: string[] = [];
+    for (const [name, value] of body.entries()) {
+      entries.push(
+        typeof value === "string"
+          ? `${name}=text:${value}`
+          : `${name}=file:${value.name}:${value.type}:${value.size}:${value.lastModified}`,
+      );
+    }
+    return `form:${entries.join("|")}`;
+  }
+  if (body instanceof Blob) return `blob:${body.type}:${body.size}`;
+  if (body instanceof ArrayBuffer) return `buffer:${body.byteLength}`;
+  if (ArrayBuffer.isView(body)) return `view:${body.byteLength}`;
+  return `body:${Object.prototype.toString.call(body)}`;
+}
+
 function installAuthenticatedFetch() {
   if (window.__belalAuthFetchInstalled) return;
 
@@ -275,6 +360,14 @@ function installAuthenticatedFetch() {
   window.fetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     const headers = new Headers(init.headers || {});
+    const request = input instanceof Request ? input : null;
+    const method = String(init.method || request?.method || "GET").toUpperCase();
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
 
     if (token && !headers.has("Authorization")) {
       headers.set("Authorization", `Bearer ${token}`);
@@ -296,6 +389,54 @@ function installAuthenticatedFetch() {
         "x-pos-device-type",
         navigator.userAgent.includes("Mobile") ? "MOBILE" : "DESKTOP",
       );
+    }
+
+    if (IDEMPOTENT_WRITE_METHODS.has(method)) {
+      const pathName = new URL(requestUrl, window.location.href).pathname;
+      const payloadSignature = mutationBodySignature(init.body);
+      const payloadHash = shortStableHash(payloadSignature);
+      const mutationSignature = shortStableHash(
+        `${method}:${requestUrl}:${payloadHash}:${shortStableHash(token || "anonymous")}`,
+      );
+      const now = Date.now();
+
+      pruneRecentMutationOperations(now);
+
+      if (!headers.has("Idempotency-Key") && pathName !== "/api/pos/scan") {
+        const recent = recentMutationOperations.get(mutationSignature);
+        const operationId = recent?.operationId || createClientId();
+        recentMutationOperations.set(mutationSignature, {
+          operationId,
+          expiresAt: now + 10 * 60_000,
+        });
+        persistRecentMutationOperations();
+        headers.set("Idempotency-Key", operationId);
+        headers.set("X-Idempotency-Payload-Hash", payloadHash);
+      }
+
+      const response = originalFetch(input, { ...init, method, headers });
+      return response
+        .then((result) => {
+          const current = recentMutationOperations.get(mutationSignature);
+          if (current) {
+            if (result.ok) current.expiresAt = Date.now() + 3_000;
+            else if (result.status >= 500 || result.status === 409) {
+              current.expiresAt = Date.now() + 10 * 60_000;
+            } else {
+              recentMutationOperations.delete(mutationSignature);
+            }
+            persistRecentMutationOperations();
+          }
+          return result;
+        })
+        .catch((error) => {
+          const current = recentMutationOperations.get(mutationSignature);
+          if (current) {
+            current.expiresAt = Date.now() + 10 * 60_000;
+            persistRecentMutationOperations();
+          }
+          throw error;
+        });
     }
 
     return originalFetch(input, {
@@ -10760,6 +10901,8 @@ function InventoryPage() {
   const [form, setForm] = useState<InventoryActionForm>(
     emptyInventoryActionForm,
   );
+  const [inventoryActionSubmitting, setInventoryActionSubmitting] =
+    useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const inventoryLoadSeqRef = useRef(0);
   const inventoryLoadAbortRef = useRef<AbortController | null>(null);
@@ -11289,6 +11432,7 @@ function InventoryPage() {
   };
 
   const submitInventoryAction = async () => {
+    if (inventoryActionSubmitting) return;
     if (!form.productId || !form.warehouseId || form.quantity <= 0) {
       toast.error("جنس، گدام و مقدار معتبر ضروری است");
       return;
@@ -11302,6 +11446,7 @@ function InventoryPage() {
       return;
     }
 
+    setInventoryActionSubmitting(true);
     try {
       const endpoint =
         form.type === "TRANSFER"
@@ -11315,6 +11460,7 @@ function InventoryPage() {
               fromWarehouseId: form.warehouseId,
               toWarehouseId: form.toWarehouseId,
               lotId: form.lotId || null,
+              unitId: form.unitId || null,
               quantity: form.quantity,
               note: form.note || null,
             }
@@ -11357,6 +11503,8 @@ function InventoryPage() {
       toast.error(
         error instanceof Error ? error.message : "عملیات موجودی ناکام شد",
       );
+    } finally {
+      setInventoryActionSubmitting(false);
     }
   };
 
@@ -11631,7 +11779,12 @@ function InventoryPage() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          if (!inventoryActionSubmitting) setDialogOpen(open);
+        }}
+      >
         <DialogContent dir="rtl" className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>
@@ -11708,27 +11861,25 @@ function InventoryPage() {
                 }
               />
             )}
-            {form.type !== "TRANSFER" && (
-              <LookupSelect
-                label="واحد"
-                value={form.unitId}
-                options={inventoryUnitOptions(form.productId)}
-                onChange={(value) =>
-                  setForm((current) => ({
-                    ...current,
-                    unitId: value,
-                    unitCost:
-                      current.type === "ADJUSTMENT_IN"
-                        ? inventoryUnitCost(
-                            current.productId,
-                            value,
-                            current.currencyId,
-                          )
-                        : current.unitCost,
-                  }))
-                }
-              />
-            )}
+            <LookupSelect
+              label="واحد"
+              value={form.unitId}
+              options={inventoryUnitOptions(form.productId)}
+              onChange={(value) =>
+                setForm((current) => ({
+                  ...current,
+                  unitId: value,
+                  unitCost:
+                    current.type === "ADJUSTMENT_IN"
+                      ? inventoryUnitCost(
+                          current.productId,
+                          value,
+                          current.currencyId,
+                        )
+                      : current.unitCost,
+                }))
+              }
+            />
             <NumberField
               label="مقدار"
               value={form.quantity}
@@ -11736,7 +11887,7 @@ function InventoryPage() {
                 setForm((current) => ({ ...current, quantity: value }))
               }
             />
-            {form.type !== "TRANSFER" && form.productId ? (
+            {form.productId ? (
               <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
                 مقدار پایه:{" "}
                 <strong className="text-foreground">
@@ -11802,10 +11953,19 @@ function InventoryPage() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+            <Button
+              variant="outline"
+              disabled={inventoryActionSubmitting}
+              onClick={() => setDialogOpen(false)}
+            >
               لغو
             </Button>
-            <Button onClick={submitInventoryAction}>ثبت عملیات</Button>
+            <Button
+              disabled={inventoryActionSubmitting}
+              onClick={submitInventoryAction}
+            >
+              {inventoryActionSubmitting ? "در حال ثبت..." : "ثبت عملیات"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

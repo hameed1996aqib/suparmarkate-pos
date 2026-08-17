@@ -27,6 +27,7 @@
     "test": "npm run test:unit",
     "test:unit": "npm --workspace @supermarket/api run test:unit",
     "test:integration": "npm --workspace @supermarket/api run test:integration",
+    "test:stock-stress": "npm --workspace @supermarket/api run test:stock-stress",
     "test:web": "npm --workspace @supermarket/desktop run test:web",
     "test:electron": "npm --workspace @supermarket/desktop run test:electron",
     "test:stack:up": "docker compose -f docker-compose.test.yml up -d --wait",

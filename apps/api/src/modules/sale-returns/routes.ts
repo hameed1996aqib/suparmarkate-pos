@@ -18,6 +18,9 @@ import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
 import { resolveSaleItemPricing, roundMoney4 } from "../../lib/sale-pricing";
 import { Prisma } from "../../generated/prisma/client";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { SaleStatus } from "../../generated/prisma/enums";
+import { createOperationReference } from "../../lib/operation-id";
 
 export const saleReturnsRoute = new Hono();
 
@@ -247,6 +250,10 @@ saleReturnsRoute.post("/", async (c) => {
     return c.json({ message: "Sale not found" }, 404);
   }
 
+  if (sale.status === SaleStatus.CANCELLED) {
+    return c.json({ message: "فروش ابطال شده و قابل برگشت نیست." }, 400);
+  }
+
   const requestedByItem = new Map(parsed.data.items.map((item) => [item.saleItemId, item]));
   const preparedItems: any[] = [];
   const saleItemPricing = resolveSaleItemPricing(sale.discount, sale.items);
@@ -261,7 +268,7 @@ saleReturnsRoute.post("/", async (c) => {
     const activeReturnItems = saleItem.returnItems.filter(
       (item) => !item.saleReturn.cancelledAt,
     );
-    const quantityBase = roundMoney4(
+    const requestedQuantityBase = roundMoney4(
       requestItem.quantity * Number(saleItem.conversionRate),
     );
     const returnedBase = roundMoney4(
@@ -272,8 +279,16 @@ saleReturnsRoute.post("/", async (c) => {
     );
     const soldBase = Number(saleItem.quantityBase);
     const availableBase = roundMoney4(soldBase - returnedBase);
+    const unitRoundingTolerance = Math.max(
+      0.0001,
+      Number(saleItem.conversionRate) * 0.00005 + 0.00001,
+    );
+    const quantityBase =
+      Math.abs(requestedQuantityBase - availableBase) <= unitRoundingTolerance
+        ? availableBase
+        : requestedQuantityBase;
 
-    if (quantityBase > availableBase + 0.0001) {
+    if (quantityBase > availableBase + unitRoundingTolerance) {
       return c.json({
         message: `Return quantity exceeds sold quantity for ${saleItem.product.name}`,
         availableBase
@@ -294,7 +309,8 @@ saleReturnsRoute.post("/", async (c) => {
       0,
       roundMoney4(fullNetTotal - alreadyReturnedNet),
     );
-    const returningAllRemaining = Math.abs(quantityBase - availableBase) <= 0.0001;
+    const returningAllRemaining =
+      Math.abs(quantityBase - availableBase) <= unitRoundingTolerance;
     const quantityRatio = soldBase > 0 ? quantityBase / soldBase : 0;
     const totalPrice = returningAllRemaining
       ? remainingNet
@@ -408,9 +424,35 @@ saleReturnsRoute.post("/", async (c) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "sale-document", sale.id);
+    const currentSale = await tx.sale.findUnique({
+      where: { id: sale.id },
+      select: { status: true }
+    });
+    if (!currentSale || currentSale.status === SaleStatus.CANCELLED) {
+      throw new Error("فروش ابطال شده و قابل برگشت نیست.");
+    }
+    for (const item of preparedItems) {
+      const returned = await tx.saleReturnItem.aggregate({
+        where: {
+          saleItemId: item.saleItem.id,
+          saleReturn: { cancelledAt: null }
+        },
+        _sum: { quantityBase: true }
+      });
+      const available = roundMoney4(
+        Number(item.saleItem.quantityBase) - Number(returned._sum.quantityBase || 0)
+      );
+      if (item.quantityBase > available + 0.0001) {
+        throw new Error(
+          `مقدار برگشتی ${item.saleItem.product.name} از مقدار قابل برگشت بیشتر است.`
+        );
+      }
+    }
+
     const saleReturn = await tx.saleReturn.create({
       data: {
-        returnNo: parsed.data.returnNo ?? `SR-${Date.now()}`,
+        returnNo: parsed.data.returnNo ?? createOperationReference("SR"),
         saleId: sale.id,
         customerId: sale.customerId,
         currencyId: sale.currencyId,

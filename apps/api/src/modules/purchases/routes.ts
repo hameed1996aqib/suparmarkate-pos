@@ -21,6 +21,8 @@ import {
   PurchaseStatus,
   StockMovementType
 } from "../../generated/prisma/enums";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { roundStockQuantity } from "../../lib/stock-quantity";
 
 export const purchasesRoute = new Hono();
 
@@ -214,16 +216,36 @@ purchasesRoute.post("/:id/cancel", async (c) => {
   });
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "purchase-document", purchase.id);
+    const currentPurchase = await tx.purchase.findUnique({
+      where: { id: purchase.id },
+      include: { returns: true }
+    });
+    if (!currentPurchase || currentPurchase.status === PurchaseStatus.CANCELLED) {
+      throw new Error("این خرید قبلاً ابطال شده است.");
+    }
+    if (currentPurchase.returns.some((item) => !item.cancelledAt)) {
+      throw new Error("خرید دارای برگشتی فعال است و قابل ابطال نیست.");
+    }
+
     for (const item of purchase.items) {
       if (item.lotId) {
-        await tx.stockLot.update({
-          where: { id: item.lotId },
+        const changed = await tx.stockLot.updateMany({
+          where: {
+            id: item.lotId,
+            remainingQuantity: { gte: item.quantityBase }
+          },
           data: {
             remainingQuantity: {
               decrement: item.quantityBase
             }
           }
         });
+        if (changed.count !== 1) {
+          throw new Error(
+            "موجودی این خرید مصرف یا انتقال شده و ابطال ممکن نیست."
+          );
+        }
       }
 
       await tx.stockMovement.create({
@@ -766,7 +788,7 @@ purchasesRoute.post("/", async (c) => {
       );
     }
 
-    const quantityBase = rawItem.quantity * conversionRate;
+    const quantityBase = roundStockQuantity(rawItem.quantity * conversionRate);
     const unitCostBase = conversionRate > 0 ? rawItem.unitCost / conversionRate : rawItem.unitCost;
     const grossTotalCost = rawItem.quantity * rawItem.unitCost;
 

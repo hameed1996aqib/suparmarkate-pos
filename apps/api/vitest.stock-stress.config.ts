@@ -3,16 +3,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
-    exclude: [
-      "src/**/*.integration.test.ts",
-      "src/**/*.stock-stress.test.ts"
-    ],
+    include: ["src/**/*.stock-stress.test.ts"],
     globals: false,
     restoreMocks: true,
     clearMocks: true,
     mockReset: true,
-    testTimeout: 30_000,
-    hookTimeout: 30_000
+    fileParallelism: false,
+    testTimeout: 20 * 60_000,
+    hookTimeout: 2 * 60_000
   }
 });

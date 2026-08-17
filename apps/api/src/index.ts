@@ -19,6 +19,10 @@ import {
   invalidateReadCachesAfterWrite
 } from "./lib/cache";
 import { startStockBalanceReconciliationScheduler } from "./lib/stock-balance-reconciliation";
+import {
+  idempotencyMiddleware,
+  startIdempotencyCleanupScheduler
+} from "./lib/idempotency";
 
 import { currenciesRoute } from "./modules/currencies/routes";
 import { currencyRatesRoute } from "./modules/currency-rates/routes";
@@ -140,6 +144,7 @@ app.use("/api/*", maintenanceModeMiddleware);
 app.use("/api/*", invalidateReadCachesAfterWrite);
 app.use("/api/*", authMiddleware);
 app.use("/api/*", permissionMiddleware);
+app.use("/api/*", idempotencyMiddleware);
 
 app.get("/", (c) => {
   if (webAppAvailable) {
@@ -292,6 +297,7 @@ const posWebSocketServer = startPosWebSocketServer(posWebSocketPort);
 const systemHealthWebSocketServer = startSystemHealthWebSocketServer(systemHealthWebSocketPort);
 startBackupScheduler(() => enqueueJob("BACKUP_CREATE", { source: "schedule" }));
 startStockBalanceReconciliationScheduler();
+startIdempotencyCleanupScheduler();
 void startPersistentJobWorker();
 void ensureRuntimeServerConfigFile();
 

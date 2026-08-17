@@ -397,7 +397,128 @@ function getDashboardCards(summary: DashboardSummary | null) {
 }
 
 function makeId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const MOBILE_OPERATIONS_KEY = "muhaseb_recent_mobile_operations_v1";
+const recentMobileOperations = new Map<
+  string,
+  { operationId: string; expiresAt: number }
+>();
+let mobileOperationsLoadPromise: Promise<void> | null = null;
+
+function loadMobileOperations() {
+  if (mobileOperationsLoadPromise) return mobileOperationsLoadPromise;
+  mobileOperationsLoadPromise = (async () => {
+    try {
+      const parsed = JSON.parse(
+        (await AsyncStorage.getItem(MOBILE_OPERATIONS_KEY)) || "[]",
+      ) as Array<[string, { operationId: string; expiresAt: number }]>;
+      const now = Date.now();
+      for (const [signature, operation] of parsed) {
+        if (
+          signature &&
+          operation?.operationId &&
+          Number(operation.expiresAt) > now
+        ) {
+          recentMobileOperations.set(signature, operation);
+        }
+      }
+    } catch {
+      await AsyncStorage.removeItem(MOBILE_OPERATIONS_KEY).catch(() => undefined);
+    }
+  })();
+  return mobileOperationsLoadPromise;
+}
+
+async function persistMobileOperations() {
+  await AsyncStorage.setItem(
+    MOBILE_OPERATIONS_KEY,
+    JSON.stringify(Array.from(recentMobileOperations.entries())),
+  ).catch(() => undefined);
+}
+
+function mobileStableHash(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+async function operationFetch(input: string, init: RequestInit = {}) {
+  const method = String(init.method || "GET").toUpperCase();
+  if (!WRITE_METHODS.has(method)) return fetch(input, init);
+
+  let pathName = "";
+  try {
+    pathName = new URL(input).pathname;
+  } catch {
+    pathName = input;
+  }
+  if (pathName === "/api/pos/scan") return fetch(input, init);
+
+  const headers = new Headers(init.headers || {});
+  if (headers.has("Idempotency-Key")) {
+    return fetch(input, { ...init, method, headers });
+  }
+
+  await loadMobileOperations();
+
+  const bodySignature =
+    typeof init.body === "string"
+      ? init.body
+      : init.body == null
+        ? "empty"
+        : Object.prototype.toString.call(init.body);
+  const payloadHash = mobileStableHash(bodySignature);
+  const signature = mobileStableHash(`${method}:${input}:${payloadHash}`);
+  const now = Date.now();
+  let pruned = false;
+  for (const [key, entry] of recentMobileOperations) {
+    if (entry.expiresAt <= now) {
+      recentMobileOperations.delete(key);
+      pruned = true;
+    }
+  }
+  if (pruned) await persistMobileOperations();
+
+  const recent = recentMobileOperations.get(signature);
+  const operationId = recent?.operationId || makeId();
+  recentMobileOperations.set(signature, {
+    operationId,
+    expiresAt: now + 10 * 60_000,
+  });
+  await persistMobileOperations();
+
+  headers.set("Idempotency-Key", operationId);
+  headers.set("X-Idempotency-Payload-Hash", payloadHash);
+
+  try {
+    const response = await fetch(input, { ...init, method, headers });
+    const current = recentMobileOperations.get(signature);
+    if (current) {
+      if (response.ok) current.expiresAt = Date.now() + 3_000;
+      else if (response.status >= 500 || response.status === 409) {
+        current.expiresAt = Date.now() + 10 * 60_000;
+      } else {
+        recentMobileOperations.delete(signature);
+      }
+      await persistMobileOperations();
+    }
+    return response;
+  } catch (error) {
+    const current = recentMobileOperations.get(signature);
+    if (current) {
+      current.expiresAt = Date.now() + 10 * 60_000;
+      await persistMobileOperations();
+    }
+    throw error;
+  }
 }
 
 function vibrateSuccess() {
@@ -661,7 +782,7 @@ export default function App() {
     let cancelled = false;
     async function registerExistingSessionDevice() {
       try {
-        const response = await fetch(`${apiBaseUrl}/api/auth/register-device`, {
+        const response = await operationFetch(`${apiBaseUrl}/api/auth/register-device`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -732,7 +853,7 @@ export default function App() {
       }
 
       try {
-        const response = await fetch(`${apiBaseUrl}/api/employees/me`, {
+        const response = await operationFetch(`${apiBaseUrl}/api/employees/me`, {
           headers: {
             Authorization: `Bearer ${tokenValue}`,
           },
@@ -762,7 +883,7 @@ export default function App() {
       setIsReportsLoading(true);
 
       try {
-        const response = await fetch(
+        const response = await operationFetch(
           `${apiBaseUrl}/api/dashboard/summary?period=${periodValue}`,
           {
             headers: {
@@ -807,7 +928,7 @@ export default function App() {
     setIsAuthBusy(true);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+      const response = await operationFetch(`${apiBaseUrl}/api/auth/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -884,7 +1005,7 @@ export default function App() {
     const apiBaseUrl = getApiBaseUrl();
     if (apiBaseUrl && authToken) {
       try {
-        await fetch(`${apiBaseUrl}/api/auth/logout`, {
+        await operationFetch(`${apiBaseUrl}/api/auth/logout`, {
           method: "POST",
           headers: { Authorization: `Bearer ${authToken}` },
         });
@@ -929,7 +1050,7 @@ export default function App() {
 
     setIsAuthBusy(true);
     try {
-      const response = await fetch(`${apiBaseUrl}/api/auth/change-password`, {
+      const response = await operationFetch(`${apiBaseUrl}/api/auth/change-password`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1017,7 +1138,7 @@ export default function App() {
       setIsAttendanceBusy(true);
 
       try {
-        const response = await fetch(`${apiBaseUrl}/api/attendance/scan-auth`, {
+        const response = await operationFetch(`${apiBaseUrl}/api/attendance/scan-auth`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1345,7 +1466,7 @@ export default function App() {
           return;
         }
 
-        const response = await fetch(current.scanHttpUrl, {
+        const response = await operationFetch(current.scanHttpUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1527,7 +1648,7 @@ export default function App() {
       }
 
       if (current) {
-        const response = await fetch(
+        const response = await operationFetch(
           `${current.apiBaseUrl}/api/pos/sessions/${current.sessionId}/cart`,
           {
             method: "DELETE",

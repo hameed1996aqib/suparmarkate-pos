@@ -738,6 +738,32 @@ model StockBalance {
   @@index([earliestExpiryAt])
 }
 
+model IdempotencyRecord {
+  id String @id @default(cuid())
+
+  operationKey String
+  scope        String
+  requestHash  String
+  method       String
+  path         String
+  status       String @default("PROCESSING")
+
+  responseStatus      Int?
+  responseBody        String?
+  responseContentType String?
+  errorMessage        String?
+  userId              String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scope, operationKey])
+  @@index([scope, requestHash, createdAt])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+}
+
 model Party {
   id            String    @id @default(cuid())
   type          PartyType

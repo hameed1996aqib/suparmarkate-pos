@@ -28,6 +28,8 @@ import {
   SaleStatus,
   StockMovementType
 } from "../../generated/prisma/enums";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { roundStockQuantity } from "../../lib/stock-quantity";
 
 export const salesRoute = new Hono();
 
@@ -632,6 +634,18 @@ salesRoute.post("/:id/cancel", async (c) => {
   });
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "sale-document", sale.id);
+    const currentSale = await tx.sale.findUnique({
+      where: { id: sale.id },
+      include: { returns: true }
+    });
+    if (!currentSale || currentSale.status === SaleStatus.CANCELLED) {
+      throw new Error("این فروش قبلاً ابطال شده است.");
+    }
+    if (currentSale.returns.some((item) => !item.cancelledAt)) {
+      throw new Error("فروش دارای برگشتی فعال است و قابل ابطال نیست.");
+    }
+
     for (const item of sale.items) {
       if (item.lotId) {
         await tx.stockLot.update({
@@ -1239,7 +1253,7 @@ salesRoute.post("/", async (c) => {
       );
     }
 
-    const quantityBase = rawItem.quantity * conversionRate;
+    const quantityBase = roundStockQuantity(rawItem.quantity * conversionRate);
 
     const lots = await prisma.stockLot.findMany({
       where: {
@@ -1258,6 +1272,7 @@ salesRoute.post("/", async (c) => {
     });
 
     let remainingToAllocate = quantityBase;
+    let remainingQuantityToAllocate = roundStockQuantity(rawItem.quantity);
 
     const allocations: Array<{
       lotId: string;
@@ -1275,9 +1290,20 @@ salesRoute.post("/", async (c) => {
     for (const lot of lots) {
       if (remainingToAllocate <= 0) break;
 
-      const available = Number(lot.remainingQuantity);
-      const allocatedBase = Math.min(available, remainingToAllocate);
-      const allocatedQuantity = allocatedBase / conversionRate;
+      const available = roundStockQuantity(Number(lot.remainingQuantity));
+      const lotCanFinishLine = available + 0.00005 >= remainingToAllocate;
+      const allocatedQuantity = lotCanFinishLine
+        ? remainingQuantityToAllocate
+        : Math.floor(
+            ((available / conversionRate) + Number.EPSILON) * 10_000
+          ) / 10_000;
+      const allocatedBase = lotCanFinishLine
+        ? remainingToAllocate
+        : roundStockQuantity(allocatedQuantity * conversionRate);
+      // A tiny residual lot may be representable in base units but round to zero
+      // in the selected unit. Leave that dust in the lot and continue FIFO so a
+      // zero-quantity sale line can never be created.
+      if (allocatedQuantity <= 0) continue;
       const unitCostBase = Number(lot.unitCost);
       const costExchangeRate = Number(lot.exchangeRate || 1);
       const baseUnitCost = Number(lot.baseUnitCost || unitCostBase * costExchangeRate);
@@ -1295,7 +1321,12 @@ salesRoute.post("/", async (c) => {
         expiryDate: lot.expiryDate
       });
 
-      remainingToAllocate -= allocatedBase;
+      remainingToAllocate = roundStockQuantity(
+        remainingToAllocate - allocatedBase
+      );
+      remainingQuantityToAllocate = roundStockQuantity(
+        remainingQuantityToAllocate - allocatedQuantity
+      );
     }
 
     if (remainingToAllocate > 0) {

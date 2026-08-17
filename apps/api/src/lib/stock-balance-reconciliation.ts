@@ -17,7 +17,6 @@ export async function reconcileStockBalances(options: { repair?: boolean } = {})
         COALESCE(SUM("remainingQuantity"), 0) quantity,
         COALESCE(SUM("remainingQuantity" * "baseUnitCost"), 0) value
       FROM "StockLot"
-      WHERE "remainingQuantity" > 0
       GROUP BY "productId", "warehouseId"
     ),
     keys AS (

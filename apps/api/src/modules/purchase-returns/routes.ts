@@ -15,6 +15,10 @@ import {
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { roundStockQuantity } from "../../lib/stock-quantity";
+import { PurchaseStatus } from "../../generated/prisma/enums";
+import { createOperationReference } from "../../lib/operation-id";
 
 export const purchaseReturnsRoute = new Hono();
 
@@ -139,6 +143,10 @@ purchaseReturnsRoute.post("/", async (c) => {
     return c.json({ message: "Purchase not found" }, 404);
   }
 
+  if (purchase.status === PurchaseStatus.CANCELLED) {
+    return c.json({ message: "خرید ابطال شده و قابل برگشت نیست." }, 400);
+  }
+
   const requestedByItem = new Map(parsed.data.items.map((item) => [item.purchaseItemId, item]));
 
   if (requestedByItem.size !== parsed.data.items.length) {
@@ -154,14 +162,26 @@ purchaseReturnsRoute.post("/", async (c) => {
       return c.json({ message: `Purchase item not found: ${requestItem.purchaseItemId}` }, 404);
     }
 
-    const quantityBase = requestItem.quantity * Number(purchaseItem.conversionRate);
+    const requestedQuantityBase = roundStockQuantity(
+      requestItem.quantity * Number(purchaseItem.conversionRate)
+    );
     const returnedBase = purchaseItem.returnItems.filter((item) => !item.purchaseReturn.cancelledAt).reduce(
       (sum, item) => sum + Number(item.quantityBase || 0),
       0
     );
-    const availableBase = Number(purchaseItem.quantityBase) - returnedBase;
+    const availableBase = roundStockQuantity(
+      Number(purchaseItem.quantityBase) - returnedBase
+    );
+    const unitRoundingTolerance = Math.max(
+      0.0001,
+      Number(purchaseItem.conversionRate) * 0.00005 + 0.00001
+    );
+    const quantityBase =
+      Math.abs(requestedQuantityBase - availableBase) <= unitRoundingTolerance
+        ? availableBase
+        : requestedQuantityBase;
 
-    if (quantityBase > availableBase + 0.0001) {
+    if (quantityBase > availableBase + unitRoundingTolerance) {
       return c.json({
         message: `Return quantity exceeds purchased quantity for ${purchaseItem.product.name}`,
         availableBase
@@ -228,9 +248,35 @@ purchaseReturnsRoute.post("/", async (c) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "purchase-document", purchase.id);
+    const currentPurchase = await tx.purchase.findUnique({
+      where: { id: purchase.id },
+      select: { status: true }
+    });
+    if (!currentPurchase || currentPurchase.status === PurchaseStatus.CANCELLED) {
+      throw new Error("خرید ابطال شده و قابل برگشت نیست.");
+    }
+    for (const item of preparedItems) {
+      const returned = await tx.purchaseReturnItem.aggregate({
+        where: {
+          purchaseItemId: item.purchaseItem.id,
+          purchaseReturn: { cancelledAt: null }
+        },
+        _sum: { quantityBase: true }
+      });
+      const available = roundStockQuantity(
+        Number(item.purchaseItem.quantityBase) - Number(returned._sum.quantityBase || 0)
+      );
+      if (item.quantityBase > available + 0.0001) {
+        throw new Error(
+          `مقدار برگشتی ${item.purchaseItem.product.name} از مقدار قابل برگشت بیشتر است.`
+        );
+      }
+    }
+
     const purchaseReturn = await tx.purchaseReturn.create({
       data: {
-        returnNo: parsed.data.returnNo ?? `PR-${Date.now()}`,
+        returnNo: parsed.data.returnNo ?? createOperationReference("PR"),
         purchaseId: purchase.id,
         supplierId: purchase.supplierId,
         currencyId: purchase.currencyId,

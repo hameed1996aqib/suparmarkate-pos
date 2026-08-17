@@ -314,7 +314,7 @@ posCartRoute.get("/sessions/:id", (c) => {
           <span id="grandTotal">0</span>
         </div>
 
-        <button class="btn-primary" onclick="submitSale()">ثبت فروش و چاپ رسید</button>
+        <button id="submitSaleButton" class="btn-primary" onclick="submitSale()">ثبت فروش و چاپ رسید</button>
       </div>
 
       <p class="muted">
@@ -336,6 +336,16 @@ posCartRoute.get("/sessions/:id", (c) => {
     let cart = [];
     let currencyLabel = "";
     let lastSaleId = null;
+    let saleSubmitting = false;
+    let pendingSaleOperation = null;
+
+    function createBrowserOperationId() {
+      if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+        return globalThis.crypto.randomUUID();
+      }
+
+      return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+    }
 
     function el(id) {
       return document.getElementById(id);
@@ -563,6 +573,7 @@ posCartRoute.get("/sessions/:id", (c) => {
 
     function clearCart() {
       cart = [];
+      pendingSaleOperation = null;
       renderCart();
     }
 
@@ -639,6 +650,7 @@ posCartRoute.get("/sessions/:id", (c) => {
     }
 
     async function submitSale() {
+      if (saleSubmitting) return;
       if (!cart.length) {
         alert("سبد خالی است");
         return;
@@ -658,9 +670,7 @@ posCartRoute.get("/sessions/:id", (c) => {
       }
 
       const total = cartSubtotal();
-
-      const body = {
-        invoiceNo: "POS-" + Date.now(),
+      const operationPayload = {
         currencyId,
         discount: 0,
         paidAmount: total,
@@ -678,12 +688,28 @@ posCartRoute.get("/sessions/:id", (c) => {
           };
         })
       };
+      const operationSignature = JSON.stringify(operationPayload);
+      if (!pendingSaleOperation || pendingSaleOperation.signature !== operationSignature) {
+        pendingSaleOperation = {
+          signature: operationSignature,
+          id: createBrowserOperationId()
+        };
+      }
+      const operationId = pendingSaleOperation.id;
+      const body = {
+        ...operationPayload,
+        clientRequestId: operationId,
+        invoiceNo: "POS-" + operationId
+      };
 
+      saleSubmitting = true;
+      el("submitSaleButton").disabled = true;
       try {
         const res = await fetchJson(apiBaseUrl + "/api/sales", {
           method: "POST",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Idempotency-Key": operationId
           },
           body: JSON.stringify(body)
         });
@@ -697,6 +723,7 @@ posCartRoute.get("/sessions/:id", (c) => {
           response: res
         });
 
+        pendingSaleOperation = null;
         clearCart();
 
         if (saleId) {
@@ -710,6 +737,9 @@ posCartRoute.get("/sessions/:id", (c) => {
           type: "SALE_ERROR",
           message: error.message
         });
+      } finally {
+        saleSubmitting = false;
+        el("submitSaleButton").disabled = false;
       }
     }
 

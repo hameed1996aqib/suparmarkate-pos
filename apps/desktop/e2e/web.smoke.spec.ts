@@ -16,6 +16,7 @@ test("Admin can preview and explicitly confirm a safe duplicate product merge", 
 }) => {
   const runtimeErrors: string[] = [];
   let mergePayload: unknown = null;
+  let mergeOperationId = "";
   let merged = false;
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
   await page.addInitScript(() => {
@@ -137,6 +138,7 @@ test("Admin can preview and explicitly confirm a safe duplicate product merge", 
     }
     if (url.pathname === "/api/products/merge" && request.method() === "POST") {
       mergePayload = request.postDataJSON();
+      mergeOperationId = request.headers()["idempotency-key"] || "";
       merged = true;
       return json({ message: "محصولات با موفقیت ادغام شدند" });
     }
@@ -183,6 +185,19 @@ test("Admin can preview and explicitly confirm a safe duplicate product merge", 
     targetId: "target-product",
     confirm: true,
   });
+  expect(mergeOperationId).toMatch(/^[0-9a-z-]{8,}$/i);
+  const persistedOperations = await page.evaluate(() =>
+    JSON.parse(
+      window.localStorage.getItem("muhaseb_recent_mutation_operations_v1") ||
+        "[]",
+    ),
+  );
+  expect(
+    persistedOperations.some(
+      ([, operation]: [string, { operationId: string }]) =>
+        operation.operationId === mergeOperationId,
+    ),
+  ).toBe(true);
   expect(runtimeErrors).toEqual([]);
 });
 

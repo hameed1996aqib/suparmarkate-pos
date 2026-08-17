@@ -145,6 +145,40 @@ function Set-EnvFileValue([string]$Path, [string]$Name, [string]$Value) {
   Set-Content -Path $Path -Value $content -Encoding UTF8
 }
 
+function Get-ContainerConfig([string]$ContainerName) {
+  $json = docker inspect $ContainerName 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
+  $items = $json | ConvertFrom-Json
+  return @($items)[0]
+}
+
+function Get-ContainerEnvValue($Container, [string]$Name) {
+  if (-not $Container -or -not $Container.Config.Env) { return $null }
+  $prefix = "$Name="
+  $entry = $Container.Config.Env |
+    Where-Object { $_.StartsWith($prefix, [System.StringComparison]::Ordinal) } |
+    Select-Object -First 1
+  if (-not $entry) { return $null }
+  return $entry.Substring($prefix.Length)
+}
+
+$existingPostgres = Get-ContainerConfig "muhaseb_postgres"
+$existingApi = Get-ContainerConfig "muhaseb_api"
+$existingComposeProject = if ($existingPostgres) {
+  $existingPostgres.Config.Labels.'com.docker.compose.project'
+} else {
+  $null
+}
+$composeProjectName = if ($existingComposeProject) { $existingComposeProject } else { "muhaseb-server-docker" }
+$env:COMPOSE_PROJECT_NAME = $composeProjectName
+
+$existingPostgresUser = Get-ContainerEnvValue $existingPostgres "POSTGRES_USER"
+$existingPostgresDb = Get-ContainerEnvValue $existingPostgres "POSTGRES_DB"
+$existingJwtSecret = Get-ContainerEnvValue $existingApi "JWT_SECRET"
+$existingSeedAdminUsername = Get-ContainerEnvValue $existingApi "SEED_ADMIN_USERNAME"
+$existingSeedAdminPassword = Get-ContainerEnvValue $existingApi "SEED_ADMIN_PASSWORD"
+$fixedDatabasePassword = "supermarket_password"
+
 $composeEnvPath = Join-Path $ProjectDir ".env"
 if (-not (Test-Path $composeEnvPath)) {
   $jwtBytes = New-Object byte[] 48
@@ -154,14 +188,18 @@ if (-not (Test-Path $composeEnvPath)) {
   } finally {
     $rng.Dispose()
   }
-  $jwtSecret = [Convert]::ToBase64String($jwtBytes)
-  $databasePassword = New-RandomHex 32
-  $initialAdminPassword = New-RandomHex 12
+  $jwtSecret = if ($existingJwtSecret) { $existingJwtSecret } else { [Convert]::ToBase64String($jwtBytes) }
+  $databasePassword = $fixedDatabasePassword
+  $initialAdminPassword = if ($existingSeedAdminPassword) { $existingSeedAdminPassword } else { New-RandomHex 12 }
+  $postgresUser = if ($existingPostgresUser) { $existingPostgresUser } else { "supermarket" }
+  $postgresDb = if ($existingPostgresDb) { $existingPostgresDb } else { "supermarket_db" }
+  $seedAdminUsername = if ($existingSeedAdminUsername) { $existingSeedAdminUsername } else { "admin" }
 
   @"
-POSTGRES_USER=supermarket
+COMPOSE_PROJECT_NAME=$composeProjectName
+POSTGRES_USER=$postgresUser
 POSTGRES_PASSWORD=$databasePassword
-POSTGRES_DB=supermarket_db
+POSTGRES_DB=$postgresDb
 JWT_SECRET=$jwtSecret
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 LAN_API_BASE_URL=$lanApiBaseUrl
@@ -169,7 +207,7 @@ PUBLIC_API_BASE_URL=$lanApiBaseUrl
 MUHASEB_SERVER_LAN_IP=$lanIp
 WEB_APP_ENABLED=true
 MUHASEB_BACKUP_DIR=$resolvedBackupDir
-SEED_ADMIN_USERNAME=admin
+SEED_ADMIN_USERNAME=$seedAdminUsername
 SEED_ADMIN_PASSWORD=$initialAdminPassword
 BACKUP_RETENTION_COUNT=7
 BACKUP_SCHEDULE_ENABLED=true
@@ -180,10 +218,31 @@ BACKUP_SECOND_DISK_CONFIRMED=$($ConfirmSeparateBackupDisk.IsPresent.ToString().T
 
   Write-Host "Created Docker environment file: $composeEnvPath"
   Write-Host ""
-  Write-Warning "Initial Admin credentials are shown once. Store them securely and change the password after first login."
-  Write-Host "Initial Admin username: admin"
-  Write-Host "Initial Admin password: $initialAdminPassword"
+  if ($existingPostgres) {
+    Write-Host "Existing Muhaseb installation detected. Database credentials, JWT secret and existing Admin password were preserved."
+  } else {
+    Write-Warning "Initial Admin credentials are shown once. Store them securely and change the password after first login."
+    Write-Host "Initial Admin username: $seedAdminUsername"
+    Write-Host "Initial Admin password: $initialAdminPassword"
+  }
 } else {
+  Set-EnvFileValue $composeEnvPath "COMPOSE_PROJECT_NAME" $composeProjectName
+  Set-EnvFileValue $composeEnvPath "POSTGRES_PASSWORD" $fixedDatabasePassword
+  if ($existingPostgresUser) {
+    Set-EnvFileValue $composeEnvPath "POSTGRES_USER" $existingPostgresUser
+  }
+  if ($existingPostgresDb) {
+    Set-EnvFileValue $composeEnvPath "POSTGRES_DB" $existingPostgresDb
+  }
+  if ($existingJwtSecret) {
+    Set-EnvFileValue $composeEnvPath "JWT_SECRET" $existingJwtSecret
+  }
+  if ($existingSeedAdminUsername) {
+    Set-EnvFileValue $composeEnvPath "SEED_ADMIN_USERNAME" $existingSeedAdminUsername
+  }
+  if ($existingSeedAdminPassword) {
+    Set-EnvFileValue $composeEnvPath "SEED_ADMIN_PASSWORD" $existingSeedAdminPassword
+  }
   $composeEnvContent = Get-Content $composeEnvPath -Raw
   $storedLanIp = Get-EnvFileValue $composeEnvContent "MUHASEB_SERVER_LAN_IP"
   if (-not $storedLanIp) {
@@ -226,6 +285,7 @@ BACKUP_SECOND_DISK_CONFIRMED=$($ConfirmSeparateBackupDisk.IsPresent.ToString().T
 Write-Host "Muhaseb LAN API URL: $lanApiBaseUrl"
 Write-Host "Muhaseb LAN Web URL: $lanWebUrl"
 Write-Host "Muhaseb backup folder: $resolvedBackupDir"
+Write-Host "Muhaseb Docker project: $composeProjectName"
 
 Write-Host "Configuring Windows Firewall for Muhaseb LAN ports..."
 & (Join-Path $PSScriptRoot "configure-firewall.ps1") `
@@ -256,23 +316,44 @@ if (Test-Path $imageArchivePath) {
   } else {
     Write-Host "No prebuilt API image found. Building Muhaseb API image locally..."
     docker compose build --pull --no-cache api
-    if ($LASTEXITCODE -ne 0) {
+    $buildExitCode = $LASTEXITCODE
+    if ($buildExitCode -ne 0) {
       Write-Host ""
       Write-Host "Docker image build failed. Recent container state:"
       docker compose ps
-      exit $LASTEXITCODE
+      exit $buildExitCode
     }
   }
 }
 
-docker compose up -d --wait postgres redis api
-if ($LASTEXITCODE -ne 0) {
+docker compose up -d --wait postgres redis
+$composeExitCode = $LASTEXITCODE
+if ($composeExitCode -ne 0) {
   Write-Host ""
   Write-Host "Docker Compose failed before the API could start. Recent container state:"
   docker compose ps
   Write-Host ""
   Write-Host "Try restarting Docker Desktop. If Docker reports a missing snapshot, remove the local API image/cache and run this script again."
-  exit $LASTEXITCODE
+  exit $composeExitCode
+}
+
+Write-Host "Synchronizing the Muhaseb database credential..."
+$databaseCredentialSql = "ALTER ROLE supermarket WITH PASSWORD '$fixedDatabasePassword';"
+$databaseCredentialSql | docker compose exec -T postgres `
+  psql --username supermarket --dbname supermarket_db --set ON_ERROR_STOP=on
+$credentialExitCode = $LASTEXITCODE
+if ($credentialExitCode -ne 0) {
+  Write-Host "Failed to synchronize the PostgreSQL credential. The API was not started."
+  exit $credentialExitCode
+}
+
+docker compose up -d --wait api
+$apiExitCode = $LASTEXITCODE
+if ($apiExitCode -ne 0) {
+  Write-Host ""
+  Write-Host "Muhaseb API failed to start after PostgreSQL became healthy. Recent API logs:"
+  docker compose logs --tail=80 api
+  exit $apiExitCode
 }
 
 Write-Host ""

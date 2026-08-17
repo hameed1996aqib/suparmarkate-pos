@@ -1,3 +1,5 @@
+name: muhaseb-server-docker
+
 services:
   postgres:
     image: postgres:16-alpine

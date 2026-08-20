@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { kabulDateString } from "@/lib/kabul-date";
 import {
   Table,
   TableBody,
@@ -39,14 +40,15 @@ type PosCartTableProps = {
 
 function getDaysUntilExpiry(expiryDate?: string | null) {
   if (!expiryDate) return null;
-
-  const expiry = new Date(expiryDate);
-  const today = new Date();
-
-  expiry.setHours(0, 0, 0, 0);
-  today.setHours(0, 0, 0, 0);
-
-  return Math.ceil((expiry.getTime() - today.getTime()) / 86400000);
+  const toUtcDay = (value: string) => {
+    const [year, month, day] = value.split("-").map(Number);
+    return Date.UTC(year, month - 1, day);
+  };
+  return Math.round(
+    (toUtcDay(kabulDateString(new Date(expiryDate))) -
+      toUtcDay(kabulDateString())) /
+      86400000
+  );
 }
 
 function StockBadge({ item }: { item: ServerCartItem }) {

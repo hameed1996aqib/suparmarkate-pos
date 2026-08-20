@@ -1,4 +1,4 @@
-﻿import { Hono } from "hono";
+import { Hono } from "hono";
 import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -24,6 +24,8 @@ import {
   barcodeLookupStatus,
   findProductIdsByBarcode,
 } from "../../lib/product-barcode-lookup";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import { InventoryMutationService } from "../../lib/inventory-mutation";
 
 export const productsRoute = new Hono();
 
@@ -899,6 +901,19 @@ productsRoute.post("/merge", async (c) => {
           return { status: "BLOCKED" as const, preview };
         }
 
+        const affectedWarehouses = await tx.stockLot.findMany({
+          where: { productId: { in: [sourceId, targetId] } },
+          distinct: ["warehouseId"],
+          select: { warehouseId: true },
+        });
+        const inventory = new InventoryMutationService(tx);
+        await inventory.lock(
+          affectedWarehouses.flatMap(({ warehouseId }) => [
+            { productId: sourceId, warehouseId },
+            { productId: targetId, warehouseId },
+          ]),
+        );
+
         // StockBalance is a database-maintained projection of StockLot. Moving
         // the lots lets the stock trigger rebuild both products atomically.
         await tx.stockLot.updateMany({
@@ -1127,6 +1142,66 @@ productsRoute.patch("/:id", async (c) => {
   let item;
   try {
     item = await prisma.$transaction(async (tx) => {
+      await acquireTransactionLock(tx, "product-definition", id);
+      const existing = await tx.product.findUnique({
+        where: { id },
+        include: { units: true }
+      });
+      if (!existing || existing.deletedAt) {
+        throw new Error("محصول پیدا نشد.");
+      }
+
+      const history = await tx.stockLot.findFirst({
+        where: { productId: id },
+        select: { id: true }
+      });
+      if (
+        history &&
+        nextProductData.baseUnitId &&
+        nextProductData.baseUnitId !== existing.baseUnitId
+      ) {
+        throw new Error(
+          "واحد پایه محصول دارای سابقه موجودی قابل تغییر نیست؛ بسته‌بندی تازه را به‌عنوان واحد جدید اضافه کنید."
+        );
+      }
+
+      if (units && history) {
+        const purchaseUnits = await tx.purchaseItem.findMany({
+          where: { productId: id },
+          distinct: ["unitId"],
+          select: { unitId: true }
+        });
+        const saleUnits = await tx.saleItem.findMany({
+          where: { productId: id },
+          distinct: ["unitId"],
+          select: { unitId: true }
+        });
+        const usedUnitIds = new Set([
+          existing.baseUnitId,
+          ...purchaseUnits.map((item) => item.unitId),
+          ...saleUnits.map((item) => item.unitId)
+        ]);
+        const existingRates = new Map(
+          existing.units.map((unit) => [
+            unit.unitId,
+            Number(unit.conversionRate)
+          ])
+        );
+        const nextRates = new Map(
+          units.map((unit) => [unit.unitId, Number(unit.conversionRate)])
+        );
+        for (const unitId of usedUnitIds) {
+          if (unitId === existing.baseUnitId) continue;
+          const previousRate = existingRates.get(unitId);
+          const nextRate = nextRates.get(unitId);
+          if (previousRate === undefined || nextRate === undefined || previousRate !== nextRate) {
+            throw new Error(
+              "نرخ تبدیل واحد استفاده‌شده در معاملات قابل تغییر یا حذف نیست؛ واحد بسته‌بندی جدید بسازید."
+            );
+          }
+        }
+      }
+
       if (units) {
         await tx.productUnit.deleteMany({
           where: { productId: id },
@@ -1314,4 +1389,3 @@ productsRoute.delete("/:id", async (c) => {
 
   return c.json({ message: "Product deactivated", data: item });
 });
-

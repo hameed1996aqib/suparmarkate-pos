@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { zodError } from "../../lib/api";
@@ -12,7 +11,17 @@ import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
 import { findProductIdsByBarcode } from "../../lib/product-barcode-lookup";
 import { acquireTransactionLock } from "../../lib/db-lock";
-import { roundStockQuantity } from "../../lib/stock-quantity";
+import { roundStockQuantity, stockDecimal } from "../../lib/stock-quantity";
+import {
+  InventoryMutationService,
+  requestOperationId
+} from "../../lib/inventory-mutation";
+import {
+  kabulDateKey,
+  kabulDateRange,
+  kabulNow,
+  parseKabulDateInput
+} from "../../lib/kabul-date";
 
 export const inventoryRoute = new Hono();
 
@@ -26,6 +35,13 @@ const openingStockSchema = z.object({
   expiryDate: z.string().trim().optional().nullable(),
   note: z.string().trim().max(500).optional().nullable()
 });
+
+function inventoryRequestId(c: Parameters<typeof getAuthUser>[0], prefix: string) {
+  return requestOperationId(
+    c.req.header("Idempotency-Key") || c.req.header("x-idempotency-key"),
+    prefix
+  );
+}
 
 const adjustmentSchema = z.object({
   productId: z.string().min(1),
@@ -101,14 +117,8 @@ function movementNetTotal(
 
 function parseExpiryDate(value: string | null | undefined) {
   if (!value) return null;
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "INVALID_DATE";
-  }
-
-  return date;
+  const date = parseKabulDateInput(value);
+  return !date || date === "INVALID_DATE" ? "INVALID_DATE" : date;
 }
 
 async function ensureProductAndWarehouse(productId: string, warehouseId: string) {
@@ -218,6 +228,7 @@ function buildStockBalanceSearchWhere(
 
 inventoryRoute.get("/stock", async (c) => {
   const productId = c.req.query("productId");
+  const categoryId = c.req.query("categoryId");
   const warehouseId = c.req.query("warehouseId");
   const search = c.req.query("search");
   const sortBy = c.req.query("sortBy");
@@ -237,6 +248,7 @@ inventoryRoute.get("/stock", async (c) => {
   const where = {
     quantityBase: { gt: 0 },
     ...(productId ? { productId } : {}),
+    ...(categoryId ? { product: { categoryId } } : {}),
     ...(warehouseId ? { warehouseId } : {}),
     ...buildStockBalanceSearchWhere(search, exactProductIds)
   };
@@ -257,6 +269,9 @@ inventoryRoute.get("/stock", async (c) => {
       : Prisma.empty;
     const warehouseFilter = warehouseId
       ? Prisma.sql`AND sb."warehouseId" = ${warehouseId}`
+      : Prisma.empty;
+    const categoryFilter = categoryId
+      ? Prisma.sql`AND p."categoryId" = ${categoryId}`
       : Prisma.empty;
     const searchFilter = rawSearch
       ? Prisma.sql`
@@ -307,6 +322,7 @@ inventoryRoute.get("/stock", async (c) => {
       LEFT JOIN "ProductUnit" pu ON pu."productId" = p.id AND pu."unitId" = p."baseUnitId"
       WHERE sb."quantityBase" > 0
         ${productFilter}
+        ${categoryFilter}
         ${warehouseFilter}
         ${searchFilter}
         AND COALESCE(pu."salePrice", 0) > 0
@@ -540,10 +556,15 @@ inventoryRoute.get("/movements", async (c) => {
 
 inventoryRoute.get("/product-history/:productId", async (c) => {
   const productId = c.req.param("productId");
-  const range = getRecentDateRange(c);
+  const today = kabulDateKey();
+  const selectedRange = kabulDateRange(
+    c.req.query("from") || `${today.slice(0, 7)}-01`,
+    c.req.query("to") || today
+  );
+  const range = { gte: selectedRange.start, lt: selectedRange.end };
   const pagination = getPagePagination(c, { defaultLimit: 20, maxLimit: 1000 });
 
-  if (range.gte > range.lte) {
+  if (range.gte >= range.lt) {
     return c.json({ message: "From date must be before to date" }, 400);
   }
 
@@ -558,13 +579,23 @@ inventoryRoute.get("/product-history/:productId", async (c) => {
 
   const periodWhere = {
     productId,
-    createdAt: { gte: range.gte, lte: range.lte }
+    OR: [
+      { occurredAt: { gte: range.gte, lt: range.lt } },
+      { occurredAt: null, createdAt: { gte: range.gte, lt: range.lt } }
+    ]
+  };
+  const openingWhere = {
+    productId,
+    OR: [
+      { occurredAt: { lt: range.gte } },
+      { occurredAt: null, createdAt: { lt: range.gte } }
+    ]
   };
 
-  const [openingGroups, periodGroups, movements, total] = await Promise.all([
+  const [openingGroups, periodGroups, movementIdRows, total] = await Promise.all([
     prisma.stockMovement.groupBy({
       by: ["type"],
-      where: { productId, createdAt: { lt: range.gte } },
+      where: openingWhere,
       _sum: { quantity: true }
     }),
     prisma.stockMovement.groupBy({
@@ -572,19 +603,34 @@ inventoryRoute.get("/product-history/:productId", async (c) => {
       where: periodWhere,
       _sum: { quantity: true }
     }),
-    prisma.stockMovement.findMany({
-      where: periodWhere,
-      include: {
-        warehouse: true,
-        lot: true,
-        createdByUser: true
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      skip: pagination.skip,
-      take: pagination.limit
-    }),
+    prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id
+      FROM "StockMovement"
+      WHERE "productId" = ${productId}
+        AND COALESCE("occurredAt", "createdAt") >= ${range.gte}
+        AND COALESCE("occurredAt", "createdAt") < ${range.lt}
+      ORDER BY COALESCE("occurredAt", "createdAt") DESC, id DESC
+      LIMIT ${pagination.limit}
+      OFFSET ${pagination.skip}
+    `),
     prisma.stockMovement.count({ where: periodWhere })
   ]);
+
+  const movementIdsInOrder = movementIdRows.map((row) => row.id);
+  const movementRows = movementIdsInOrder.length
+    ? await prisma.stockMovement.findMany({
+        where: { id: { in: movementIdsInOrder } },
+        include: {
+          warehouse: true,
+          lot: true,
+          createdByUser: true
+        }
+      })
+    : [];
+  const movementById = new Map(movementRows.map((movement) => [movement.id, movement]));
+  const movements = movementIdsInOrder
+    .map((id) => movementById.get(id))
+    .filter((movement): movement is NonNullable<typeof movement> => Boolean(movement));
 
   const currencyIds = Array.from(
     new Set(
@@ -635,7 +681,7 @@ inventoryRoute.get("/product-history/:productId", async (c) => {
         categoryName: product.category?.name || null,
         baseUnitName: product.baseUnit.shortName || product.baseUnit.name
       },
-      range: { from: range.gte, to: range.lte },
+      range: { from: range.gte, toExclusive: range.lt },
       summary: {
         opening,
         totalIn,
@@ -662,13 +708,15 @@ inventoryRoute.get("/product-history/:productId", async (c) => {
           totalBaseCost: quantity * baseUnitCost,
           exchangeRate: Number(movement.exchangeRate || 1),
           currencyCode: currency?.code || currency?.symbol || null,
+          createdAt: movement.occurredAt ?? movement.createdAt,
+          registeredAt: movement.createdAt,
+          occurredAt: movement.occurredAt,
           warehouseName: movement.warehouse.name,
           lotId: movement.lotId,
           expiryDate: movement.lot?.expiryDate || null,
           referenceType: movement.referenceType,
           referenceId: movement.referenceId,
           note: movement.note,
-          createdAt: movement.createdAt,
           createdBy:
             movement.createdByUser?.displayName ||
             movement.createdByUser?.username ||
@@ -860,6 +908,26 @@ inventoryRoute.post("/movements/:id/cancel", async (c) => {
     if (!current || !current.lotId || !current.lot) {
       throw new Error("حرکت موجودی یا لات آن پیدا نشد.");
     }
+    const inventory = new InventoryMutationService(tx);
+    if (current.operationId) {
+      const cancelled = await inventory.cancelOperation({
+        operationId: current.operationId,
+        reason: parsed.data.reason,
+        cancelledByUserId: authUser?.id,
+        occurredAt: kabulNow()
+      });
+      return {
+        operation: cancelled
+      };
+    }
+
+    await inventory.lock([
+      {
+        productId: current.productId,
+        warehouseId: current.warehouseId
+      }
+    ]);
+
     const duplicateCancel = await tx.stockMovement.findFirst({
       where: {
         referenceType: `${current.type}_CANCEL`,
@@ -875,9 +943,9 @@ inventoryRoute.post("/movements/:id/cancel", async (c) => {
       const changed = await tx.stockLot.updateMany({
         where: {
           id: current.lotId,
-          remainingQuantity: { gte: currentAmount }
+          remainingQuantity: { gte: stockDecimal(currentAmount) }
         },
-        data: { remainingQuantity: { decrement: currentAmount } }
+        data: { remainingQuantity: { decrement: stockDecimal(currentAmount) } }
       });
       if (changed.count !== 1) {
         throw new Error("این لات مصرف شده و ابطال حرکت ممکن نیست.");
@@ -885,7 +953,7 @@ inventoryRoute.post("/movements/:id/cancel", async (c) => {
     } else {
       await tx.stockLot.update({
         where: { id: current.lotId },
-        data: { remainingQuantity: { increment: currentAmount } }
+        data: { remainingQuantity: { increment: stockDecimal(currentAmount) } }
       });
     }
 
@@ -898,6 +966,7 @@ inventoryRoute.post("/movements/:id/cancel", async (c) => {
           ? StockMovementType.ADJUSTMENT_OUT
           : StockMovementType.ADJUSTMENT_IN,
         quantity: currentAmount,
+        occurredAt: kabulNow(),
         unitCost: current.unitCost,
         currencyId: current.currencyId,
         exchangeRate: current.exchangeRate,
@@ -995,6 +1064,20 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
     if (currentMovements.length === 0) {
       throw new Error("انتقال موجودی پیدا نشد.");
     }
+    const inventory = new InventoryMutationService(tx);
+    await inventory.lock(
+      currentMovements.map((movement) => ({
+        productId: movement.productId,
+        warehouseId: movement.warehouseId
+      }))
+    );
+    const operation = await tx.inventoryOperation.findUnique({
+      where: { id: referenceId }
+    });
+    if (operation?.status === "CANCELLED" || operation?.cancelledAt) {
+      throw new Error("این انتقال قبلاً ابطال شده است.");
+    }
+
     const duplicateCancel = await tx.stockMovement.findFirst({
       where: { referenceType: "TRANSFER_CANCEL", referenceId }
     });
@@ -1016,9 +1099,9 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
         const changed = await tx.stockLot.updateMany({
           where: {
             id: movement.lotId,
-            remainingQuantity: { gte: amount }
+            remainingQuantity: { gte: stockDecimal(amount) }
           },
-          data: { remainingQuantity: { decrement: amount } }
+          data: { remainingQuantity: { decrement: stockDecimal(amount) } }
         });
         if (changed.count !== 1) {
           throw new Error(
@@ -1028,7 +1111,7 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
       } else {
         await tx.stockLot.update({
           where: { id: movement.lotId },
-          data: { remainingQuantity: { increment: amount } }
+          data: { remainingQuantity: { increment: stockDecimal(amount) } }
         });
       }
 
@@ -1037,6 +1120,8 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
           productId: movement.productId,
           warehouseId: movement.warehouseId,
           lotId: movement.lotId,
+          operationId: operation?.id ?? null,
+          occurredAt: kabulNow(),
           type: wasTransferIn
             ? StockMovementType.TRANSFER_OUT
             : StockMovementType.TRANSFER_IN,
@@ -1053,6 +1138,21 @@ inventoryRoute.post("/transfers/:referenceId/cancel", async (c) => {
       });
 
       cancelMovements.push(cancelMovement);
+    }
+
+    if (operation) {
+      const changed = await tx.inventoryOperation.updateMany({
+        where: { id: operation.id, status: "COMPLETED", cancelledAt: null },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: kabulNow(),
+          cancelReason: parsed.data.reason ?? null,
+          cancelledByUserId: authUser?.id ?? null
+        }
+      });
+      if (changed.count !== 1) {
+        throw new Error("این انتقال هم‌زمان ابطال شده است.");
+      }
     }
 
     return {
@@ -1144,7 +1244,23 @@ inventoryRoute.post("/opening-stock", async (c) => {
     );
   }
 
+  const occurredAt = kabulNow();
+  const clientRequestId = inventoryRequestId(c, "OPENING-STOCK");
+
   const result = await prisma.$transaction(async (tx) => {
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare([
+      {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.warehouseId
+      }
+    ]);
+    const operation = await inventory.startOperation({
+      type: "OPENING_STOCK",
+      clientRequestId,
+      occurredAt,
+      createdByUserId: authUser?.id
+    });
     const lot = await tx.stockLot.create({
       data: {
         productId: parsed.data.productId,
@@ -1170,6 +1286,8 @@ inventoryRoute.post("/opening-stock", async (c) => {
         warehouseId: parsed.data.warehouseId,
         lotId: lot.id,
         type: StockMovementType.OPENING_STOCK,
+        operationId: operation.id,
+        occurredAt,
         quantity: quantityBase,
         unitCost: unitCostBase,
         currencyId: parsed.data.currencyId ?? null,
@@ -1263,6 +1381,14 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
       throw new Error("موجودی اولیه پیدا نشد.");
     }
 
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare([
+      {
+        productId: current.productId,
+        warehouseId: current.warehouseId
+      }
+    ]);
+
     const existingCancel = await tx.stockMovement.findFirst({
       where: {
         referenceType: "OPENING_STOCK_CANCEL",
@@ -1273,15 +1399,28 @@ inventoryRoute.patch("/opening-stock/:movementId", async (c) => {
       throw new Error("موجودی اولیه ابطال‌شده قابل ویرایش نیست.");
     }
 
-    const oldInitial = roundStockQuantity(Number(current.lot.initialQuantity));
-    const oldRemaining = roundStockQuantity(Number(current.lot.remainingQuantity));
-    const usedQuantity = roundStockQuantity(Math.max(0, oldInitial - oldRemaining));
-    if (newQuantity < usedQuantity) {
+    const laterMovement = await tx.stockMovement.findFirst({
+      where: {
+        lotId: current.lotId,
+        id: { not: current.id }
+      },
+      select: { id: true, type: true }
+    });
+    if (laterMovement) {
       throw new Error(
-        `موجودی اولیه از مقدار مصرف‌شده (${usedQuantity}) کمتر شده نمی‌تواند.`
+        "پس از ایجاد حرکت روی این لات، موجودی اولیه قابل ویرایش نیست؛ از افزایش یا کاهش موجودی استفاده کنید."
       );
     }
-    const newRemaining = roundStockQuantity(newQuantity - usedQuantity);
+
+    const oldInitial = roundStockQuantity(Number(current.lot.initialQuantity));
+    const oldRemaining = roundStockQuantity(Number(current.lot.remainingQuantity));
+    if (oldInitial !== oldRemaining) {
+      throw new Error(
+        "موجودی این لات تغییر کرده است؛ اصلاح باید با Adjustment ثبت شود."
+      );
+    }
+    const usedQuantity = 0;
+    const newRemaining = newQuantity;
 
     const lot = await tx.stockLot.update({
       where: { id: current.lotId! },
@@ -1375,6 +1514,7 @@ inventoryRoute.post("/adjustments", async (c) => {
             ? error.message
             : "Selected unit is not configured for this product"
       },
+
       400
     );
   }
@@ -1389,10 +1529,20 @@ inventoryRoute.post("/adjustments", async (c) => {
 
   const expiryDate = parseExpiryDate(parsed.data.expiryDate);
 
+
   if (expiryDate === "INVALID_DATE") {
     return c.json({ message: "Invalid expiryDate" }, 400);
   }
 
+  if (parsed.data.type === "ADJUSTMENT_IN" && product.hasExpiry && !expiryDate) {
+    return c.json(
+      { message: "Expiry date is required for this product" },
+      400
+    );
+  }
+
+  const occurredAt = kabulNow();
+  const clientRequestId = inventoryRequestId(c, parsed.data.type);
   if (parsed.data.type === "ADJUSTMENT_IN") {
     let stockSnapshot;
     try {
@@ -1407,6 +1557,19 @@ inventoryRoute.post("/adjustments", async (c) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      const inventory = new InventoryMutationService(tx);
+      await inventory.prepare([
+        {
+          productId: parsed.data.productId,
+          warehouseId: parsed.data.warehouseId
+        }
+      ]);
+      const operation = await inventory.startOperation({
+        type: "ADJUSTMENT_IN",
+        clientRequestId,
+        occurredAt,
+        createdByUserId: authUser?.id
+      });
       const lot = await tx.stockLot.create({
         data: {
           productId: parsed.data.productId,
@@ -1432,6 +1595,8 @@ inventoryRoute.post("/adjustments", async (c) => {
           warehouseId: parsed.data.warehouseId,
           lotId: lot.id,
           type: StockMovementType.ADJUSTMENT_IN,
+          operationId: operation.id,
+          occurredAt,
           quantity: quantityBase,
           unitCost: unitCostBase,
           currencyId: parsed.data.currencyId ?? null,
@@ -1473,11 +1638,19 @@ inventoryRoute.post("/adjustments", async (c) => {
       : StockMovementType.ADJUSTMENT_OUT;
 
   const result = await prisma.$transaction(async (tx) => {
-    await acquireTransactionLock(
-      tx,
-      "stock",
-      `${parsed.data.productId}:${parsed.data.warehouseId}`
-    );
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare([
+      {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.warehouseId
+      }
+    ]);
+    const operation = await inventory.startOperation({
+      type: parsed.data.type,
+      clientRequestId,
+      occurredAt,
+      createdByUserId: authUser?.id
+    });
     const lots = await tx.stockLot.findMany({
       where: {
         productId: parsed.data.productId,
@@ -1504,17 +1677,17 @@ inventoryRoute.post("/adjustments", async (c) => {
     }
 
     const movements = [];
-    const referenceId = `ADJUSTMENT-${randomUUID()}`;
+    const referenceId = operation.id;
 
     for (const allocation of allocations) {
       const changed = await tx.stockLot.updateMany({
         where: {
           id: allocation.lot.id,
-          remainingQuantity: { gte: allocation.quantity }
+          remainingQuantity: { gte: stockDecimal(allocation.quantity) }
         },
         data: {
           remainingQuantity: {
-            decrement: allocation.quantity
+            decrement: stockDecimal(allocation.quantity)
           }
         }
       });
@@ -1530,6 +1703,8 @@ inventoryRoute.post("/adjustments", async (c) => {
           type: movementType,
           quantity: allocation.quantity,
           unitCost: allocation.lot.unitCost,
+          operationId: operation.id,
+          occurredAt,
           currencyId: allocation.lot.currencyId,
           exchangeRate: allocation.lot.exchangeRate,
           baseUnitCost: allocation.lot.baseUnitCost,
@@ -1612,16 +1787,28 @@ inventoryRoute.post("/transfers", async (c) => {
   const quantityBase = roundStockQuantity(
     parsed.data.quantity * unitConversion.conversionRate
   );
-  const referenceId = `TRANSFER-${randomUUID()}`;
+  const occurredAt = kabulNow();
+  const clientRequestId = inventoryRequestId(c, "TRANSFER");
 
   const result = await prisma.$transaction(async (tx) => {
-    const lockKeys = [
-      `${parsed.data.productId}:${parsed.data.fromWarehouseId}`,
-      `${parsed.data.productId}:${parsed.data.toWarehouseId}`
-    ].sort();
-    for (const key of lockKeys) {
-      await acquireTransactionLock(tx, "stock", key);
-    }
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare([
+      {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.fromWarehouseId
+      },
+      {
+        productId: parsed.data.productId,
+        warehouseId: parsed.data.toWarehouseId
+      }
+    ]);
+    const operation = await inventory.startOperation({
+      type: "TRANSFER",
+      clientRequestId,
+      occurredAt,
+      createdByUserId: authUser?.id
+    });
+    const referenceId = operation.id;
 
     const lots = await tx.stockLot.findMany({
       where: {
@@ -1655,11 +1842,11 @@ inventoryRoute.post("/transfers", async (c) => {
       const changed = await tx.stockLot.updateMany({
         where: {
           id: allocation.lot.id,
-          remainingQuantity: { gte: allocation.quantity }
+          remainingQuantity: { gte: stockDecimal(allocation.quantity) }
         },
         data: {
           remainingQuantity: {
-            decrement: allocation.quantity
+            decrement: stockDecimal(allocation.quantity)
           }
         }
       });
@@ -1695,6 +1882,8 @@ inventoryRoute.post("/transfers", async (c) => {
           warehouseId: parsed.data.fromWarehouseId,
           lotId: allocation.lot.id,
           type: StockMovementType.TRANSFER_OUT,
+          operationId: operation.id,
+          occurredAt,
           quantity: allocation.quantity,
           unitCost: allocation.lot.unitCost,
           currencyId: allocation.lot.currencyId,
@@ -1714,6 +1903,8 @@ inventoryRoute.post("/transfers", async (c) => {
           lotId: destinationLot.id,
           type: StockMovementType.TRANSFER_IN,
           quantity: allocation.quantity,
+          operationId: operation.id,
+          occurredAt,
           unitCost: allocation.lot.unitCost,
           currencyId: allocation.lot.currencyId,
           exchangeRate: allocation.lot.exchangeRate,

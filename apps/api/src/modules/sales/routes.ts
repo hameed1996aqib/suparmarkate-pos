@@ -9,7 +9,7 @@ import { createPostedJournal, createReversalJournal, treasuryAccountCode } from 
 import { getRequestPosDevice } from "../../lib/pos-device";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
-import { parseKabulDateInput } from "../../lib/kabul-date";
+import { kabulNow, parseKabulDateInput } from "../../lib/kabul-date";
 import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
 import {
   allocateMoneyByWeight,
@@ -29,7 +29,11 @@ import {
   StockMovementType
 } from "../../generated/prisma/enums";
 import { acquireTransactionLock } from "../../lib/db-lock";
-import { roundStockQuantity } from "../../lib/stock-quantity";
+import {
+  InventoryMutationService,
+  requestOperationId
+} from "../../lib/inventory-mutation";
+import { roundStockQuantity, stockDecimal } from "../../lib/stock-quantity";
 
 export const salesRoute = new Hono();
 
@@ -268,8 +272,13 @@ salesRoute.get("/cogs-quality", async (c) => {
   const toValue = c.req.query("to")?.trim();
   const fromDate = fromValue ? parseDate(fromValue) : null;
   const toDate = toValue ? parseDate(toValue) : null;
+  const toExclusive = toValue ? parseKabulDateInput(toValue, true) : null;
 
-  if (fromDate === "INVALID_DATE" || toDate === "INVALID_DATE") {
+  if (
+    fromDate === "INVALID_DATE" ||
+    toDate === "INVALID_DATE" ||
+    toExclusive === "INVALID_DATE"
+  ) {
     return c.json({ message: "Invalid COGS quality date range" }, 400);
   }
 
@@ -287,10 +296,8 @@ salesRoute.get("/cogs-quality", async (c) => {
     filters.push(Prisma.sql`s."saleDate" >= ${fromDate}`);
   }
 
-  if (toDate instanceof Date) {
-    const inclusiveTo = new Date(toDate);
-    inclusiveTo.setHours(23, 59, 59, 999);
-    filters.push(Prisma.sql`s."saleDate" <= ${inclusiveTo}`);
+  if (toExclusive instanceof Date) {
+    filters.push(Prisma.sql`s."saleDate" < ${toExclusive}`);
   }
 
   const whereSql = Prisma.join(filters, " AND ");
@@ -637,7 +644,12 @@ salesRoute.post("/:id/cancel", async (c) => {
     await acquireTransactionLock(tx, "sale-document", sale.id);
     const currentSale = await tx.sale.findUnique({
       where: { id: sale.id },
-      include: { returns: true }
+      include: {
+        returns: true,
+        items: {
+          include: { lot: true }
+        }
+      }
     });
     if (!currentSale || currentSale.status === SaleStatus.CANCELLED) {
       throw new Error("این فروش قبلاً ابطال شده است.");
@@ -646,13 +658,25 @@ salesRoute.post("/:id/cancel", async (c) => {
       throw new Error("فروش دارای برگشتی فعال است و قابل ابطال نیست.");
     }
 
-    for (const item of sale.items) {
+    const inventory = new InventoryMutationService(tx);
+    await inventory.lock(
+      currentSale.items.map((item) => ({
+        productId: item.productId,
+        warehouseId: item.warehouseId
+      }))
+    );
+    const sourceMovement = await tx.stockMovement.findFirst({
+      where: { referenceType: "SALE", referenceId: currentSale.id },
+      select: { operationId: true }
+    });
+
+    for (const item of currentSale.items) {
       if (item.lotId) {
         await tx.stockLot.update({
           where: { id: item.lotId },
           data: {
             remainingQuantity: {
-              increment: item.quantityBase
+              increment: stockDecimal(Number(item.quantityBase))
             }
           }
         });
@@ -666,13 +690,36 @@ salesRoute.post("/:id/cancel", async (c) => {
           type: StockMovementType.SALE_RETURN,
           quantity: item.quantityBase,
           unitCost: item.unitCostBase,
-          currencyId: sale.currencyId,
+          currencyId: item.lot?.currencyId ?? currentSale.currencyId,
+          exchangeRate: item.lot?.exchangeRate ?? 1,
+          baseUnitCost: item.lot?.baseUnitCost ?? item.unitCostBase,
+          operationId: sourceMovement?.operationId ?? null,
+          occurredAt: kabulNow(),
           referenceType: "SALE_CANCEL",
           referenceId: sale.id,
           note: parsed.data.reason ?? "Sale cancelled",
           createdByUserId: authUser?.id ?? null
         }
       });
+    }
+
+    if (sourceMovement?.operationId) {
+      const changed = await tx.inventoryOperation.updateMany({
+        where: {
+          id: sourceMovement.operationId,
+          status: "COMPLETED",
+          cancelledAt: null
+        },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: kabulNow(),
+          cancelReason: parsed.data.reason ?? null,
+          cancelledByUserId: authUser?.id ?? null
+        }
+      });
+      if (changed.count !== 1) {
+        throw new Error("این فروش هم‌زمان ابطال شده است.");
+      }
     }
 
     for (const transaction of moneyTransactions) {
@@ -1531,7 +1578,28 @@ salesRoute.post("/", async (c) => {
     );
   }
 
+  const inventoryOccurredAt = saleDate || kabulNow();
+  const inventoryClientRequestId = requestOperationId(
+    parsed.data.clientRequestId ||
+      c.req.header("Idempotency-Key") ||
+      c.req.header("x-idempotency-key"),
+    "SALE"
+  );
   const runSaleTransaction = () => prisma.$transaction(async (tx) => {
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare(
+      pricedSaleLines.map(({ preparedItem }) => ({
+        productId: preparedItem.productId,
+        warehouseId: preparedItem.warehouseId
+      }))
+    );
+    const inventoryOperation = await inventory.startOperation({
+      type: "SALE",
+      clientRequestId: inventoryClientRequestId,
+      occurredAt: inventoryOccurredAt,
+      createdByUserId: authUser?.id
+    });
+
     const sale = await tx.sale.create({
       data: {
         clientRequestId: parsed.data.clientRequestId ?? null,
@@ -1566,12 +1634,12 @@ salesRoute.post("/", async (c) => {
           where: {
             id: allocation.lotId,
             remainingQuantity: {
-              gte: allocation.quantityBase
+              gte: stockDecimal(allocation.quantityBase)
             }
           },
           data: {
             remainingQuantity: {
-              decrement: allocation.quantityBase
+              decrement: stockDecimal(allocation.quantityBase)
             }
           }
         });
@@ -1589,6 +1657,8 @@ salesRoute.post("/", async (c) => {
             quantity: allocation.quantityBase,
             unitCost: allocation.unitCostBase,
             currencyId: allocation.currencyId,
+            operationId: inventoryOperation.id,
+            occurredAt: inventoryOccurredAt,
             exchangeRate: allocation.costExchangeRate,
             baseUnitCost: allocation.baseUnitCost,
             referenceType: "SALE",

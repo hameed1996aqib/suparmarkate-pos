@@ -9,6 +9,13 @@ import { getAuthUser, hasPermission, writeAudit } from "../../lib/auth";
 import { auditCreateData, auditUpdateData } from "../../lib/audit-meta";
 import { AttendanceStatus } from "../../generated/prisma/enums";
 import { verifyDeviceCredential } from "../../lib/device-credentials";
+import { acquireTransactionLock } from "../../lib/db-lock";
+import {
+  kabulDateKey,
+  kabulDateTime,
+  nextKabulDay,
+  startOfKabulDay
+} from "../../lib/kabul-date";
 
 export const attendanceRoute = new Hono();
 
@@ -141,21 +148,14 @@ function canManage(c: any) {
 }
 
 function startOfDay(date = new Date()) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
-function endOfDay(date = new Date()) {
-  const next = new Date(date);
-  next.setHours(23, 59, 59, 999);
-  return next;
+  return startOfKabulDay(kabulDateKey(date)) as Date;
 }
 
 function parseDate(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match) {
-    return startOfDay(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    const parsed = startOfKabulDay(value);
+    return parsed === "INVALID_DATE" ? null : parsed;
   }
 
   const date = new Date(value);
@@ -169,9 +169,8 @@ function minutesFromTime(value: string) {
 }
 
 function dateAtTime(date: Date, time: string) {
-  const next = startOfDay(date);
-  const [hours, minutes] = time.split(":").map((part) => Number(part || 0));
-  next.setHours(hours, minutes, 0, 0);
+  const next = kabulDateTime(kabulDateKey(date), time);
+  if (next === "INVALID_DATE") throw new Error("Invalid shift time");
   return next;
 }
 
@@ -180,9 +179,11 @@ function minutesBetween(start: Date, end: Date) {
 }
 
 async function findCurrentWorkday(date: Date) {
+  const localDate = kabulDateKey(date);
+  const legacyDate = startOfDay(date);
   return prisma.attendanceWorkday.findFirst({
     where: {
-      date: startOfDay(date),
+      OR: [{ localDate }, { date: legacyDate }],
       period: { deletedAt: null }
     },
     include: { period: true }
@@ -223,10 +224,8 @@ function dateTimeOnDate(date: Date, time?: string | null) {
     const parsed = new Date(time);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
-  const [hours, minutes] = time.split(":").map((part) => Number(part || 0));
-  const next = startOfDay(date);
-  next.setHours(hours || 0, minutes || 0, 0, 0);
-  return next;
+  const next = kabulDateTime(kabulDateKey(date), time);
+  return next === "INVALID_DATE" ? null : next;
 }
 
 async function scanForEmployee(
@@ -245,7 +244,9 @@ async function scanForEmployee(
     };
   }
 
-  const today = startOfDay();
+  const now = new Date();
+  const localDate = kabulDateKey(now);
+  const today = startOfDay(now);
   const workday = await findCurrentWorkday(today);
 
   if (workday && !workday.isWorkday) {
@@ -255,7 +256,6 @@ async function scanForEmployee(
   }
 
   const shift = employee.shifts?.[0] || { startTime: "08:00", endTime: "16:00" };
-  const now = new Date();
   const shiftStart = dateAtTime(today, shift.startTime);
   const shiftEnd = dateAtTime(today, shift.endTime);
   const allowedCheckoutUntil = new Date(
@@ -264,13 +264,17 @@ async function scanForEmployee(
   );
 
   const result = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(tx, "attendance-employee-day", `${employee.id}:${localDate}`);
     if (device?.deviceId) {
-      const lock = await tx.attendanceDeviceLock.findUnique({
+      await acquireTransactionLock(
+        tx,
+        "attendance-device-day",
+        `${device.deviceId}:${localDate}`
+      );
+      const lock = await tx.attendanceDeviceLock.findFirst({
         where: {
-          deviceId_date: {
-            deviceId: device.deviceId,
-            date: today
-          }
+          deviceId: device.deviceId,
+          OR: [{ localDate }, { date: today }]
         }
       });
 
@@ -292,6 +296,7 @@ async function scanForEmployee(
           data: {
             deviceId: device.deviceId,
             date: today,
+            localDate,
             employeeId: employee.id,
             userId: device.userId || null,
             lastScanAt: now
@@ -307,8 +312,11 @@ async function scanForEmployee(
       });
     }
 
-    const existing = await tx.attendanceRecord.findUnique({
-      where: { employeeId_date: { employeeId: employee.id, date: today } }
+    const existing = await tx.attendanceRecord.findFirst({
+      where: {
+        employeeId: employee.id,
+        OR: [{ localDate }, { date: today }]
+      }
     });
 
     if (intent === "CHECK_OUT" && !existing) {
@@ -326,6 +334,7 @@ async function scanForEmployee(
           employeeId: employee.id,
           workdayId: workday?.id || null,
           date: today,
+          localDate,
           checkInAt: now,
           status: lateMinutes > 0 ? AttendanceStatus.LATE : AttendanceStatus.PRESENT,
           lateMinutes,
@@ -455,9 +464,11 @@ attendanceRoute.post("/periods", async (c) => {
       for (const day of parsed.data.workdays) {
         const date = parseDate(day.date);
         if (!date) continue;
+        const localDate = kabulDateKey(date);
         await tx.attendanceWorkday.upsert({
           where: { periodId_date: { periodId: created.id, date } },
           update: {
+            localDate,
             isWorkday: day.isWorkday,
             isHalfDay: day.isHalfDay,
             description: day.description ?? null
@@ -465,6 +476,7 @@ attendanceRoute.post("/periods", async (c) => {
           create: {
             periodId: created.id,
             date,
+            localDate,
             isWorkday: day.isWorkday,
             isHalfDay: day.isHalfDay,
             description: day.description ?? null
@@ -618,13 +630,12 @@ attendanceRoute.get("/reports/monthly", async (c) => {
 attendanceRoute.get("/records", async (c) => {
   if (!canView(c)) return c.json({ message: "Permission denied" }, 403);
 
-  const date = parseDate(c.req.query("date") || new Date().toISOString()) || startOfDay();
+  const date = parseDate(c.req.query("date") || kabulDateKey()) || startOfDay();
+  const localDate = kabulDateKey(date);
+  const end = nextKabulDay(localDate) as Date;
   const records = await prisma.attendanceRecord.findMany({
     where: {
-      date: {
-        gte: date,
-        lte: endOfDay(date)
-      }
+      OR: [{ localDate }, { date: { gte: date, lt: end } }]
     },
     include: {
       employee: true,
@@ -647,6 +658,7 @@ attendanceRoute.post("/records", async (c) => {
 
   const date = parseDate(parsed.data.date);
   if (!date) return c.json({ message: "Invalid date" }, 400);
+  const localDate = kabulDateKey(date);
 
   const employee = await prisma.employee.findUnique({
     where: { id: parsed.data.employeeId }
@@ -662,28 +674,23 @@ attendanceRoute.post("/records", async (c) => {
     parsed.data.workedMinutes ??
     (checkInAt && checkOutAt ? minutesBetween(checkInAt, checkOutAt) : 0);
 
-  const record = await prisma.attendanceRecord.upsert({
-    where: {
-      employeeId_date: {
+  const record = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(
+      tx,
+      "attendance-employee-day",
+      `${parsed.data.employeeId}:${localDate}`
+    );
+    const existing = await tx.attendanceRecord.findFirst({
+      where: {
         employeeId: parsed.data.employeeId,
-        date
-      }
-    },
-    update: {
-      workdayId: workday?.id || null,
-      checkInAt,
-      checkOutAt,
-      status: parsed.data.status,
-      workedMinutes,
-      overtimeMinutes: parsed.data.overtimeMinutes ?? 0,
-      lateMinutes: parsed.data.lateMinutes ?? 0,
-      note: parsed.data.note ?? null,
-      updatedByUserId: authUser?.id ?? null
-    },
-    create: {
-      employeeId: parsed.data.employeeId,
-      workdayId: workday?.id || null,
+        OR: [{ localDate }, { date }]
+      },
+      select: { id: true }
+    });
+    const data = {
       date,
+      localDate,
+      workdayId: workday?.id || null,
       checkInAt,
       checkOutAt,
       status: parsed.data.status,
@@ -691,13 +698,22 @@ attendanceRoute.post("/records", async (c) => {
       overtimeMinutes: parsed.data.overtimeMinutes ?? 0,
       lateMinutes: parsed.data.lateMinutes ?? 0,
       note: parsed.data.note ?? null,
-      createdByUserId: authUser?.id ?? null,
       updatedByUserId: authUser?.id ?? null
-    },
-    include: {
-      employee: true,
-      workday: true
-    }
+    };
+    return existing
+      ? tx.attendanceRecord.update({
+          where: { id: existing.id },
+          data,
+          include: { employee: true, workday: true }
+        })
+      : tx.attendanceRecord.create({
+          data: {
+            employeeId: parsed.data.employeeId,
+            ...data,
+            createdByUserId: authUser?.id ?? null
+          },
+          include: { employee: true, workday: true }
+        });
   });
 
   await writeAudit(c, {
@@ -725,6 +741,8 @@ attendanceRoute.patch("/records/:id", async (c) => {
 
   const date = parsed.data.date ? parseDate(parsed.data.date) : existing.date;
   if (!date) return c.json({ message: "Invalid date" }, 400);
+  const localDate = kabulDateKey(date);
+  const workday = await findCurrentWorkday(date);
 
   const checkInAt =
     parsed.data.checkInAt === undefined
@@ -738,22 +756,40 @@ attendanceRoute.patch("/records/:id", async (c) => {
     parsed.data.workedMinutes ??
     (checkInAt && checkOutAt ? minutesBetween(checkInAt, checkOutAt) : existing.workedMinutes);
 
-  const record = await prisma.attendanceRecord.update({
-    where: { id: existing.id },
-    data: {
-      checkInAt,
-      checkOutAt,
-      status: parsed.data.status ?? AttendanceStatus.MANUAL_ADJUSTED,
-      workedMinutes,
-      overtimeMinutes: parsed.data.overtimeMinutes ?? existing.overtimeMinutes,
-      lateMinutes: parsed.data.lateMinutes ?? existing.lateMinutes,
-      note: parsed.data.note,
-      updatedByUserId: authUser?.id ?? null
-    },
-    include: {
-      employee: true,
-      workday: true
+  const record = await prisma.$transaction(async (tx) => {
+    await acquireTransactionLock(
+      tx,
+      "attendance-employee-day",
+      `${existing.employeeId}:${localDate}`
+    );
+    const duplicate = await tx.attendanceRecord.findFirst({
+      where: {
+        employeeId: existing.employeeId,
+        localDate,
+        id: { not: existing.id }
+      },
+      select: { id: true }
+    });
+    if (duplicate) {
+      throw new Error("برای این کارمند در تاریخ انتخاب‌شده قبلاً حاضری ثبت شده است.");
     }
+    return tx.attendanceRecord.update({
+      where: { id: existing.id },
+      data: {
+        date,
+        localDate,
+        workdayId: workday?.id || null,
+        checkInAt,
+        checkOutAt,
+        status: parsed.data.status ?? AttendanceStatus.MANUAL_ADJUSTED,
+        workedMinutes,
+        overtimeMinutes: parsed.data.overtimeMinutes ?? existing.overtimeMinutes,
+        lateMinutes: parsed.data.lateMinutes ?? existing.lateMinutes,
+        note: parsed.data.note,
+        updatedByUserId: authUser?.id ?? null
+      },
+      include: { employee: true, workday: true }
+    });
   });
 
   await writeAudit(c, {
@@ -871,10 +907,11 @@ attendanceRoute.post("/scan-auth", async (c) => {
 attendanceRoute.post("/close-missing", async (c) => {
   if (!canManage(c)) return c.json({ message: "Permission denied" }, 403);
 
-  const date = parseDate(c.req.query("date") || new Date().toISOString()) || startOfDay();
+  const date = parseDate(c.req.query("date") || kabulDateKey()) || startOfDay();
+  const localDate = kabulDateKey(date);
   const updated = await prisma.attendanceRecord.updateMany({
     where: {
-      date,
+      OR: [{ localDate }, { date }],
       checkInAt: { not: null },
       checkOutAt: null
     },

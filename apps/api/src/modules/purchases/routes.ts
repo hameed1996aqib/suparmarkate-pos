@@ -8,7 +8,7 @@ import { createPostedJournal, createReversalJournal, treasuryAccountCode } from 
 import { getRequestPosDevice } from "../../lib/pos-device";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
-import { parseKabulDateInput } from "../../lib/kabul-date";
+import { kabulNow, parseKabulDateInput } from "../../lib/kabul-date";
 import { cacheDeleteByPattern } from "../../lib/cache";
 import { normalizeBarcodeText } from "../../lib/barcode";
 import {
@@ -22,7 +22,11 @@ import {
   StockMovementType
 } from "../../generated/prisma/enums";
 import { acquireTransactionLock } from "../../lib/db-lock";
-import { roundStockQuantity } from "../../lib/stock-quantity";
+import { roundStockQuantity, stockDecimal } from "../../lib/stock-quantity";
+import {
+  InventoryMutationService,
+  requestOperationId
+} from "../../lib/inventory-mutation";
 
 export const purchasesRoute = new Hono();
 
@@ -219,7 +223,12 @@ purchasesRoute.post("/:id/cancel", async (c) => {
     await acquireTransactionLock(tx, "purchase-document", purchase.id);
     const currentPurchase = await tx.purchase.findUnique({
       where: { id: purchase.id },
-      include: { returns: true }
+      include: {
+        returns: true,
+        items: {
+          include: { lot: true }
+        }
+      }
     });
     if (!currentPurchase || currentPurchase.status === PurchaseStatus.CANCELLED) {
       throw new Error("این خرید قبلاً ابطال شده است.");
@@ -228,16 +237,28 @@ purchasesRoute.post("/:id/cancel", async (c) => {
       throw new Error("خرید دارای برگشتی فعال است و قابل ابطال نیست.");
     }
 
-    for (const item of purchase.items) {
+    const inventory = new InventoryMutationService(tx);
+    await inventory.lock(
+      currentPurchase.items.map((item) => ({
+        productId: item.productId,
+        warehouseId: item.warehouseId
+      }))
+    );
+    const sourceMovement = await tx.stockMovement.findFirst({
+      where: { referenceType: "PURCHASE", referenceId: currentPurchase.id },
+      select: { operationId: true }
+    });
+
+    for (const item of currentPurchase.items) {
       if (item.lotId) {
         const changed = await tx.stockLot.updateMany({
           where: {
             id: item.lotId,
-            remainingQuantity: { gte: item.quantityBase }
+            remainingQuantity: { gte: stockDecimal(Number(item.quantityBase)) }
           },
           data: {
             remainingQuantity: {
-              decrement: item.quantityBase
+              decrement: stockDecimal(Number(item.quantityBase))
             }
           }
         });
@@ -256,13 +277,36 @@ purchasesRoute.post("/:id/cancel", async (c) => {
           type: StockMovementType.PURCHASE_RETURN,
           quantity: item.quantityBase,
           unitCost: item.unitCostBase,
-          currencyId: purchase.currencyId,
+          currencyId: item.lot?.currencyId ?? currentPurchase.currencyId,
+          exchangeRate: item.lot?.exchangeRate ?? 1,
+          baseUnitCost: item.lot?.baseUnitCost ?? item.unitCostBase,
+          operationId: sourceMovement?.operationId ?? null,
+          occurredAt: kabulNow(),
           referenceType: "PURCHASE_CANCEL",
           referenceId: purchase.id,
           note: parsed.data.reason ?? "Purchase cancelled",
           createdByUserId: authUser?.id ?? null
         }
       });
+    }
+
+    if (sourceMovement?.operationId) {
+      const changed = await tx.inventoryOperation.updateMany({
+        where: {
+          id: sourceMovement.operationId,
+          status: "COMPLETED",
+          cancelledAt: null
+        },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: kabulNow(),
+          cancelReason: parsed.data.reason ?? null,
+          cancelledByUserId: authUser?.id ?? null
+        }
+      });
+      if (changed.count !== 1) {
+        throw new Error("این خرید هم‌زمان ابطال شده است.");
+      }
     }
 
     for (const transaction of moneyTransactions) {
@@ -917,7 +961,27 @@ purchasesRoute.post("/", async (c) => {
     );
   }
 
+  const inventoryOccurredAt = purchaseDate || kabulNow();
+  const inventoryClientRequestId = requestOperationId(
+    c.req.header("Idempotency-Key") || c.req.header("x-idempotency-key"),
+    "PURCHASE"
+  );
+
   const result = await prisma.$transaction(async (tx) => {
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare(
+      preparedItems.map((item) => ({
+        productId: item.productId,
+        warehouseId: item.warehouseId
+      }))
+    );
+    const inventoryOperation = await inventory.startOperation({
+      type: "PURCHASE",
+      clientRequestId: inventoryClientRequestId,
+      occurredAt: inventoryOccurredAt,
+      createdByUserId: authUser?.id
+    });
+
     const purchase = await tx.purchase.create({
       data: {
         invoiceNo: parsed.data.invoiceNo ?? null,
@@ -969,6 +1033,8 @@ purchasesRoute.post("/", async (c) => {
           lotId: lot.id,
           type: StockMovementType.PURCHASE,
           quantity: preparedItem.quantityBase,
+          operationId: inventoryOperation.id,
+          occurredAt: inventoryOccurredAt,
           unitCost: preparedItem.unitCostBase,
           currencyId: parsed.data.currencyId,
           exchangeRate: currencySnapshot.exchangeRate,

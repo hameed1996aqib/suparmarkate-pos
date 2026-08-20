@@ -45,8 +45,7 @@ function normalizeUrl(urlValue: string) {
   return `${url.pathname}${sorted.size ? `?${sorted.toString()}` : ""}`;
 }
 
-async function hashMultipartRequest(request: Request, hash: ReturnType<typeof createHash>) {
-  const formData = await request.formData();
+async function hashMultipartRequest(formData: FormData, hash: ReturnType<typeof createHash>) {
   let index = 0;
   for (const [name, value] of formData.entries()) {
     hash.update(`field:${index}:${name}:`);
@@ -73,9 +72,11 @@ async function createRequestHash(c: Context) {
   }
 
   if (contentType.includes("multipart/form-data")) {
-    await hashMultipartRequest(c.req.raw.clone(), hash);
+    await hashMultipartRequest(await c.req.formData(), hash);
   } else {
-    hash.update(Buffer.from(await c.req.raw.clone().arrayBuffer()));
+    // Use Hono's body cache. Reading raw.clone() repeatedly under sustained
+    // load can leave downstream route parsers with an unusable stream.
+    hash.update(Buffer.from(await c.req.arrayBuffer()));
   }
 
   return {
@@ -170,7 +171,30 @@ export async function idempotencyMiddleware(c: Context, next: Next) {
   const { requestHash, path } = await createRequestHash(c);
   const scope = operationScope(c);
   const userId = getAuthUser(c)?.id || null;
-  const reserved = await prisma.$transaction(async (tx) => {
+  const recordData = {
+    operationKey: explicitKey || randomUUID(),
+    scope,
+    requestHash,
+    method,
+    path,
+    userId,
+    expiresAt: expiresAt()
+  };
+  const reserved = explicitKey
+    ? await (async () => {
+        try {
+          const record = await prisma.idempotencyRecord.create({ data: recordData });
+          return { owner: true as const, record };
+        } catch (error) {
+          if ((error as { code?: string } | null)?.code !== "P2002") throw error;
+          const record = await prisma.idempotencyRecord.findUnique({
+            where: { scope_operationKey: { scope, operationKey: explicitKey } }
+          });
+          if (!record) throw error;
+          return { owner: false as const, record };
+        }
+      })()
+    : await prisma.$transaction(async (tx) => {
     const lockId = explicitKey || requestHash;
     await acquireTransactionLock(tx, "idempotency", `${scope}:${lockId}`);
 
@@ -191,17 +215,8 @@ export async function idempotencyMiddleware(c: Context, next: Next) {
       return { owner: false as const, record: existing };
     }
 
-    const operationKey = explicitKey || randomUUID();
     const record = await tx.idempotencyRecord.create({
-      data: {
-        operationKey,
-        scope,
-        requestHash,
-        method,
-        path,
-        userId,
-        expiresAt: expiresAt()
-      }
+      data: recordData
     });
     return { owner: true as const, record };
   });

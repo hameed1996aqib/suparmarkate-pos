@@ -5,6 +5,7 @@ import { createReadStream } from "node:fs";
 import { prisma } from "../../lib/prisma";
 import { enqueueJob, getJob } from "../../lib/persistent-jobs";
 import { resolveExportFile } from "./service";
+import { parseKabulDateInput } from "../../lib/kabul-date";
 
 export const exportsRoute = new Hono();
 
@@ -14,9 +15,12 @@ function csv(value: unknown) {
 }
 
 function dateRange(c: any) {
-  const from = c.req.query("from") ? new Date(c.req.query("from")) : new Date(0);
-  const to = c.req.query("to") ? new Date(c.req.query("to")) : new Date();
-  to.setHours(23, 59, 59, 999);
+  const fromValue = c.req.query("from");
+  const toValue = c.req.query("to");
+  const parsedFrom = fromValue ? parseKabulDateInput(fromValue) : null;
+  const parsedTo = toValue ? parseKabulDateInput(toValue, true) : null;
+  const from = parsedFrom && parsedFrom !== "INVALID_DATE" ? parsedFrom : new Date(0);
+  const to = parsedTo && parsedTo !== "INVALID_DATE" ? parsedTo : new Date();
   return { from, to };
 }
 
@@ -84,7 +88,7 @@ exportsRoute.get("/ledger.csv", async (c) => {
         where: {
           ...(accountId ? { accountId } : {}),
           ...(partyId ? { partyId } : {}),
-          journalEntry: { date: { gte: from, lte: to } }
+          journalEntry: { date: { gte: from, lt: to } }
         },
         include: { account: true, party: true, journalEntry: true },
         orderBy: { id: "asc" },

@@ -19,6 +19,15 @@ function healthyMetrics(overrides: Partial<IntegrityMetrics> = {}): IntegrityMet
     duplicateJournalSources: 0,
     duplicateNormalizedBarcodeGroups: 0,
     barcodesMissingNormalizedValue: 0,
+    stockLotsAboveInitial: 0,
+    stockMovementLedgerMismatches: 0,
+    inactiveStockLocations: 0,
+    incompleteStockMovementSnapshots: 0,
+    stockMovementsMissingOperation: 0,
+    stockMovementsMissingOccurredAt: 0,
+    partialInventoryOperations: 0,
+    attendanceLocalDateCollisions: 0,
+    attendanceLocalDateMismatches: 0,
     ...overrides
   };
 }
@@ -38,7 +47,8 @@ describe("evaluateIntegrityMetrics", () => {
     const result = evaluateIntegrityMetrics(
       healthyMetrics({
         unbalancedJournals: 2,
-        stockBalanceMismatches: 1
+        stockBalanceMismatches: 1,
+        stockMovementLedgerMismatches: 1
       })
     );
 
@@ -46,7 +56,8 @@ describe("evaluateIntegrityMetrics", () => {
     expect(result.issues.map((issue) => issue.code)).toEqual(
       expect.arrayContaining([
         "UNBALANCED_JOURNALS",
-        "STOCK_BALANCE_MISMATCHES"
+        "STOCK_BALANCE_MISMATCHES",
+        "STOCK_MOVEMENT_LEDGER_MISMATCHES"
       ])
     );
   });

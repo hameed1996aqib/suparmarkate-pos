@@ -1,6 +1,7 @@
 import { Store } from "lucide-react";
 
 import { API_BASE_URL } from "@/lib/api-config";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 
 export type PrintCompany = {
   companyName?: string | null;
@@ -39,7 +40,7 @@ export function CompanyPrintHeader({
       </div>
       <div className="text-left">
         <h2 className="text-base font-bold">{title}</h2>
-        <p className="text-xs">{new Date().toLocaleString("fa-AF")}</p>
+        <p className="text-xs">{formatKabulDateTime(new Date())}</p>
       </div>
     </div>
   );

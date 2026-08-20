@@ -70,7 +70,16 @@ function audit(status: "pass" | "blocked" = "pass"): IntegrityAuditReport {
       activeAfnBaseCurrencies: 1,
       duplicateJournalSources: 0,
       duplicateNormalizedBarcodeGroups: 0,
-      barcodesMissingNormalizedValue: 0
+      barcodesMissingNormalizedValue: 0,
+      stockLotsAboveInitial: 0,
+      stockMovementLedgerMismatches: 0,
+      inactiveStockLocations: 0,
+      incompleteStockMovementSnapshots: 0,
+      stockMovementsMissingOperation: 0,
+      stockMovementsMissingOccurredAt: 0,
+      partialInventoryOperations: 0,
+      attendanceLocalDateCollisions: 0,
+      attendanceLocalDateMismatches: 0
     },
     issues:
       status === "blocked"

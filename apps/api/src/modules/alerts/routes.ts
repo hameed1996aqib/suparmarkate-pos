@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
+import { kabulExpiryWindow } from "../../lib/kabul-date";
 
 export const alertsRoute = new Hono();
 
@@ -31,30 +32,40 @@ function severityRank(severity: string) {
 
 alertsRoute.get("/", async (c) => {
   const days = getExpiryDaysFromQuery(c.req.query("days"));
+  const categoryId = c.req.query("categoryId")?.trim() || null;
   const highStockMultiplier = Math.min(
     20,
     Math.max(2, Number(c.req.query("highStockMultiplier") || 5))
   );
-  const cacheKey = `alerts:all:v2:${days}:${highStockMultiplier}`;
+  const cacheKey = `alerts:all:v3:${days}:${highStockMultiplier}:${categoryId || "all"}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
   if (cached) return c.json({ data: cached, cache: "hit" });
 
-  const now = new Date();
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + days);
+  const { todayStart, targetEndExclusive } = kabulExpiryWindow(days);
+
+  const categoryFilter = categoryId
+    ? Prisma.sql`AND p."categoryId" = ${categoryId}`
+    : Prisma.empty;
+  const productWhere = {
+    isActive: true,
+    deletedAt: null,
+    ...(categoryId ? { categoryId } : {})
+  };
 
   const [products, stockCounts, expiredLots, expiringSoonLots, expiryCounts, parties, creditCounts] = await Promise.all([
     prisma.$queryRaw<any[]>(Prisma.sql`
       WITH stock AS (
-        SELECT p.id, p.name, p.barcode, p."minStock",
+        SELECT p.id, p.name, p.barcode, p."categoryId", pc.name "categoryName", p."minStock",
           COALESCE(SUM(sb."quantityBase"), 0) quantity,
           COALESCE(u."shortName", u.name) "unitName",
           COALESCE(w.name, 'همه گدام‌ها') "warehouseName"
         FROM "Product" p JOIN "Unit" u ON u.id = p."baseUnitId"
+        LEFT JOIN "ProductCategory" pc ON pc.id = p."categoryId"
         LEFT JOIN "Warehouse" w ON w.id = p."defaultWarehouseId"
         LEFT JOIN "StockBalance" sb ON sb."productId" = p.id
         WHERE p."isActive" = true AND p."deletedAt" IS NULL
-        GROUP BY p.id, u."shortName", u.name, w.name
+          ${categoryFilter}
+        GROUP BY p.id, pc.name, u."shortName", u.name, w.name
       )
       SELECT *, CASE WHEN quantity <= 0 THEN 'OUT_OF_STOCK'
         WHEN "minStock" > 0 AND quantity <= "minStock" THEN 'LOW_STOCK'
@@ -68,7 +79,9 @@ alertsRoute.get("/", async (c) => {
       WITH stock AS (
         SELECT p.id, p."minStock", COALESCE(SUM(sb."quantityBase"), 0) quantity
         FROM "Product" p LEFT JOIN "StockBalance" sb ON sb."productId" = p.id
-        WHERE p."isActive" = true AND p."deletedAt" IS NULL GROUP BY p.id
+        WHERE p."isActive" = true AND p."deletedAt" IS NULL
+          ${categoryFilter}
+        GROUP BY p.id
       )
       SELECT COUNT(*) FILTER (WHERE quantity <= 0)::int "outOfStock",
         COUNT(*) FILTER (WHERE quantity > 0 AND "minStock" > 0 AND quantity <= "minStock")::int "lowStock",
@@ -78,8 +91,8 @@ alertsRoute.get("/", async (c) => {
     prisma.stockLot.findMany({
       where: {
         remainingQuantity: { gt: 0 },
-        expiryDate: { not: null, lt: now },
-        product: { isActive: true, deletedAt: null }
+        expiryDate: { not: null, lt: todayStart },
+        product: productWhere
       },
       include: {
         product: { include: { baseUnit: true, category: true } },
@@ -91,8 +104,8 @@ alertsRoute.get("/", async (c) => {
     prisma.stockLot.findMany({
       where: {
         remainingQuantity: { gt: 0 },
-        expiryDate: { not: null, gte: now, lte: targetDate },
-        product: { isActive: true, deletedAt: null }
+        expiryDate: { not: null, gte: todayStart, lt: targetEndExclusive },
+        product: productWhere
       },
       include: {
         product: { include: { baseUnit: true, category: true } },
@@ -102,11 +115,15 @@ alertsRoute.get("/", async (c) => {
       take: 500
     }),
     prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT COUNT(*) FILTER (WHERE "expiryDate" < ${now})::int expired,
-        COUNT(*) FILTER (WHERE "expiryDate" >= ${now} AND "expiryDate" <= ${targetDate})::int "expiringSoon"
-      FROM "StockLot" WHERE "remainingQuantity" > 0 AND "expiryDate" IS NOT NULL
+      SELECT COUNT(*) FILTER (WHERE "expiryDate" < ${todayStart})::int expired,
+        COUNT(*) FILTER (WHERE "expiryDate" >= ${todayStart} AND "expiryDate" < ${targetEndExclusive})::int "expiringSoon"
+      FROM "StockLot" sl
+      JOIN "Product" p ON p.id = sl."productId"
+      WHERE sl."remainingQuantity" > 0 AND sl."expiryDate" IS NOT NULL
+        AND p."isActive" = true AND p."deletedAt" IS NULL
+        ${categoryFilter}
     `),
-    prisma.$queryRaw<any[]>(Prisma.sql`
+    categoryId ? Promise.resolve([]) : prisma.$queryRaw<any[]>(Prisma.sql`
       WITH party_exposure AS (
         SELECT p.id, p.name, p.type, p."creditLimit",
           COALESCE(base.code, 'AFN') "currencyCode",
@@ -141,7 +158,7 @@ alertsRoute.get("/", async (c) => {
         OR (type IN ('SUPPLIER', 'BOTH') AND "supplierExposure" > "creditLimit")
       ORDER BY name ASC LIMIT 500
     `),
-    prisma.$queryRaw<any[]>(Prisma.sql`
+    categoryId ? Promise.resolve([]) : prisma.$queryRaw<any[]>(Prisma.sql`
       WITH party_exposure AS (
         SELECT p.id, p.type, p."creditLimit",
           COALESCE(SUM(
@@ -192,6 +209,8 @@ alertsRoute.get("/", async (c) => {
         entityName: product.name,
         entityType: "product",
         productId: product.id,
+        categoryId: product.categoryId,
+        categoryName: product.categoryName,
         barcode: product.barcode,
         warehouseName: product.warehouseName,
         quantity: totalQuantity,
@@ -213,6 +232,8 @@ alertsRoute.get("/", async (c) => {
         entityName: product.name,
         entityType: "product",
         productId: product.id,
+        categoryId: product.categoryId,
+        categoryName: product.categoryName,
         barcode: product.barcode,
         warehouseName: product.warehouseName,
         quantity: totalQuantity,
@@ -233,6 +254,8 @@ alertsRoute.get("/", async (c) => {
         entityName: product.name,
         entityType: "product",
         productId: product.id,
+        categoryId: product.categoryId,
+        categoryName: product.categoryName,
         barcode: product.barcode,
         warehouseName: product.warehouseName,
         quantity: totalQuantity,
@@ -254,6 +277,8 @@ alertsRoute.get("/", async (c) => {
       entityName: lot.product.name,
       entityType: "stockLot",
       productId: lot.productId,
+      categoryId: lot.product.categoryId,
+      categoryName: lot.product.category?.name || null,
       lotId: lot.id,
       warehouseName: lot.warehouse.name,
       quantity: toNumber(lot.remainingQuantity),
@@ -274,6 +299,8 @@ alertsRoute.get("/", async (c) => {
       entityName: lot.product.name,
       entityType: "stockLot",
       productId: lot.productId,
+      categoryId: lot.product.categoryId,
+      categoryName: lot.product.category?.name || null,
       lotId: lot.id,
       warehouseName: lot.warehouse.name,
       quantity: toNumber(lot.remainingQuantity),
@@ -341,7 +368,7 @@ alertsRoute.get("/", async (c) => {
     highStock: toNumber(stockCounts[0]?.highStock),
     expired: toNumber(expiryCounts[0]?.expired),
     expiringSoon: toNumber(expiryCounts[0]?.expiringSoon),
-    creditLimit: toNumber(creditCounts[0]?.count)
+    creditLimit: categoryId ? 0 : toNumber(creditCounts[0]?.count)
   };
   const exactCounts = {
     ...counts,
@@ -360,6 +387,7 @@ alertsRoute.get("/", async (c) => {
   const data = {
       days,
       highStockMultiplier,
+      categoryId,
       counts: exactCounts,
       alerts,
       isTruncated: alerts.length < exactCounts.total
@@ -439,9 +467,7 @@ alertsRoute.get("/stock", async (c) => {
 alertsRoute.get("/expiry", async (c) => {
   const days = getExpiryDaysFromQuery(c.req.query("days"));
 
-  const now = new Date();
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + days);
+  const { todayStart, targetEndExclusive } = kabulExpiryWindow(days);
 
   const expiredLots = await prisma.stockLot.findMany({
     where: {
@@ -450,7 +476,7 @@ alertsRoute.get("/expiry", async (c) => {
       },
       expiryDate: {
         not: null,
-        lt: now
+        lt: todayStart
       }
     },
     include: {
@@ -473,8 +499,8 @@ alertsRoute.get("/expiry", async (c) => {
       },
       expiryDate: {
         not: null,
-        gte: now,
-        lte: targetDate
+        gte: todayStart,
+        lt: targetEndExclusive
       }
     },
     include: {
@@ -514,9 +540,7 @@ alertsRoute.get("/expiry", async (c) => {
 alertsRoute.get("/summary", async (c) => {
   const days = getExpiryDaysFromQuery(c.req.query("days"));
 
-  const now = new Date();
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + days);
+  const { todayStart, targetEndExclusive } = kabulExpiryWindow(days);
 
   const products = await prisma.product.findMany({
     where: {
@@ -555,7 +579,7 @@ alertsRoute.get("/summary", async (c) => {
       },
       expiryDate: {
         not: null,
-        lt: now
+        lt: todayStart
       }
     }
   });
@@ -567,8 +591,8 @@ alertsRoute.get("/summary", async (c) => {
       },
       expiryDate: {
         not: null,
-        gte: now,
-        lte: targetDate
+        gte: todayStart,
+        lt: targetEndExclusive
       }
     }
   });

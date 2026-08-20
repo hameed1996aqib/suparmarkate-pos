@@ -16,8 +16,13 @@ import { salesRoute } from "../sales/routes";
 import { inventoryRoute } from "./routes";
 
 const databaseUrl = process.env.DATABASE_URL || "";
-if (!/[/_]supermarket_test(?:\?|$)/.test(databaseUrl)) {
-  throw new Error("The randomized stock test may only run against supermarket_test.");
+if (
+  process.env.NODE_ENV !== "test" ||
+  !/[/_]supermarket_test(?:\?|$)/.test(databaseUrl)
+) {
+  throw new Error(
+    "The randomized stock test may only run with NODE_ENV=test against supermarket_test."
+  );
 }
 
 const PRODUCT_COUNT = 100;
@@ -25,7 +30,7 @@ const OPERATIONS_PER_PRODUCT = 50;
 const marker = createOperationReference("STOCK-STRESS");
 
 type TestUnit = { id: string; rate: number; name: string };
-type TestProduct = { id: string; barcode: string; units: TestUnit[] };
+type TestProduct = { id: string; barcode: string; hasExpiry: boolean; units: TestUnit[] };
 
 let adminUser: AuthUser;
 let baseCurrencyId = "";
@@ -35,6 +40,8 @@ let warehouseIds: string[] = [];
 let products: TestProduct[] = [];
 const usedMovementTypes = new Set<StockMovementType>();
 const app = new Hono<{ Variables: { authUser: AuthUser } }>();
+const useExistingProducts = process.env.STOCK_STRESS_USE_EXISTING_PRODUCTS === "true";
+const testExpiryDate = "2027-12-31";
 
 function seededRandom(seed: number) {
   let value = seed >>> 0;
@@ -55,17 +62,15 @@ function enteredQuantity(unit: TestUnit, random: () => number) {
 async function jsonRequest(
   path: string,
   init: RequestInit = {},
-  operationId = createOperationReference("TEST-OP")
+  operationId = createOperationReference("TEST-OP"),
 ) {
   const response = await app.request(`http://localhost${path}`, {
     ...init,
     headers: {
       ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...(init.method && init.method !== "GET"
-        ? { "Idempotency-Key": operationId }
-        : {}),
-      ...(init.headers || {})
-    }
+      ...(init.method && init.method !== "GET" ? { "Idempotency-Key": operationId } : {}),
+      ...(init.headers || {}),
+    },
   });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
@@ -76,17 +81,13 @@ async function jsonRequest(
 }
 
 function post(path: string, body: unknown, operationId?: string) {
-  return jsonRequest(
-    path,
-    { method: "POST", body: JSON.stringify(body) },
-    operationId
-  );
+  return jsonRequest(path, { method: "POST", body: JSON.stringify(body) }, operationId);
 }
 
 async function warehouseStock(productId: string, warehouseId: string) {
   const aggregate = await prisma.stockLot.aggregate({
     where: { productId, warehouseId },
-    _sum: { remainingQuantity: true }
+    _sum: { remainingQuantity: true },
   });
   return roundStockQuantity(Number(aggregate._sum.remainingQuantity || 0));
 }
@@ -96,7 +97,7 @@ async function addStock(
   warehouseId: string,
   unit: TestUnit,
   quantity: number,
-  note: string
+  note: string,
 ) {
   usedMovementTypes.add(StockMovementType.ADJUSTMENT_IN);
   return post("/api/inventory/adjustments", {
@@ -107,7 +108,8 @@ async function addStock(
     quantity,
     unitCost: 10 * unit.rate,
     currencyId: baseCurrencyId,
-    note
+    ...(product.hasExpiry ? { expiryDate: testExpiryDate } : {}),
+    note,
   });
 }
 
@@ -115,7 +117,7 @@ async function ensureOutboundStock(
   product: TestProduct,
   warehouseId: string,
   unit: TestUnit,
-  quantity: number
+  quantity: number,
 ) {
   const required = roundStockQuantity(quantity * unit.rate);
   const available = await warehouseStock(product.id, warehouseId);
@@ -128,7 +130,7 @@ async function ensureOutboundStock(
       warehouseId,
       unit,
       roundStockQuantity(missingBase / unit.rate),
-      `${marker} automatic replenishment`
+      `${marker} automatic replenishment`,
     );
   }
 }
@@ -137,7 +139,7 @@ async function createPurchase(
   product: TestProduct,
   warehouseId: string,
   unit: TestUnit,
-  quantity: number
+  quantity: number,
 ) {
   usedMovementTypes.add(StockMovementType.PURCHASE);
   const result = await post("/api/purchases", {
@@ -154,18 +156,22 @@ async function createPurchase(
         unitId: unit.id,
         quantity,
         unitCost: 10 * unit.rate,
-        updateSalePrice: false
-      }
-    ]
+        ...(product.hasExpiry ? { expiryDate: testExpiryDate } : {}),
+        updateSalePrice: false,
+      },
+    ],
   });
-  return result.payload.data.purchase as { id: string; items: Array<{ id: string; quantity: unknown }> };
+  return result.payload.data.purchase as {
+    id: string;
+    items: Array<{ id: string; quantity: unknown }>;
+  };
 }
 
 async function createSale(
   product: TestProduct,
   warehouseId: string,
   unit: TestUnit,
-  quantity: number
+  quantity: number,
 ) {
   await ensureOutboundStock(product, warehouseId, unit, quantity);
   usedMovementTypes.add(StockMovementType.SALE);
@@ -184,9 +190,9 @@ async function createSale(
         unitId: unit.id,
         quantity,
         unitPrice: 20 * unit.rate,
-        discount: 0
-      }
-    ]
+        discount: 0,
+      },
+    ],
   });
   const sale = result.payload.data.sale as {
     id: string;
@@ -199,15 +205,17 @@ async function createSale(
 async function runProductScenario(product: TestProduct, productIndex: number) {
   const random = seededRandom(7_919 + productIndex * 97);
   const usedUnits = new Set<string>();
+  const openingUnit = product.units.find((unit) => unit.rate === 1) ?? product.units[0]!;
 
   await post("/api/inventory/opening-stock", {
     productId: product.id,
     warehouseId: warehouseIds[0],
-    unitId: product.units[0]!.id,
-    quantity: 50,
+    unitId: openingUnit.id,
+    quantity: roundStockQuantity(50 / openingUnit.rate),
     unitCost: 10,
     currencyId: baseCurrencyId,
-    note: `${marker} opening 50`
+    ...(product.hasExpiry ? { expiryDate: testExpiryDate } : {}),
+    note: `${marker} opening 50`,
   });
   usedMovementTypes.add(StockMovementType.OPENING_STOCK);
   expect(await warehouseStock(product.id, warehouseIds[0]!)).toBe(50);
@@ -226,7 +234,7 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
     "SALE_CANCEL",
     "PURCHASE_CANCEL",
     "SALE_RETURN_CANCEL",
-    "PURCHASE_RETURN_CANCEL"
+    "PURCHASE_RETURN_CANCEL",
   ] as const;
 
   for (let operationIndex = 0; operationIndex < OPERATIONS_PER_PRODUCT; operationIndex += 1) {
@@ -253,7 +261,7 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
       await ensureOutboundStock(product, warehouseId, unit, quantity);
       const type = kind === "DAMAGE" ? "DAMAGE" : "ADJUSTMENT_OUT";
       usedMovementTypes.add(
-        kind === "DAMAGE" ? StockMovementType.DAMAGE : StockMovementType.ADJUSTMENT_OUT
+        kind === "DAMAGE" ? StockMovementType.DAMAGE : StockMovementType.ADJUSTMENT_OUT,
       );
       await post("/api/inventory/adjustments", {
         productId: product.id,
@@ -261,7 +269,7 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
         unitId: unit.id,
         type,
         quantity,
-        note: marker
+        note: marker,
       });
       continue;
     }
@@ -276,13 +284,12 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
         toWarehouseId: otherWarehouseId,
         unitId: unit.id,
         quantity,
-        note: marker
+        note: marker,
       });
       if (kind === "TRANSFER_CANCEL") {
-        await post(
-          `/api/inventory/transfers/${transfer.payload.data.referenceId}/cancel`,
-          { reason: `${marker} transfer cancellation` }
-        );
+        await post(`/api/inventory/transfers/${transfer.payload.data.referenceId}/cancel`, {
+          reason: `${marker} transfer cancellation`,
+        });
       }
       continue;
     }
@@ -305,11 +312,11 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
         supplierId,
         receivedAmount: 0,
         note: marker,
-        items: [{ purchaseItemId: purchase.items[0]!.id, quantity }]
+        items: [{ purchaseItemId: purchase.items[0]!.id, quantity }],
       });
       if (kind === "PURCHASE_RETURN_CANCEL") {
         await post(`/api/purchase-returns/${returned.payload.data.purchaseReturn.id}/cancel`, {
-          reason: `${marker} purchase return cancellation`
+          reason: `${marker} purchase return cancellation`,
         });
       }
       continue;
@@ -325,12 +332,12 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
         note: marker,
         items: sale.items.map((item) => ({
           saleItemId: item.id,
-          quantity: Number(item.quantity)
-        }))
+          quantity: Number(item.quantity),
+        })),
       });
       if (kind === "SALE_RETURN_CANCEL") {
         await post(`/api/sale-returns/${returned.payload.data.saleReturn.id}/cancel`, {
-          reason: `${marker} sale return cancellation`
+          reason: `${marker} sale return cancellation`,
         });
       }
       continue;
@@ -347,7 +354,7 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
       const purchase = await createPurchase(product, warehouseId, unit, quantity);
       usedMovementTypes.add(StockMovementType.PURCHASE_RETURN);
       await post(`/api/purchases/${purchase.id}/cancel`, {
-        reason: `${marker} purchase cancellation`
+        reason: `${marker} purchase cancellation`,
       });
       continue;
     }
@@ -355,13 +362,13 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
     const adjustment = await addStock(product, warehouseId, unit, quantity, marker);
     usedMovementTypes.add(StockMovementType.ADJUSTMENT_OUT);
     await post(`/api/inventory/movements/${adjustment.payload.data.movement.id}/cancel`, {
-      reason: `${marker} adjustment cancellation`
+      reason: `${marker} adjustment cancellation`,
     });
   }
 
   expect(usedUnits.size).toBe(product.units.length);
   const movementCount = await prisma.stockMovement.count({
-    where: { productId: product.id }
+    where: { productId: product.id },
   });
   expect(movementCount).toBeGreaterThanOrEqual(OPERATIONS_PER_PRODUCT + 1);
 }
@@ -369,7 +376,7 @@ async function runProductScenario(product: TestProduct, productIndex: number) {
 beforeAll(async () => {
   const [user, currency] = await Promise.all([
     prisma.user.findFirst({ where: { isActive: true } }),
-    prisma.currency.findFirst({ where: { isBase: true, deletedAt: null } })
+    prisma.currency.findFirst({ where: { isBase: true, deletedAt: null } }),
   ]);
   if (!user || !currency) {
     throw new Error("Seeded admin and base currency are required for the stock stress test.");
@@ -381,7 +388,7 @@ beforeAll(async () => {
     role: "Admin",
     permissions: [],
     mustChangePassword: false,
-    employee: null
+    employee: null,
   };
   baseCurrencyId = currency.id;
 
@@ -400,20 +407,20 @@ beforeAll(async () => {
   const [baseUnit, packUnit, cartonUnit] = await Promise.all([
     prisma.unit.create({ data: { name: `${marker} piece`, shortName: "pc" } }),
     prisma.unit.create({ data: { name: `${marker} pack`, shortName: "pk" } }),
-    prisma.unit.create({ data: { name: `${marker} carton`, shortName: "ct" } })
+    prisma.unit.create({ data: { name: `${marker} carton`, shortName: "ct" } }),
   ]);
   const warehouses = await Promise.all([
     prisma.warehouse.create({ data: { name: `${marker} main` } }),
-    prisma.warehouse.create({ data: { name: `${marker} secondary` } })
+    prisma.warehouse.create({ data: { name: `${marker} secondary` } }),
   ]);
   warehouseIds = warehouses.map((warehouse) => warehouse.id);
   const [customer, supplier] = await Promise.all([
     prisma.party.create({
-      data: { type: "CUSTOMER", name: `${marker} customer`, code: `${marker}-C` }
+      data: { type: "CUSTOMER", name: `${marker} customer`, code: `${marker}-C` },
     }),
     prisma.party.create({
-      data: { type: "SUPPLIER", name: `${marker} supplier`, code: `${marker}-S` }
-    })
+      data: { type: "SUPPLIER", name: `${marker} supplier`, code: `${marker}-S` },
+    }),
   ]);
   customerId = customer.id;
   supplierId = supplier.id;
@@ -421,9 +428,45 @@ beforeAll(async () => {
   const unitDefinitions = [
     { id: baseUnit.id, rate: 1, name: baseUnit.name },
     { id: packUnit.id, rate: 6, name: packUnit.name },
-    { id: cartonUnit.id, rate: 12, name: cartonUnit.name }
+    { id: cartonUnit.id, rate: 12, name: cartonUnit.name },
   ];
   products = [];
+  if (useExistingProducts) {
+    const existingProducts = await prisma.product.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        units: { some: { conversionRate: 1 } },
+      },
+      include: {
+        units: {
+          where: { conversionRate: { gt: 0 } },
+          include: { unit: true },
+          orderBy: { conversionRate: "asc" },
+          take: 10,
+        },
+      },
+      orderBy: { id: "asc" },
+      take: PRODUCT_COUNT,
+    });
+    if (existingProducts.length < PRODUCT_COUNT) {
+      throw new Error(
+        `Existing-data stress mode requires ${PRODUCT_COUNT} active products with valid units; found ${existingProducts.length}.`,
+      );
+    }
+    products = existingProducts.map((product) => ({
+      id: product.id,
+      barcode: product.barcode || product.id,
+      hasExpiry: product.hasExpiry,
+      units: product.units.map((item) => ({
+        id: item.unitId,
+        rate: Number(item.conversionRate),
+        name: item.unit.name,
+      })),
+    }));
+    return;
+  }
+
   for (let index = 0; index < PRODUCT_COUNT; index += 1) {
     const barcode = `98${String(Date.now()).slice(-7)}${String(index).padStart(3, "0")}${String(index % 10)}`;
     const product = await prisma.product.create({
@@ -441,12 +484,12 @@ beforeAll(async () => {
             purchasePrice: 10 * unit.rate,
             salePrice: 20 * unit.rate,
             isDefaultPurchase: unitIndex === 1,
-            isDefaultSale: unitIndex === 0
-          }))
-        }
-      }
+            isDefaultSale: unitIndex === 0,
+          })),
+        },
+      },
     });
-    products.push({ id: product.id, barcode, units: unitDefinitions });
+    products.push({ id: product.id, barcode, hasExpiry: false, units: unitDefinitions });
   }
 });
 
@@ -461,7 +504,7 @@ describe("randomized inventory movement release gate", () => {
       await Promise.all(
         products
           .slice(offset, offset + 5)
-          .map((product, index) => runProductScenario(product, offset + index))
+          .map((product, index) => runProductScenario(product, offset + index)),
       );
     }
 
@@ -469,19 +512,19 @@ describe("randomized inventory movement release gate", () => {
     const [lots, balances, movements, operationCount] = await Promise.all([
       prisma.stockLot.findMany({
         where: { productId: { in: productIds } },
-        select: { productId: true, warehouseId: true, remainingQuantity: true }
+        select: { productId: true, warehouseId: true, remainingQuantity: true },
       }),
       prisma.stockBalance.findMany({
         where: { productId: { in: productIds } },
-        select: { productId: true, warehouseId: true, quantityBase: true }
+        select: { productId: true, warehouseId: true, quantityBase: true },
       }),
       prisma.stockMovement.findMany({
         where: { productId: { in: productIds } },
-        select: { productId: true, warehouseId: true, type: true, quantity: true }
+        select: { productId: true, warehouseId: true, type: true, quantity: true },
       }),
       prisma.idempotencyRecord.count({
-        where: { userId: adminUser.id, createdAt: { gte: startedAt } }
-      })
+        where: { userId: adminUser.id, createdAt: { gte: startedAt } },
+      }),
     ]);
 
     const keyOf = (productId: string, warehouseId: string) => `${productId}:${warehouseId}`;
@@ -491,14 +534,14 @@ describe("randomized inventory movement release gate", () => {
       const key = keyOf(lot.productId, lot.warehouseId);
       lotTotals.set(
         key,
-        roundStockQuantity((lotTotals.get(key) || 0) + Number(lot.remainingQuantity))
+        roundStockQuantity((lotTotals.get(key) || 0) + Number(lot.remainingQuantity)),
       );
     }
     const balanceTotals = new Map(
       balances.map((balance) => [
         keyOf(balance.productId, balance.warehouseId),
-        roundStockQuantity(Number(balance.quantityBase))
-      ])
+        roundStockQuantity(Number(balance.quantityBase)),
+      ]),
     );
     const ledgerTotals = new Map<string, number>();
     const inbound = new Set<StockMovementType>([
@@ -506,15 +549,12 @@ describe("randomized inventory movement release gate", () => {
       StockMovementType.PURCHASE,
       StockMovementType.SALE_RETURN,
       StockMovementType.ADJUSTMENT_IN,
-      StockMovementType.TRANSFER_IN
+      StockMovementType.TRANSFER_IN,
     ]);
     for (const movement of movements) {
       const key = keyOf(movement.productId, movement.warehouseId);
       const signed = Number(movement.quantity) * (inbound.has(movement.type) ? 1 : -1);
-      ledgerTotals.set(
-        key,
-        roundStockQuantity((ledgerTotals.get(key) || 0) + signed)
-      );
+      ledgerTotals.set(key, roundStockQuantity((ledgerTotals.get(key) || 0) + signed));
     }
 
     const allKeys = new Set([...lotTotals.keys(), ...balanceTotals.keys(), ...ledgerTotals.keys()]);
@@ -523,7 +563,7 @@ describe("randomized inventory movement release gate", () => {
       expect(ledgerTotals.get(key) || 0).toBeCloseTo(lotTotals.get(key) || 0, 4);
     }
     expect(new Set(movements.map((movement) => movement.type)).size).toBe(
-      Object.values(StockMovementType).length
+      Object.values(StockMovementType).length,
     );
     expect(operationCount).toBeGreaterThanOrEqual(PRODUCT_COUNT * OPERATIONS_PER_PRODUCT);
 
@@ -533,45 +573,49 @@ describe("randomized inventory movement release gate", () => {
       jsonRequest(`/api/products/lookup?search=${sample.barcode}&limit=20`),
       jsonRequest(`/api/products/pos-search?search=${sample.barcode}&limit=20&offset=0`),
       jsonRequest(`/api/products/barcode-lookup?barcode=${sample.barcode}`),
-      jsonRequest(`/api/inventory/stock?productId=${sample.id}&sortBy=quantity&sortOrder=desc&page=1&limit=20`),
+      jsonRequest(
+        `/api/inventory/stock?productId=${sample.id}&sortBy=quantity&sortOrder=desc&page=1&limit=20`,
+      ),
       jsonRequest(`/api/inventory/lots?productId=${sample.id}&page=1&limit=20`),
       jsonRequest(`/api/inventory/movements?productId=${sample.id}&page=1&limit=20`),
       jsonRequest(`/api/inventory/transfer-reports?search=${sample.barcode}&page=1&limit=20`),
       jsonRequest(`/api/inventory/damage-reports?page=1&limit=20`),
-      jsonRequest(`/api/inventory/product-history/${sample.id}?page=1&limit=20`)
+      jsonRequest(`/api/inventory/product-history/${sample.id}?page=1&limit=20`),
     ]);
     expect(pageChecks.every((check) => check.response.status === 200)).toBe(true);
 
     const duplicateKey = createOperationReference("DUPLICATE-CHECK");
+    const sampleUnit = sample.units[1] ?? sample.units[0]!;
     const duplicateBody = {
       productId: sample.id,
       warehouseId: warehouseIds[0],
-      unitId: sample.units[1]!.id,
+      unitId: sampleUnit.id,
       type: "ADJUSTMENT_IN",
       quantity: 1,
       unitCost: 60,
       currencyId: baseCurrencyId,
-      note: `${marker} concurrent duplicate check ${randomUUID()}`
+      ...(sample.hasExpiry ? { expiryDate: testExpiryDate } : {}),
+      note: `${marker} concurrent duplicate check ${randomUUID()}`,
     };
     const before = await warehouseStock(sample.id, warehouseIds[0]!);
     const [first, second] = await Promise.all([
       post("/api/inventory/adjustments", duplicateBody, duplicateKey),
-      post("/api/inventory/adjustments", duplicateBody, duplicateKey)
+      post("/api/inventory/adjustments", duplicateBody, duplicateKey),
     ]);
     const after = await warehouseStock(sample.id, warehouseIds[0]!);
-    expect(after - before).toBeCloseTo(6, 4);
+    expect(after - before).toBeCloseTo(sampleUnit.rate, 4);
     expect(
       [first, second].filter(
-        (result) => result.response.headers.get("Idempotency-Replayed") === "true"
-      )
+        (result) => result.response.headers.get("Idempotency-Replayed") === "true",
+      ),
     ).toHaveLength(1);
 
     const cancellable = await addStock(
       sample,
       warehouseIds[0]!,
-      sample.units[1]!,
+      sampleUnit,
       1,
-      `${marker} concurrent cancellation check`
+      `${marker} concurrent cancellation check`,
     );
     const cancellableMovementId = cancellable.payload.data.movement.id as string;
     const beforeCancellation = await warehouseStock(sample.id, warehouseIds[0]!);
@@ -579,24 +623,24 @@ describe("randomized inventory movement release gate", () => {
       post(
         `/api/inventory/movements/${cancellableMovementId}/cancel`,
         { reason: `${marker} first concurrent cancellation` },
-        createOperationReference("CANCEL-A")
+        createOperationReference("CANCEL-A"),
       ),
       post(
         `/api/inventory/movements/${cancellableMovementId}/cancel`,
         { reason: `${marker} second concurrent cancellation` },
-        createOperationReference("CANCEL-B")
-      )
+        createOperationReference("CANCEL-B"),
+      ),
     ]);
     const afterCancellation = await warehouseStock(sample.id, warehouseIds[0]!);
     const cancellationRows = await prisma.stockMovement.count({
       where: {
         referenceType: "ADJUSTMENT_IN_CANCEL",
-        referenceId: cancellableMovementId
-      }
+        referenceId: cancellableMovementId,
+      },
     });
     expect(cancellationResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(cancellationResults.filter((result) => result.status === "rejected")).toHaveLength(1);
     expect(cancellationRows).toBe(1);
-    expect(afterCancellation).toBeCloseTo(beforeCancellation - 6, 4);
+    expect(afterCancellation).toBeCloseTo(beforeCancellation - sampleUnit.rate, 4);
   });
 });

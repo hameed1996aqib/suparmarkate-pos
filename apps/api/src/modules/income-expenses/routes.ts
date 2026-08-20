@@ -136,7 +136,8 @@ incomeExpensesRoute.get("/", async (c) => {
       LEFT JOIN "BankAccount" ba ON ba.id = mt."bankAccountId"
       LEFT JOIN "CashRegisterAccount" cra ON cra.id = mt."cashRegisterAccountId"
       LEFT JOIN "CashRegister" cr ON cr.id = cra."cashRegisterId"
-      WHERE mt."createdAt" BETWEEN ${range.gte} AND ${range.lte}
+      WHERE mt."createdAt" >= ${range.gte}
+        AND mt."createdAt" < ${range.lt}
         AND mt."type" IN ('INCOME', 'EXPENSE')
         ${
           search

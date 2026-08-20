@@ -4,7 +4,11 @@ import { getCurrentCurrencyRates } from "../../lib/currency-rates";
 import { MoneyDirection, MoneyTransactionType, PartyType } from "../../generated/prisma/enums";
 import { Prisma } from "../../generated/prisma/client";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
-import { kabulDateRange, kabulDayRange } from "../../lib/kabul-date";
+import {
+  kabulDateRange,
+  kabulDayRange,
+  kabulExpiryWindow
+} from "../../lib/kabul-date";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { resolveSaleItemPricing } from "../../lib/sale-pricing";
 
@@ -28,19 +32,11 @@ function saleDiscountBase(sale: Record<string, unknown> & { items?: Array<Record
 }
 
 function parseReportDate(value?: string) {
-  const range = kabulDayRange(value);
-  return {
-    ...range,
-    end: new Date(range.end.getTime() + 1)
-  };
+  return kabulDayRange(value);
 }
 
 function parseReportRange(from?: string, to?: string) {
-  const range = kabulDateRange(from, to);
-  return {
-    ...range,
-    end: new Date(range.end.getTime() + 1)
-  };
+  return kabulDateRange(from, to);
 }
 
 function parseEmployeePerformanceRange(
@@ -613,6 +609,8 @@ reportsRoute.get("/activity", async (c) => {
 
 reportsRoute.get("/management", async (c) => {
   const { from, to, start, end } = parseReportRange(c.req.query("from"), c.req.query("to"));
+  const { todayStart: expiryStart, targetEndExclusive: expiryEnd } =
+    kabulExpiryWindow(45);
   const cacheKey = `reports:management:v3:${from}:${to}`;
   const cached = await cacheGetJson<Record<string, unknown>>(cacheKey);
   if (cached) return c.json({ data: cached, cache: "hit" });
@@ -752,7 +750,10 @@ reportsRoute.get("/management", async (c) => {
       ORDER BY sb."quantityBase" ASC LIMIT 100
     `),
     prisma.stockLot.findMany({
-      where: { remainingQuantity: { gt: 0 }, expiryDate: { gte: new Date(), lte: new Date(Date.now() + 45 * 86400000) } },
+      where: {
+        remainingQuantity: { gt: 0 },
+        expiryDate: { gte: expiryStart, lt: expiryEnd }
+      },
       include: { product: true, warehouse: true }, orderBy: { expiryDate: "asc" }, take: 25
     }),
     prisma.sale.findMany({

@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MetricCard } from "@/features/admin/components/metric-card";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 import { getDashboardCurrencies, getDashboardSummary } from "./api";
 import {
   CashierSalesChart,
@@ -353,7 +354,7 @@ export function DashboardPage() {
                   </div>
                   <div className="text-end text-xs text-muted-foreground">
                     <p>{item.user}</p>
-                    <p>{new Date(item.createdAt).toLocaleString("fa-AF")}</p>
+                    <p>{formatKabulDateTime(item.createdAt)}</p>
                   </div>
                 </div>
               ))

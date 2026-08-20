@@ -7,6 +7,7 @@ import { auditCreateData } from "../../lib/audit-meta";
 import { resolveCurrencySnapshot, snapshotBaseFields, toBaseAmount } from "../../lib/currency-rates";
 import { createPostedJournal, treasuryAccountCode } from "../../lib/journal";
 import { getRequestPosDevice } from "../../lib/pos-device";
+import { nextKabulDay } from "../../lib/kabul-date";
 import {
   AttendanceStatus,
   MoneyDirection,
@@ -154,11 +155,10 @@ payrollRoute.post("/runs", async (c) => {
     return c.json({ message: "Period has no workdays" }, 400);
   }
 
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
+  const todayEndExclusive = nextKabulDay() as Date;
   const accruedWorkdays = period.isClosed
     ? workdays
-    : workdays.filter((day) => day.date <= today);
+    : workdays.filter((day) => day.date < todayEndExclusive);
   const existingEmployeeIds = existingRun?.lines.map((line) => line.employeeId) ?? [];
   const employees = await prisma.employee.findMany({
     where: {
@@ -588,15 +588,13 @@ payrollRoute.post("/payments", async (c) => {
     }
 
     if (parsed.data.payrollRunId) {
-      const [lines, run] = await Promise.all([
-        tx.payrollLine.findMany({
-          where: { runId: parsed.data.payrollRunId }
-        }),
-        tx.payrollRun.findUnique({
-          where: { id: parsed.data.payrollRunId },
-          include: { period: true }
-        })
-      ]);
+      const lines = await tx.payrollLine.findMany({
+        where: { runId: parsed.data.payrollRunId }
+      });
+      const run = await tx.payrollRun.findUnique({
+        where: { id: parsed.data.payrollRunId },
+        include: { period: true }
+      });
       const totalPaid = lines.reduce((sum, line) => sum + toNumber(line.paidAmount), 0);
       const totalEarned = lines.reduce((sum, line) => sum + toNumber(line.grossPay), 0);
       await tx.payrollRun.update({

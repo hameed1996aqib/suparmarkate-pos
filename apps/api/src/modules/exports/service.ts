@@ -4,6 +4,7 @@ import path from "node:path";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { prisma } from "../../lib/prisma";
+import { parseKabulDateInput } from "../../lib/kabul-date";
 
 type LedgerExportPayload = {
   accountId?: string;
@@ -21,9 +22,10 @@ function exportDir() {
   return path.resolve(process.env.EXPORT_DIR || path.join(process.cwd(), "exports"));
 }
 
-function parseDate(value: string | undefined, fallback: Date) {
-  const date = value ? new Date(value) : fallback;
-  if (Number.isNaN(date.getTime())) throw new Error("Invalid export date range");
+function parseDate(value: string | undefined, fallback: Date, endExclusive = false) {
+  if (!value) return fallback;
+  const date = parseKabulDateInput(value, endExclusive);
+  if (!date || date === "INVALID_DATE") throw new Error("Invalid export date range");
   return date;
 }
 
@@ -47,8 +49,7 @@ async function createOutput(prefix: string) {
 export async function createLedgerCsvExport(payload: LedgerExportPayload) {
   if (!payload.accountId && !payload.partyId) throw new Error("accountId or partyId is required");
   const from = parseDate(payload.from, new Date(0));
-  const to = parseDate(payload.to, new Date());
-  to.setHours(23, 59, 59, 999);
+  const to = parseDate(payload.to, new Date(), true);
   const { fileName, filePath, output } = await createOutput("ledger");
   let cursor: string | undefined;
   let rowsWritten = 0;
@@ -60,7 +61,7 @@ export async function createLedgerCsvExport(payload: LedgerExportPayload) {
         where: {
           ...(payload.accountId ? { accountId: payload.accountId } : {}),
           ...(payload.partyId ? { partyId: payload.partyId } : {}),
-          journalEntry: { date: { gte: from, lte: to } }
+          journalEntry: { date: { gte: from, lt: to } }
         },
         include: { account: true, party: true, journalEntry: true },
         orderBy: { id: "asc" },

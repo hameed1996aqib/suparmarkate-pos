@@ -5,6 +5,11 @@ import { zodError } from "../../lib/api";
 import { getAuthUser, writeAudit } from "../../lib/auth";
 import { getBaseCurrency } from "../../lib/currency-rates";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
+import {
+  kabulDateTime,
+  kabulDayRange,
+  parseKabulDateInput
+} from "../../lib/kabul-date";
 
 export const currencyRatesRoute = new Hono();
 
@@ -17,8 +22,13 @@ const createRateSchema = z.object({
 
 function parseDate(value?: string | null) {
   if (!value) return new Date();
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const kabulWallClock = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)$/.exec(value);
+  if (kabulWallClock) {
+    const date = kabulDateTime(kabulWallClock[1]!, kabulWallClock[2]!);
+    return date === "INVALID_DATE" ? null : date;
+  }
+  const date = parseKabulDateInput(value);
+  return !date || date === "INVALID_DATE" ? null : date;
 }
 
 currencyRatesRoute.get("/", async (c) => {
@@ -26,12 +36,10 @@ currencyRatesRoute.get("/", async (c) => {
   const currencyId = c.req.query("currencyId");
   const search = c.req.query("search")?.trim();
   const from = parseDate(c.req.query("from"));
-  const to = parseDate(c.req.query("to"));
-  if (to) to.setHours(23, 59, 59, 999);
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(todayStart);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const toValue = c.req.query("to");
+  const toParsed = toValue ? parseKabulDateInput(toValue, true) : null;
+  const to = toParsed && toParsed !== "INVALID_DATE" ? toParsed : null;
+  const { start: todayStart, end: tomorrow } = kabulDayRange();
 
   const baseWhere = {
       deletedAt: null,
@@ -52,7 +60,7 @@ currencyRatesRoute.get("/", async (c) => {
         ? {
             effectiveAt: {
               ...(from ? { gte: from } : {}),
-              ...(to ? { lte: to } : {})
+              ...(to ? { lt: to } : {})
             }
           }
         : {})

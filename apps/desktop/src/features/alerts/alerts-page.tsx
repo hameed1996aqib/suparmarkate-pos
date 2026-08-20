@@ -76,6 +76,11 @@ type AlertsResponse = {
   alerts: SystemAlert[];
 };
 
+type ProductCategory = {
+  id: string;
+  name: string;
+};
+
 const defaultCounts: AlertsResponse["counts"] = {
   total: 0,
   critical: 0,
@@ -174,12 +179,16 @@ export function AlertsPage() {
   const [company, setCompany] = useState<PrintCompany | null>(null);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("all");
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [categoryId, setCategoryId] = useState("all");
 
   const loadAlerts = async () => {
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/alerts?days=30`);
+      const params = new URLSearchParams({ days: "30" });
+      if (categoryId !== "all") params.set("categoryId", categoryId);
+      const res = await fetch(`${API_BASE_URL}/api/alerts?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load alerts");
 
       const json = await res.json();
@@ -198,17 +207,28 @@ export function AlertsPage() {
 
   useEffect(() => {
     loadAlerts();
-  }, []);
+  }, [categoryId]);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/api/settings/company`)
-      .then((response) => response.json())
-      .then((json) => setCompany(json.data || null))
-      .catch(() => setCompany(null));
+    Promise.all([
+      fetch(`${API_BASE_URL}/api/settings/company`).then((response) => response.json()),
+      fetch(`${API_BASE_URL}/api/product-categories/lookup`).then((response) =>
+        response.json(),
+      ),
+    ])
+      .then(([companyJson, categoryJson]) => {
+        setCompany(companyJson.data || null);
+        setCategories(Array.isArray(categoryJson?.data) ? categoryJson.data : []);
+      })
+      .catch(() => {
+        setCompany(null);
+        setCategories([]);
+      });
   }, []);
 
   const alerts = data?.alerts || [];
   const counts = data?.counts || defaultCounts;
+  const selectedCategory = categories.find((category) => category.id === categoryId);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredAlerts = useMemo(
     () =>
@@ -289,6 +309,19 @@ export function AlertsPage() {
                 className="ps-9"
               />
             </div>
+            <select
+              value={categoryId}
+              onChange={(event) => setCategoryId(event.target.value)}
+              className="h-10 min-w-48 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="فیلتر کتگوری محصول"
+            >
+              <option value="all">همه کتگوری‌ها</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
             <Button variant="outline" onClick={loadAlerts} disabled={isLoading}>
               <RefreshCcw className="size-4" />
               تازه‌سازی
@@ -301,6 +334,11 @@ export function AlertsPage() {
         </CardHeader>
 
         <CardContent>
+          {selectedCategory && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              کتگوری انتخاب‌شده: {selectedCategory.name}
+            </p>
+          )}
           <Tabs value={tab} onValueChange={setTab} className="space-y-4">
             <TabsList className="flex h-auto flex-wrap justify-start gap-2 bg-muted/50 p-1 print:hidden">
               <TabsTrigger value="all">همه ({number(counts.total)})</TabsTrigger>

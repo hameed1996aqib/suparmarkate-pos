@@ -3,6 +3,7 @@ import { Printer, RotateCcw, TimerReset } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmActionDialog } from "./confirm-action-dialog";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 
 import type { Currency, PosShiftSummary } from "../types";
 import { money } from "../utils";
@@ -36,7 +37,7 @@ export function PosShiftCard({
           گزارش شیفت
         </CardTitle>
         <CardDescription>
-          شروع شیفت: {new Date(shift.openedAt).toLocaleString("fa-AF")}
+          شروع شیفت: {formatKabulDateTime(shift.openedAt)}
         </CardDescription>
       </CardHeader>
 

@@ -597,7 +597,7 @@ posCartRoute.get("/sessions/:id", (c) => {
             '<div>' +
               '<b>' + item.productName + '</b>' +
               '<div class="muted">بارکود: ' + (item.barcode || "-") + '</div>' +
-              '<div class="muted">انقضا: ' + (item.expiryDate ? new Date(item.expiryDate).toLocaleDateString("fa-AF") : "-") + '</div>' +
+              '<div class="muted">انقضا: ' + (item.expiryDate ? new Date(item.expiryDate).toLocaleDateString("fa-AF-u-ca-persian", { timeZone: "Asia/Kabul" }) : "-") + '</div>' +
             '</div>' +
             '<div><input type="number" min="1" value="' + item.quantity + '" onchange="updateQty(' + JSON.stringify(item.key) + ', this.value)" /></div>' +
             '<div>' + item.unitName + '</div>' +

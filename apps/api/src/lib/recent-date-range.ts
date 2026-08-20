@@ -10,13 +10,13 @@ function parseDate(value: string | undefined, endOfDay = false) {
 }
 
 export function getRecentDateRange(c: Context, days = 30) {
-  const to = parseDate(c.req.query("to"), true) ?? new Date();
+  const endExclusive = parseDate(c.req.query("to"), true) ?? new Date();
   const from =
     parseDate(c.req.query("from")) ??
-    new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    new Date(endExclusive.getTime() - days * 24 * 60 * 60 * 1000);
 
   return {
     gte: from,
-    lte: to
+    lt: endExclusive
   };
 }

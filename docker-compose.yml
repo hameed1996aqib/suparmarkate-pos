@@ -52,6 +52,7 @@ services:
       PORT: 4000
       POS_WS_PORT: 4001
       SYSTEM_HEALTH_WS_PORT: 4002
+      BUSINESS_TIME_ZONE: Asia/Kabul
       WEB_APP_ENABLED: ${WEB_APP_ENABLED:-true}
       WEB_DIST_DIR: /app/apps/desktop/dist
       JWT_SECRET: ${JWT_SECRET:-change-this-production-secret-at-least-24-characters}

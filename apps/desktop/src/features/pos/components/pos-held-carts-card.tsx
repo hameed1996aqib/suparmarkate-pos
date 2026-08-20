@@ -3,6 +3,7 @@ import { ArchiveRestore, PauseCircle, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmActionDialog } from "./confirm-action-dialog";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 
 import type { Currency, HeldCart } from "../types";
 import { money } from "../utils";
@@ -78,7 +79,7 @@ export function PosHeldCartsCard({
                 </div>
 
                 <div className="text-xs text-muted-foreground">
-                  {new Date(held.createdAt).toLocaleString("fa-AF")}
+                  {formatKabulDateTime(held.createdAt)}
                 </div>
               </div>
             ))}

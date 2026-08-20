@@ -3,6 +3,7 @@ import { ExternalLink, Printer, ReceiptText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 
 import type { Currency, PosShiftSale } from "../types";
 import { money } from "../utils";
@@ -47,7 +48,7 @@ export function PosRecentSalesCard({
                     <div className="min-w-0">
                       <div className="font-bold">{sale.invoiceNo}</div>
                       <div className="text-xs text-muted-foreground">
-                        {new Date(sale.createdAt).toLocaleString("fa-AF")}
+                        {formatKabulDateTime(sale.createdAt)}
                       </div>
                     </div>
 

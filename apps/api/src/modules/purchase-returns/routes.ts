@@ -16,9 +16,14 @@ import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { getRecentDateRange } from "../../lib/recent-date-range";
 import { normalizeBarcodeText } from "../../lib/barcode";
 import { acquireTransactionLock } from "../../lib/db-lock";
-import { roundStockQuantity } from "../../lib/stock-quantity";
+import { roundStockQuantity, stockDecimal } from "../../lib/stock-quantity";
 import { PurchaseStatus } from "../../generated/prisma/enums";
 import { createOperationReference } from "../../lib/operation-id";
+import {
+  InventoryMutationService,
+  requestOperationId
+} from "../../lib/inventory-mutation";
+import { kabulNow } from "../../lib/kabul-date";
 
 export const purchaseReturnsRoute = new Hono();
 
@@ -31,6 +36,7 @@ const purchaseReturnSchema = z.object({
   receiveAccountId: z.string().trim().optional().nullable(),
   receivedAmount: z.coerce.number().nonnegative().default(0),
   note: z.string().trim().max(500).optional().nullable(),
+  clientRequestId: z.string().trim().min(8).max(200).optional().nullable(),
   items: z.array(
     z.object({
       purchaseItemId: z.string().min(1),
@@ -256,6 +262,26 @@ purchaseReturnsRoute.post("/", async (c) => {
     if (!currentPurchase || currentPurchase.status === PurchaseStatus.CANCELLED) {
       throw new Error("خرید ابطال شده و قابل برگشت نیست.");
     }
+
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare(
+      preparedItems.map((item) => ({
+        productId: item.purchaseItem.productId,
+        warehouseId: item.purchaseItem.warehouseId
+      }))
+    );
+    const operationOccurredAt = kabulNow();
+    const inventoryOperation = await inventory.startOperation({
+      type: "PURCHASE_RETURN",
+      clientRequestId: requestOperationId(
+        parsed.data.clientRequestId ||
+          c.req.header("Idempotency-Key") ||
+          c.req.header("x-idempotency-key"),
+        "purchase-return"
+      ),
+      occurredAt: operationOccurredAt,
+      createdByUserId: authUser?.id || null
+    });
     for (const item of preparedItems) {
       const returned = await tx.purchaseReturnItem.aggregate({
         where: {
@@ -301,12 +327,12 @@ purchaseReturnsRoute.post("/", async (c) => {
           where: {
             id: item.purchaseItem.lotId,
             remainingQuantity: {
-              gte: item.quantityBase
+              gte: stockDecimal(item.quantityBase)
             }
           },
           data: {
             remainingQuantity: {
-              decrement: item.quantityBase
+              decrement: stockDecimal(item.quantityBase)
             }
           }
         });
@@ -321,6 +347,8 @@ purchaseReturnsRoute.post("/", async (c) => {
           productId: item.purchaseItem.productId,
           warehouseId: item.purchaseItem.warehouseId,
           lotId: item.purchaseItem.lotId,
+          operationId: inventoryOperation.id,
+          occurredAt: operationOccurredAt,
           type: StockMovementType.PURCHASE_RETURN,
           quantity: item.quantityBase,
           unitCost: item.unitCostBase,
@@ -536,11 +564,34 @@ purchaseReturnsRoute.post("/:id/cancel", async (c) => {
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      for (const item of purchaseReturn.items) {
+      await acquireTransactionLock(tx, "purchase-return-cancel", id);
+      const currentReturn = await tx.purchaseReturn.findUnique({
+        where: { id },
+        include: { items: true }
+      });
+      if (!currentReturn) throw new Error("Purchase return not found");
+      if (currentReturn.cancelledAt) {
+        throw new Error("Purchase return is already cancelled");
+      }
+
+      const inventory = new InventoryMutationService(tx);
+      await inventory.lock(
+        currentReturn.items.map((item) => ({
+          productId: item.productId,
+          warehouseId: item.warehouseId
+        }))
+      );
+      const sourceMovement = await tx.stockMovement.findFirst({
+        where: { referenceType: "PURCHASE_RETURN", referenceId: id },
+        select: { operationId: true }
+      });
+      const operationOccurredAt = kabulNow();
+
+      for (const item of currentReturn.items) {
         if (item.lotId) {
           await tx.stockLot.update({
             where: { id: item.lotId },
-            data: { remainingQuantity: { increment: item.quantityBase } }
+            data: { remainingQuantity: { increment: stockDecimal(Number(item.quantityBase)) } }
           });
         }
         await tx.stockMovement.create({
@@ -548,12 +599,14 @@ purchaseReturnsRoute.post("/:id/cancel", async (c) => {
             productId: item.productId,
             warehouseId: item.warehouseId,
             lotId: item.lotId,
+            operationId: sourceMovement?.operationId ?? null,
+            occurredAt: operationOccurredAt,
             type: StockMovementType.PURCHASE,
             quantity: item.quantityBase,
             unitCost: item.unitCostBase,
-            currencyId: purchaseReturn.currencyId,
-            exchangeRate: Number(purchaseReturn.exchangeRate || 1),
-            baseUnitCost: Number(item.unitCostBase || 0) * Number(purchaseReturn.exchangeRate || 1),
+            currencyId: currentReturn.currencyId,
+            exchangeRate: Number(currentReturn.exchangeRate || 1),
+            baseUnitCost: Number(item.unitCostBase || 0) * Number(currentReturn.exchangeRate || 1),
             referenceType: "PURCHASE_RETURN_CANCEL",
             referenceId: id,
             note: parsed.data.reason,
@@ -646,6 +699,25 @@ purchaseReturnsRoute.post("/:id/cancel", async (c) => {
           cancellationReason: parsed.data.reason
         }
       });
+
+      if (sourceMovement?.operationId) {
+        const changed = await tx.inventoryOperation.updateMany({
+          where: {
+            id: sourceMovement.operationId,
+            status: "COMPLETED",
+            cancelledAt: null
+          },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: operationOccurredAt,
+            cancelReason: parsed.data.reason,
+            cancelledByUserId: authUser?.id ?? null
+          }
+        });
+        if (changed.count !== 1) {
+          throw new Error("Purchase return was cancelled concurrently");
+        }
+      }
 
       return { purchaseReturn: updated, journalEntry };
     });

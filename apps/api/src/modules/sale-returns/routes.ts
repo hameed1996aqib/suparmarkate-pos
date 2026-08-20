@@ -21,6 +21,12 @@ import { Prisma } from "../../generated/prisma/client";
 import { acquireTransactionLock } from "../../lib/db-lock";
 import { SaleStatus } from "../../generated/prisma/enums";
 import { createOperationReference } from "../../lib/operation-id";
+import {
+  InventoryMutationService,
+  requestOperationId
+} from "../../lib/inventory-mutation";
+import { kabulNow } from "../../lib/kabul-date";
+import { stockDecimal } from "../../lib/stock-quantity";
 
 export const saleReturnsRoute = new Hono();
 
@@ -173,7 +179,7 @@ saleReturnsRoute.get("/quality", async (c) => {
       JOIN "Product" p ON p.id = sri."productId"
       WHERE sr."cancelledAt" IS NULL
         AND sr."createdAt" >= ${createdAt.gte}
-        AND sr."createdAt" <= ${createdAt.lte}
+        AND sr."createdAt" < ${createdAt.lt}
         AND si."netTotalPrice" IS NULL
         AND s.discount > 0
     ), suspicious AS (
@@ -423,6 +429,12 @@ saleReturnsRoute.post("/", async (c) => {
     }
   }
 
+  const inventoryOccurredAt = kabulNow();
+  const inventoryClientRequestId = requestOperationId(
+    c.req.header("Idempotency-Key") || c.req.header("x-idempotency-key"),
+    "SALE-RETURN"
+  );
+
   const result = await prisma.$transaction(async (tx) => {
     await acquireTransactionLock(tx, "sale-document", sale.id);
     const currentSale = await tx.sale.findUnique({
@@ -432,6 +444,20 @@ saleReturnsRoute.post("/", async (c) => {
     if (!currentSale || currentSale.status === SaleStatus.CANCELLED) {
       throw new Error("فروش ابطال شده و قابل برگشت نیست.");
     }
+    const inventory = new InventoryMutationService(tx);
+    await inventory.prepare(
+      preparedItems.map((item) => ({
+        productId: item.saleItem.productId,
+        warehouseId: item.saleItem.warehouseId
+      }))
+    );
+    const inventoryOperation = await inventory.startOperation({
+      type: "SALE_RETURN",
+      clientRequestId: inventoryClientRequestId,
+      occurredAt: inventoryOccurredAt,
+      createdByUserId: authUser?.id
+    });
+
     for (const item of preparedItems) {
       const returned = await tx.saleReturnItem.aggregate({
         where: {
@@ -479,7 +505,7 @@ saleReturnsRoute.post("/", async (c) => {
           where: { id: item.saleItem.lotId },
           data: {
             remainingQuantity: {
-              increment: item.quantityBase
+              increment: stockDecimal(item.quantityBase)
             }
           }
         });
@@ -494,6 +520,8 @@ saleReturnsRoute.post("/", async (c) => {
           quantity: item.quantityBase,
           unitCost: item.unitCostBase,
           currencyId: item.saleItem.lot?.currencyId || sale.currencyId,
+          operationId: inventoryOperation.id,
+          occurredAt: inventoryOccurredAt,
           exchangeRate: Number(item.saleItem.lot?.exchangeRate || 1),
           baseUnitCost: Number(item.saleItem.lot?.baseUnitCost || item.unitCostBase || 0),
           referenceType: "SALE_RETURN",
@@ -729,11 +757,36 @@ saleReturnsRoute.post("/:id/cancel", async (c) => {
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      for (const item of saleReturn.items) {
+      await acquireTransactionLock(tx, "sale-return-document", id);
+      const currentReturn = await tx.saleReturn.findUnique({
+        where: { id },
+        include: { items: { include: { lot: true } } }
+      });
+      if (!currentReturn || currentReturn.cancelledAt) {
+        throw new Error("این برگشت فروش قبلاً ابطال شده است.");
+      }
+      const inventory = new InventoryMutationService(tx);
+      await inventory.lock(
+        currentReturn.items.map((item) => ({
+          productId: item.productId,
+          warehouseId: item.warehouseId
+        }))
+      );
+      const sourceMovement = await tx.stockMovement.findFirst({
+        where: { referenceType: "SALE_RETURN", referenceId: id },
+        select: { operationId: true }
+      });
+
+      for (const item of currentReturn.items) {
         if (item.lotId) {
           const updated = await tx.stockLot.updateMany({
-            where: { id: item.lotId, remainingQuantity: { gte: item.quantityBase } },
-            data: { remainingQuantity: { decrement: item.quantityBase } }
+            where: {
+              id: item.lotId,
+              remainingQuantity: { gte: stockDecimal(Number(item.quantityBase)) }
+            },
+            data: {
+              remainingQuantity: { decrement: stockDecimal(Number(item.quantityBase)) }
+            }
           });
           if (updated.count !== 1) throw new Error("Returned stock was already used and cannot be cancelled");
         }
@@ -746,15 +799,36 @@ saleReturnsRoute.post("/:id/cancel", async (c) => {
             type: StockMovementType.SALE,
             quantity: item.quantityBase,
             unitCost: item.unitCostBase,
-            currencyId: saleReturn.currencyId,
-            exchangeRate: Number(saleReturn.exchangeRate || 1),
-            baseUnitCost: Number(item.unitCostBase || 0),
+            currencyId: item.lot?.currencyId ?? currentReturn.currencyId,
+            exchangeRate: item.lot?.exchangeRate ?? currentReturn.exchangeRate,
+            baseUnitCost: item.lot?.baseUnitCost ?? item.unitCostBase,
+            operationId: sourceMovement?.operationId ?? null,
+            occurredAt: kabulNow(),
             referenceType: "SALE_RETURN_CANCEL",
             referenceId: id,
             note: parsed.data.reason,
             createdByUserId: authUser?.id ?? null
           }
         });
+      }
+
+      if (sourceMovement?.operationId) {
+        const changed = await tx.inventoryOperation.updateMany({
+          where: {
+            id: sourceMovement.operationId,
+            status: "COMPLETED",
+            cancelledAt: null
+          },
+          data: {
+            status: "CANCELLED",
+            cancelledAt: kabulNow(),
+            cancelReason: parsed.data.reason,
+            cancelledByUserId: authUser?.id ?? null
+          }
+        });
+        if (changed.count !== 1) {
+          throw new Error("این برگشت فروش هم‌زمان ابطال شده است.");
+        }
       }
 
       for (const transaction of moneyTransactions) {

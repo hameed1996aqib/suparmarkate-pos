@@ -64,6 +64,7 @@ import { exportsRoute } from "./modules/exports/routes";
 import { systemHealthRoute } from "./modules/system-health/routes";
 import { ensureRuntimeServerConfigFile } from "./lib/runtime-server-config";
 import { startSystemHealthWebSocketServer } from "./lib/system-health-realtime";
+import { BUSINESS_TIME_ZONE, kabulDateKey } from "./lib/kabul-date";
 
 const app = new Hono();
 const webDistDir =
@@ -161,13 +162,18 @@ app.get("/", (c) => {
 
 app.get("/health", async (c) => {
   try {
-    await prisma.$queryRaw`SELECT 1`;
-
-    const [disk, redis, databaseSize] = await Promise.all([
+    const [disk, redis, databaseSize, databaseClock] = await Promise.all([
       getDiskHealth(),
       getRedisHealth(),
-      prisma.$queryRaw<Array<{ bytes: bigint }>>`SELECT pg_database_size(current_database()) AS bytes`
+      prisma.$queryRaw<Array<{ bytes: bigint }>>`SELECT pg_database_size(current_database()) AS bytes`,
+      prisma.$queryRaw<Array<{ dbNow: Date; dbTimeZone: string }>>`
+        SELECT CURRENT_TIMESTAMP AS "dbNow",
+          current_setting('TimeZone') AS "dbTimeZone"
+      `
     ]);
+
+    const apiNow = new Date();
+    const dbNow = new Date(databaseClock[0]?.dbNow ?? apiNow);
 
     return c.json({
       status: "ok",
@@ -176,7 +182,14 @@ app.get("/health", async (c) => {
       disk,
       redis,
       maintenanceMode: getMaintenanceMode(),
-      time: new Date().toISOString()
+      time: apiNow.toISOString(),
+      clock: {
+        databaseUtc: dbNow.toISOString(),
+        kabulDate: kabulDateKey(apiNow),
+        businessTimeZone: BUSINESS_TIME_ZONE,
+        databaseTimeZone: databaseClock[0]?.dbTimeZone || null,
+        apiDatabaseSkewMs: Math.abs(apiNow.getTime() - dbNow.getTime())
+      }
     });
   } catch (error) {
     console.error(error);

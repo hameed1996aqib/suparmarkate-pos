@@ -7,22 +7,29 @@ import { getBaseCurrency } from "../../lib/currency-rates";
 import { createPaginationMeta, getPagePagination } from "../../lib/pagination";
 import { ensureSaleCogsJournal, isUniqueConstraintError } from "../../lib/sale-cogs";
 import { createOperationReference } from "../../lib/operation-id";
+import {
+  kabulDateKey,
+  parseKabulDateInput
+} from "../../lib/kabul-date";
 
 export const accountingRoute = new Hono();
 
 function accountingReportRange(fromQuery?: string, toQuery?: string) {
-  const now = new Date();
-  const fromDate = fromQuery ? new Date(fromQuery) : new Date(now.getFullYear(), now.getMonth(), 1);
-  const toDate = toQuery ? new Date(toQuery) : now;
+  const today = kabulDateKey();
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const fromDate = parseKabulDateInput(fromQuery || monthStart);
+  const toDate = parseKabulDateInput(toQuery || today, true);
 
-  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+  if (
+    !fromDate ||
+    !toDate ||
+    fromDate === "INVALID_DATE" ||
+    toDate === "INVALID_DATE"
+  ) {
     throw new Error("Invalid accounting report date range");
   }
 
-  fromDate.setHours(0, 0, 0, 0);
-  toDate.setHours(23, 59, 59, 999);
-
-  if (fromDate > toDate) {
+  if (fromDate >= toDate) {
     throw new Error("Accounting report start date must be before end date");
   }
 
@@ -30,7 +37,7 @@ function accountingReportRange(fromQuery?: string, toQuery?: string) {
 }
 
 function isInReportRange(date: Date, fromDate: Date, toDate: Date) {
-  return date >= fromDate && date <= toDate;
+  return date >= fromDate && date < toDate;
 }
 
 async function sumJournalLines(where: any) {
@@ -813,7 +820,7 @@ accountingRoute.get("/journal-entries", async (c) => {
   const limit = Math.min(100, Math.max(10, Number.parseInt(c.req.query("limit") || "20", 10) || 20));
   const { fromDate, toDate } = accountingReportRange(c.req.query("from"), c.req.query("to"));
   const where = {
-    date: { gte: fromDate, lte: toDate },
+    date: { gte: fromDate, lt: toDate },
     ...(sourceType ? { sourceType } : {}),
     ...(sourceId ? { sourceId } : {})
   };
@@ -1756,23 +1763,9 @@ accountingRoute.get("/trial-balance", async (c) => {
  * REPORTS: ACCOUNT DEBIT/CREDIT PERIOD SUMMARY
  */
 accountingRoute.get("/account-period-balances", async (c) => {
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
   const fromQuery = c.req.query("from");
   const toQuery = c.req.query("to");
-  const fromDate = fromQuery ? new Date(fromQuery) : defaultFrom;
-  const toDate = toQuery ? new Date(toQuery) : now;
-
-  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-    return c.json({ message: "Invalid date range" }, 400);
-  }
-
-  fromDate.setHours(0, 0, 0, 0);
-  toDate.setHours(23, 59, 59, 999);
-
-  if (fromDate > toDate) {
-    return c.json({ message: "From date must be before to date" }, 400);
-  }
+  const { fromDate, toDate } = accountingReportRange(fromQuery, toQuery);
 
   const accounts = await prisma.accountingAccount.findMany({
     where: {
@@ -1783,7 +1776,7 @@ accountingRoute.get("/account-period-balances", async (c) => {
         where: {
           journalEntry: {
             date: {
-              lte: toDate
+              lt: toDate
             }
           }
         },
@@ -1813,7 +1806,7 @@ accountingRoute.get("/account-period-balances", async (c) => {
       if (lineDate < fromDate) {
         openingDebit += debit;
         openingCredit += credit;
-      } else if (lineDate <= toDate) {
+      } else if (lineDate < toDate) {
         periodDebit += debit;
         periodCredit += credit;
       }
@@ -1839,7 +1832,7 @@ accountingRoute.get("/account-period-balances", async (c) => {
       closingBalance,
       lineCount: account.journalLines.filter((line) => {
         const lineDate = line.journalEntry.date;
-        return lineDate >= fromDate && lineDate <= toDate;
+        return lineDate >= fromDate && lineDate < toDate;
       }).length
     };
   });
@@ -1896,7 +1889,7 @@ accountingRoute.get("/profit-loss", async (c) => {
           journalEntry: {
             date: {
               gte: fromDate,
-              lte: toDate
+              lt: toDate
             }
           }
         }
@@ -2011,26 +2004,12 @@ accountingRoute.get("/receivables-payables", async (c) => {
  * LEDGER: PERIOD TRANSACTION LINES
  */
 accountingRoute.get("/account-period-ledger", async (c) => {
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
   const fromQuery = c.req.query("from");
   const toQuery = c.req.query("to");
   const accountId = c.req.query("accountId");
   const q = c.req.query("q")?.trim();
   const pagination = getPagePagination(c, { defaultLimit: 50, maxLimit: 250 });
-  const fromDate = fromQuery ? new Date(fromQuery) : defaultFrom;
-  const toDate = toQuery ? new Date(toQuery) : now;
-
-  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-    return c.json({ message: "Invalid date range" }, 400);
-  }
-
-  fromDate.setHours(0, 0, 0, 0);
-  toDate.setHours(23, 59, 59, 999);
-
-  if (fromDate > toDate) {
-    return c.json({ message: "From date must be before to date" }, 400);
-  }
+  const { fromDate, toDate } = accountingReportRange(fromQuery, toQuery);
 
   const account = accountId
     ? await prisma.accountingAccount.findUnique({ where: { id: accountId } })
@@ -2062,7 +2041,7 @@ accountingRoute.get("/account-period-ledger", async (c) => {
     journalEntry: {
       date: {
         gte: fromDate,
-        lte: toDate
+        lt: toDate
       }
     }
   };
@@ -2173,30 +2152,16 @@ accountingRoute.get("/account-period-ledger", async (c) => {
  * LEDGER: PARTY PERIOD STATEMENT
  */
 accountingRoute.get("/party-period-ledger", async (c) => {
-  const now = new Date();
-  const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
   const fromQuery = c.req.query("from");
   const toQuery = c.req.query("to");
   const partyId = c.req.query("partyId");
   const q = c.req.query("q")?.trim();
   const pagination = getPagePagination(c, { defaultLimit: 50, maxLimit: 250 });
-  const fromDate = fromQuery ? new Date(fromQuery) : defaultFrom;
-  const toDate = toQuery ? new Date(toQuery) : now;
-
   if (!partyId) {
     return c.json({ message: "Party is required" }, 400);
   }
 
-  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-    return c.json({ message: "Invalid date range" }, 400);
-  }
-
-  fromDate.setHours(0, 0, 0, 0);
-  toDate.setHours(23, 59, 59, 999);
-
-  if (fromDate > toDate) {
-    return c.json({ message: "From date must be before to date" }, 400);
-  }
+  const { fromDate, toDate } = accountingReportRange(fromQuery, toQuery);
 
   const party = await prisma.party.findUnique({ where: { id: partyId } });
 
@@ -2221,7 +2186,7 @@ accountingRoute.get("/party-period-ledger", async (c) => {
     journalEntry: {
       date: {
         gte: fromDate,
-        lte: toDate
+        lt: toDate
       }
     }
   };

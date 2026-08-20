@@ -31,10 +31,8 @@ export async function resolveCurrencySnapshot(
   tx: CurrencyRateTx,
   currencyId: string
 ): Promise<CurrencySnapshot> {
-  const [currency, baseCurrency] = await Promise.all([
-    tx.currency.findUnique({ where: { id: currencyId } }),
-    getBaseCurrency(tx)
-  ]);
+  const currency = await tx.currency.findUnique({ where: { id: currencyId } });
+  const baseCurrency = await getBaseCurrency(tx);
 
   if (!currency || currency.deletedAt || !currency.isActive) {
     throw new Error("Currency not found or inactive");

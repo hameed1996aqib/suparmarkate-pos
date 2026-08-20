@@ -71,18 +71,9 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
-import {
-  ConfirmButton,
-  ConfirmDropdownItem,
-} from "@/components/ui/confirm-action";
+import { ConfirmButton, ConfirmDropdownItem } from "@/components/ui/confirm-action";
 import { DatePicker } from "@/components/ui/date-picker";
 import { ManualDateInput } from "@/components/ui/manual-date-input";
 import {
@@ -130,11 +121,12 @@ import {
   saveApiBaseUrl,
   testApiBaseUrl,
 } from "@/lib/api-config";
+import { formatPartyBalanceByCurrency, partyBalanceBase } from "@/lib/party-balance";
 import {
-  formatPartyBalanceByCurrency,
-  partyBalanceBase,
-} from "@/lib/party-balance";
-import { kabulDateString } from "@/lib/kabul-date";
+  formatKabulDate,
+  formatKabulDateTime,
+  kabulDateString,
+} from "@/lib/kabul-date";
 import { dateRangeQuery, recentDateRange } from "@/lib/recent-date-filter";
 import { allocateMoneyByWeight } from "@/lib/money-allocation";
 import { refreshReceiptAccessUrl } from "@/lib/receipt-access";
@@ -200,11 +192,9 @@ const SystemHealthPageRoute = lazy(() =>
   })),
 );
 const AccountPeriodBalancesPageRoute = lazy(() =>
-  import("@/features/accounting/account-period-balances-page").then(
-    (module) => ({
-      default: module.AccountPeriodBalancesPage,
-    }),
-  ),
+  import("@/features/accounting/account-period-balances-page").then((module) => ({
+    default: module.AccountPeriodBalancesPage,
+  })),
 );
 const EmployeesPageRoute = lazy(() =>
   import("@/features/employees/employees-page").then((module) => ({
@@ -257,9 +247,7 @@ function createClientId() {
     globalThis.crypto.getRandomValues(bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes, (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
@@ -279,11 +267,7 @@ function loadRecentMutationOperations() {
     ) as Array<[string, RecentMutationOperation]>;
     const now = Date.now();
     for (const [signature, operation] of parsed) {
-      if (
-        signature &&
-        operation?.operationId &&
-        Number(operation.expiresAt) > now
-      ) {
+      if (signature && operation?.operationId && Number(operation.expiresAt) > now) {
         operations.set(signature, operation);
       }
     }
@@ -293,10 +277,8 @@ function loadRecentMutationOperations() {
   return operations;
 }
 
-const recentMutationOperations: Map<
-  string,
-  RecentMutationOperation
-> = loadRecentMutationOperations();
+const recentMutationOperations: Map<string, RecentMutationOperation> =
+  loadRecentMutationOperations();
 
 function persistRecentMutationOperations() {
   try {
@@ -363,11 +345,7 @@ function installAuthenticatedFetch() {
     const request = input instanceof Request ? input : null;
     const method = String(init.method || request?.method || "GET").toUpperCase();
     const requestUrl =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
     if (token && !headers.has("Authorization")) {
       headers.set("Authorization", `Bearer ${token}`);
@@ -419,7 +397,7 @@ function installAuthenticatedFetch() {
         .then((result) => {
           const current = recentMutationOperations.get(mutationSignature);
           if (current) {
-            if (result.ok) current.expiresAt = Date.now() + 3_000;
+            if (result.ok) recentMutationOperations.delete(mutationSignature);
             else if (result.status >= 500 || result.status === 409) {
               current.expiresAt = Date.now() + 10 * 60_000;
             } else {
@@ -806,9 +784,7 @@ function convertCurrencyAmount(
   fromCurrency?: LookupItem | null,
   toCurrency?: LookupItem | null,
 ) {
-  return (
-    (Number(value || 0) * currencyRate(fromCurrency)) / currencyRate(toCurrency)
-  );
+  return (Number(value || 0) * currencyRate(fromCurrency)) / currencyRate(toCurrency);
 }
 
 function formatDateTime(value: unknown) {
@@ -933,13 +909,7 @@ function App() {
   }
 
   if (!auth) {
-    return (
-      <LoginPage
-        onLogin={handleLogin}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-      />
-    );
+    return <LoginPage onLogin={handleLogin} theme={theme} onToggleTheme={toggleTheme} />;
   }
 
   if (auth.user.mustChangePassword) {
@@ -971,9 +941,7 @@ function App() {
             <Route
               path="/dashboard"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال محاسبه داشبورد..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال محاسبه داشبورد..." />}>
                   <DashboardPageRoute />
                 </Suspense>
               }
@@ -981,26 +949,19 @@ function App() {
             <Route
               path="/alerts"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن هشدارها..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن هشدارها..." />}>
                   <AlertsPageRoute />
                 </Suspense>
               }
             />
             <Route path="/pos" element={<PosPage />} />
             <Route path="/sales" element={<SalesPage />} />
-            <Route
-              path="/accounting"
-              element={<AccountingPage apiBaseUrl={API_BASE_URL} />}
-            />
+            <Route path="/accounting" element={<AccountingPage apiBaseUrl={API_BASE_URL} />} />
             <Route
               path="/account-period-balances"
               element={
                 <Suspense
-                  fallback={
-                    <PageLoading label="در حال خواندن دیبیت و کریدیت حساب‌ها..." />
-                  }
+                  fallback={<PageLoading label="در حال خواندن دیبیت و کریدیت حساب‌ها..." />}
                 >
                   <AccountPeriodBalancesPageRoute />
                 </Suspense>
@@ -1012,9 +973,7 @@ function App() {
             <Route
               path="/products/:productId/history"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن سابقه محصول..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن سابقه محصول..." />}>
                   <ProductHistoryPageRoute />
                 </Suspense>
               }
@@ -1023,9 +982,7 @@ function App() {
             <Route
               path="/settings"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن تنظیمات..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن تنظیمات..." />}>
                   <SettingsPageRoute />
                 </Suspense>
               }
@@ -1033,11 +990,7 @@ function App() {
             <Route
               path="/currency-history"
               element={
-                <Suspense
-                  fallback={
-                    <PageLoading label="در حال خواندن تاریخچه کرنسی..." />
-                  }
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن تاریخچه کرنسی..." />}>
                   <CurrencyHistoryPageRoute />
                 </Suspense>
               }
@@ -1045,9 +998,7 @@ function App() {
             <Route
               path="/users"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن کاربران..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن کاربران..." />}>
                   <UsersRolesPageRoute />
                 </Suspense>
               }
@@ -1055,9 +1006,7 @@ function App() {
             <Route
               path="/customers"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن مشتریان..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن مشتریان..." />}>
                   <CustomersPageRoute />
                 </Suspense>
               }
@@ -1065,9 +1014,7 @@ function App() {
             <Route
               path="/employees"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن کارمندان..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن کارمندان..." />}>
                   <EmployeesPageRoute />
                 </Suspense>
               }
@@ -1075,9 +1022,7 @@ function App() {
             <Route
               path="/suppliers"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن فروشندگان..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن فروشندگان..." />}>
                   <SuppliersPageRoute />
                 </Suspense>
               }
@@ -1085,9 +1030,7 @@ function App() {
             <Route
               path="/reports"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن گزارشات..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن گزارشات..." />}>
                   <ReportsPageRoute />
                 </Suspense>
               }
@@ -1095,11 +1038,7 @@ function App() {
             <Route
               path="/income-expenses"
               element={
-                <Suspense
-                  fallback={
-                    <PageLoading label="در حال خواندن عواید و مصارف..." />
-                  }
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن عواید و مصارف..." />}>
                   <IncomeExpensesPageRoute />
                 </Suspense>
               }
@@ -1107,9 +1046,7 @@ function App() {
             <Route
               path="/backup"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال خواندن بکاپ..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال خواندن بکاپ..." />}>
                   <BackupPageRoute />
                 </Suspense>
               }
@@ -1117,9 +1054,7 @@ function App() {
             <Route
               path="/system-health"
               element={
-                <Suspense
-                  fallback={<PageLoading label="در حال بررسی سلامت سیستم..." />}
-                >
+                <Suspense fallback={<PageLoading label="در حال بررسی سلامت سیستم..." />}>
                   <SystemHealthPageRoute />
                 </Suspense>
               }
@@ -1201,7 +1136,10 @@ function ChangePasswordPage({
   };
 
   return (
-    <div dir="rtl" className="grid min-h-screen place-items-center bg-background p-4 text-foreground">
+    <div
+      dir="rtl"
+      className="grid min-h-screen place-items-center bg-background p-4 text-foreground"
+    >
       <Toaster richColors position="top-center" />
       <Card className="w-full max-w-md border-border bg-card">
         <CardHeader>
@@ -1212,9 +1150,25 @@ function ChangePasswordPage({
         </CardHeader>
         <form onSubmit={submit}>
           <CardContent className="space-y-4">
-            <Input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="رمز فعلی" autoFocus />
-            <Input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="رمز جدید، حداقل ۸ حرف" />
-            <Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="تکرار رمز جدید" />
+            <Input
+              type="password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              placeholder="رمز فعلی"
+              autoFocus
+            />
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              placeholder="رمز جدید، حداقل ۸ حرف"
+            />
+            <Input
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="تکرار رمز جدید"
+            />
             <Button className="w-full" type="submit" disabled={isSubmitting}>
               {isSubmitting ? "در حال ذخیره..." : "ذخیره رمز و ادامه"}
             </Button>
@@ -1240,9 +1194,7 @@ function LoginPage({
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isServerDialogOpen, setIsServerDialogOpen] = useState(
-    () => !getStoredApiBaseUrl(),
-  );
+  const [isServerDialogOpen, setIsServerDialogOpen] = useState(() => !getStoredApiBaseUrl());
   const [serverUrl, setServerUrl] = useState(API_BASE_URL);
   const [isTestingServer, setIsTestingServer] = useState(false);
 
@@ -1253,9 +1205,7 @@ function LoginPage({
       setServerUrl(normalized);
       toast.success("سرور شناسایی شد");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "اتصال به سرور برقرار نشد",
-      );
+      toast.error(error instanceof Error ? error.message : "اتصال به سرور برقرار نشد");
     } finally {
       setIsTestingServer(false);
     }
@@ -1269,9 +1219,7 @@ function LoginPage({
       toast.success("آدرس سرور ذخیره شد");
       window.setTimeout(() => window.location.reload(), 400);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ذخیره آدرس سرور ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ذخیره آدرس سرور ناکام شد");
       setIsTestingServer(false);
     }
   };
@@ -1316,11 +1264,7 @@ function LoginPage({
         className="absolute left-4 top-4"
         onClick={onToggleTheme}
       >
-        {theme === "dark" ? (
-          <Sun className="size-4" />
-        ) : (
-          <Moon className="size-4" />
-        )}
+        {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
         {theme === "dark" ? "لایت" : "دارک"}
       </Button>
       <Button
@@ -1335,25 +1279,16 @@ function LoginPage({
       <Card className="w-full max-w-md border-border bg-card">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <img
-              src={appAssetPath("/logo.png")}
-              alt="Muhaseb"
-              className="size-8 object-contain"
-            />
+            <img src={appAssetPath("/logo.png")} alt="Muhaseb" className="size-8 object-contain" />
             ورود به سیستم Muhaseb
           </CardTitle>
-          <CardDescription>
-            برای فروش و مدیریت، با حساب فروشنده یا مدیر وارد شوید.
-          </CardDescription>
+          <CardDescription>برای فروش و مدیریت، با حساب فروشنده یا مدیر وارد شوید.</CardDescription>
         </CardHeader>
         <form onSubmit={submit}>
           <CardContent className="space-y-4">
             <label className="form-grid-field grid gap-1.5 text-sm">
               <span className="text-muted-foreground">نام کاربری</span>
-              <Input
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-              />
+              <Input value={username} onChange={(event) => setUsername(event.target.value)} />
             </label>
             <label className="grid gap-1.5 text-sm">
               <span className="text-muted-foreground">رمز عبور</span>
@@ -1375,8 +1310,8 @@ function LoginPage({
           <DialogHeader>
             <DialogTitle>اتصال به سرور فروشگاه</DialogTitle>
             <DialogDescription>
-              IP کمپیوتر سرور را یک‌بار وارد کنید. این مقدار روی همین دستگاه
-              ذخیره می‌شود و بعد از نصب نیز قابل تغییر است.
+              IP کمپیوتر سرور را یک‌بار وارد کنید. این مقدار روی همین دستگاه ذخیره می‌شود و بعد از
+              نصب نیز قابل تغییر است.
             </DialogDescription>
           </DialogHeader>
           <label className="grid gap-1.5 text-sm">
@@ -1395,22 +1330,11 @@ function LoginPage({
             </span>
           </div>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={testServer}
-              disabled={isTestingServer}
-            >
-              <RefreshCcw
-                className={isTestingServer ? "size-4 animate-spin" : "size-4"}
-              />
+            <Button type="button" variant="outline" onClick={testServer} disabled={isTestingServer}>
+              <RefreshCcw className={isTestingServer ? "size-4 animate-spin" : "size-4"} />
               تست اتصال
             </Button>
-            <Button
-              type="button"
-              onClick={saveServer}
-              disabled={isTestingServer}
-            >
+            <Button type="button" onClick={saveServer} disabled={isTestingServer}>
               ذخیره و ورود
             </Button>
           </DialogFooter>
@@ -1458,8 +1382,7 @@ function canAccessNav(user: AuthUser, path: string) {
   if (path === "/purchases") return permissions.has("purchases.view");
   if (path === "/inventory") return permissions.has("inventory.view");
   if (path === "/products") return permissions.has("products.manage");
-  if (path === "/customers" || path === "/suppliers")
-    return permissions.has("parties.manage");
+  if (path === "/customers" || path === "/suppliers") return permissions.has("parties.manage");
   if (path === "/employees")
     return (
       permissions.has("users.manage") ||
@@ -1474,9 +1397,7 @@ function canAccessNav(user: AuthUser, path: string) {
     return permissions.has("cashbank.manage");
   if (path === "/accounting") return permissions.has("accounting.view");
   if (path === "/account-period-balances")
-    return (
-      permissions.has("accounting.view") || permissions.has("reports.view")
-    );
+    return permissions.has("accounting.view") || permissions.has("reports.view");
   if (path === "/reports") return permissions.has("reports.view");
   if (path === "/users") return permissions.has("users.manage");
   if (path === "/settings" || path === "/currency-history")
@@ -1490,9 +1411,7 @@ function canAccessNav(user: AuthUser, path: string) {
 function PageLoading({ label }: { label: string }) {
   return (
     <Card className="border-border bg-card">
-      <CardContent className="py-10 text-center text-sm text-muted-foreground">
-        {label}
-      </CardContent>
+      <CardContent className="py-10 text-center text-sm text-muted-foreground">{label}</CardContent>
     </Card>
   );
 }
@@ -1519,9 +1438,7 @@ function ShellHeader({
   const [isMaximized, setIsMaximized] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const windowControls =
-    typeof window !== "undefined"
-      ? window.desktopApp?.windowControls
-      : undefined;
+    typeof window !== "undefined" ? window.desktopApp?.windowControls : undefined;
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -1529,11 +1446,9 @@ function ShellHeader({
     let mounted = true;
 
     const maximizedPromise =
-      windowControls?.isMaximized() ||
-      window.electronAPI?.isWindowMaximized?.();
+      windowControls?.isMaximized() || window.electronAPI?.isWindowMaximized?.();
     const fullScreenPromise =
-      windowControls?.isFullScreen() ||
-      window.electronAPI?.isWindowFullScreen?.();
+      windowControls?.isFullScreen() || window.electronAPI?.isWindowFullScreen?.();
 
     maximizedPromise?.then((value) => {
       if (mounted) setIsMaximized(Boolean(value));
@@ -1552,9 +1467,7 @@ function ShellHeader({
     onDone?: (value: T) => void,
   ) => {
     if (!action) {
-      toast.error(
-        "کنترل پنجره فعال نیست؛ برنامه را کامل بسته و دوباره باز کنید",
-      );
+      toast.error("کنترل پنجره فعال نیست؛ برنامه را کامل بسته و دوباره باز کنید");
       return;
     }
 
@@ -1593,9 +1506,7 @@ function ShellHeader({
           </div>
           <div>
             <CardTitle className="text-sm">{auth.displayName}</CardTitle>
-            <CardDescription className="text-xs">
-              {auth.role || "بدون رول"}
-            </CardDescription>
+            <CardDescription className="text-xs">{auth.role || "بدون رول"}</CardDescription>
           </div>
         </div>
 
@@ -1607,9 +1518,7 @@ function ShellHeader({
         <div className="me-auto flex items-center justify-end gap-3">
           <div className="text-end">
             <CardTitle className="text-sm">{currentLabel}</CardTitle>
-            <CardDescription className="text-xs">
-              Muhaseb / LAN Ready
-            </CardDescription>
+            <CardDescription className="text-xs">Muhaseb / LAN Ready</CardDescription>
           </div>
           <Badge className="rounded-xl border-primary/30 bg-primary/10 px-3 py-2 text-primary">
             Offline
@@ -1620,11 +1529,7 @@ function ShellHeader({
             onClick={onToggleTheme}
             data-no-drag={isDesktop ? "true" : undefined}
           >
-            {theme === "dark" ? (
-              <Sun className="size-4" />
-            ) : (
-              <Moon className="size-4" />
-            )}
+            {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
           </Button>
           <Button
             variant="outline"
@@ -1658,48 +1563,35 @@ function ShellHeader({
             onClick={async () => {
               await runWindowAction(
                 windowControls?.toggleMaximize ||
-                  window.electronAPI?.toggleMaximizeWindow?.bind(
-                    window.electronAPI,
-                  ),
+                  window.electronAPI?.toggleMaximizeWindow?.bind(window.electronAPI),
                 (value) => {
                   if (typeof value === "boolean") setIsMaximized(value);
                 },
               );
             }}
           >
-            {isMaximized ? (
-              <Square className="size-3.5" />
-            ) : (
-              <Maximize2 className="size-3.5" />
-            )}
+            {isMaximized ? <Square className="size-3.5" /> : <Maximize2 className="size-3.5" />}
           </WindowButton>
           <WindowButton
             title={isFullScreen ? "خروج از تمام‌صفحه" : "تمام‌صفحه کردن"}
             onClick={async () => {
               await runWindowAction(
                 windowControls?.toggleFullScreen ||
-                  window.electronAPI?.toggleFullScreenWindow?.bind(
-                    window.electronAPI,
-                  ),
+                  window.electronAPI?.toggleFullScreenWindow?.bind(window.electronAPI),
                 (value) => {
                   if (typeof value === "boolean") setIsFullScreen(value);
                 },
               );
             }}
           >
-            {isFullScreen ? (
-              <Shrink className="size-3.5" />
-            ) : (
-              <Expand className="size-3.5" />
-            )}
+            {isFullScreen ? <Shrink className="size-3.5" /> : <Expand className="size-3.5" />}
           </WindowButton>
           <WindowButton
             title="بستن"
             danger
             onClick={() =>
               void runWindowAction(
-                windowControls?.close ||
-                  window.electronAPI?.closeWindow?.bind(window.electronAPI),
+                windowControls?.close || window.electronAPI?.closeWindow?.bind(window.electronAPI),
               )
             }
           >
@@ -1770,9 +1662,7 @@ function AdminShell({
         .filter((group) => group.items.length > 0),
     [visibleNavItems],
   );
-  const current = visibleNavItems.find((item) =>
-    location.pathname.startsWith(item.to),
-  );
+  const current = visibleNavItems.find((item) => location.pathname.startsWith(item.to));
   const isDesktop =
     typeof window !== "undefined" &&
     (Boolean(window.electronAPI) || Boolean(window.desktopApp?.windowControls));
@@ -1836,9 +1726,7 @@ function AdminShell({
               </div>
               <div>
                 <h1 className="text-lg font-bold">Muhaseb</h1>
-                <p className="text-xs text-muted-foreground">
-                  سیستم مدیریت سوپرمارکیت
-                </p>
+                <p className="text-xs text-muted-foreground">سیستم مدیریت سوپرمارکیت</p>
               </div>
             </div>
           </SidebarHeader>
@@ -1899,9 +1787,7 @@ function DashboardPage() {
       })
       .catch(() => {
         if (!ignore) {
-          toast.warning(
-            "داشبورد با داده نمونه نمایش داده شد؛ API در دسترس نیست",
-          );
+          toast.warning("داشبورد با داده نمونه نمایش داده شد؛ API در دسترس نیست");
         }
       });
 
@@ -1973,10 +1859,7 @@ function DashboardPage() {
           <CardContent>
             <div className="flex h-72 items-end gap-3 border-b border-border pb-4">
               {[45, 58, 50, 64, 78, 70, 82].map((height, index) => (
-                <div
-                  key={index}
-                  className="flex flex-1 flex-col items-center gap-2"
-                >
+                <div key={index} className="flex flex-1 flex-col items-center gap-2">
                   <div
                     className="w-full rounded-t-lg bg-primary"
                     style={{ height: `${height}%` }}
@@ -1993,9 +1876,7 @@ function DashboardPage() {
         <Card className="border-border bg-card">
           <CardHeader>
             <CardTitle>فروش بر اساس دسته‌بندی</CardTitle>
-            <CardDescription>
-              مواد خوراکه، نوشیدنی‌ها و سایر بخش‌ها
-            </CardDescription>
+            <CardDescription>مواد خوراکه، نوشیدنی‌ها و سایر بخش‌ها</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {[
@@ -2011,10 +1892,7 @@ function DashboardPage() {
                   <span>{value}%</span>
                 </div>
                 <div className="h-2 rounded-full bg-muted">
-                  <div
-                    className="h-2 rounded-full bg-primary"
-                    style={{ width: `${value}%` }}
-                  />
+                  <div className="h-2 rounded-full bg-primary" style={{ width: `${value}%` }} />
                 </div>
               </div>
             ))}
@@ -2111,17 +1989,13 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
       .then((res) => res.json())
       .then((json) => {
         if (!ignore && Array.isArray(json?.data)) {
-          setRows(
-            json.data.map((item: unknown) => normalizeRow(item, config.title)),
-          );
+          setRows(json.data.map((item: unknown) => normalizeRow(item, config.title)));
         }
       })
       .catch(() => {
         if (!ignore) {
           setRows(config.rows);
-          toast.warning(
-            `${config.title}: API در دسترس نیست، داده نمونه نمایش داده شد`,
-          );
+          toast.warning(`${config.title}: API در دسترس نیست، داده نمونه نمایش داده شد`);
         }
       });
 
@@ -2163,9 +2037,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
 
     try {
       if (config.endpoint && (config.createType || config.apiCrud)) {
-        const baseEndpoint = config.createType
-          ? "/api/parties"
-          : config.endpoint;
+        const baseEndpoint = config.createType ? "/api/parties" : config.endpoint;
         const target = editingRow?.id
           ? `${API_BASE_URL}${baseEndpoint}/${editingRow.id}`
           : `${API_BASE_URL}${baseEndpoint}`;
@@ -2207,9 +2079,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
   const removeRow = async (row: DataRow) => {
     try {
       if (config.endpoint && (config.createType || config.apiCrud) && row.id) {
-        const baseEndpoint = config.createType
-          ? "/api/parties"
-          : config.endpoint;
+        const baseEndpoint = config.createType ? "/api/parties" : config.endpoint;
         const res = await fetch(`${API_BASE_URL}${baseEndpoint}/${row.id}`, {
           method: "DELETE",
         });
@@ -2219,9 +2089,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
       setRows((current) => current.filter((item) => item.id !== row.id));
       toast.info("رکورد از لیست حذف شد");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "عملیات حذف ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "عملیات حذف ناکام شد");
     }
   };
 
@@ -2274,9 +2142,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
           <p className="text-sm text-muted-foreground">{config.note}</p>
           <Button
             variant="outline"
-            onClick={() =>
-              toast.info("این workflow در فاز بعدی به API وصل می‌شود")
-            }
+            onClick={() => toast.info("این workflow در فاز بعدی به API وصل می‌شود")}
           >
             <ArchiveRestore className="size-4" />
             اکشن‌های تکمیلی
@@ -2288,9 +2154,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
         <Card className="border-border bg-card">
           <CardHeader>
             <CardTitle className="text-base">گزارش ضایعات</CardTitle>
-            <CardDescription>
-              آخرین اجناس ضایع‌شده با گدام، lot و کاربر ثبت‌کننده.
-            </CardDescription>
+            <CardDescription>آخرین اجناس ضایع‌شده با گدام، lot و کاربر ثبت‌کننده.</CardDescription>
           </CardHeader>
           <CardContent>
             <DenseTable
@@ -2309,9 +2173,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
         <Card className="border-border bg-card">
           <CardHeader>
             <CardTitle className="text-base">گزارش انتقالات گدام</CardTitle>
-            <CardDescription>
-              حرکت‌های خروج و ورود انتقالی بین گدام‌ها.
-            </CardDescription>
+            <CardDescription>حرکت‌های خروج و ورود انتقالی بین گدام‌ها.</CardDescription>
           </CardHeader>
           <CardContent>
             <DenseTable
@@ -2332,12 +2194,9 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent dir="rtl" className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>
-              {editingRow ? "ویرایش معلومات" : "ثبت معلومات جدید"}
-            </DialogTitle>
+            <DialogTitle>{editingRow ? "ویرایش معلومات" : "ثبت معلومات جدید"}</DialogTitle>
             <DialogDescription>
-              معلومات مهم این بخش را وارد کنید. پیام نتیجه با toast نمایش داده
-              می‌شود.
+              معلومات مهم این بخش را وارد کنید. پیام نتیجه با toast نمایش داده می‌شود.
             </DialogDescription>
           </DialogHeader>
 
@@ -2367,8 +2226,7 @@ function AdminDataPage({ config }: { config: AdminPageConfig }) {
                       {Boolean(form[field.key]) ? "فعال" : "غیرفعال"}
                     </Badge>
                   </button>
-                ) : /note|description/i.test(field.key) ||
-                  /یادداشت|شرح|توضیح/.test(field.label) ? (
+                ) : /note|description/i.test(field.key) || /یادداشت|شرح|توضیح/.test(field.label) ? (
                   <textarea
                     value={String(form[field.key] ?? "")}
                     placeholder={field.placeholder}
@@ -2464,9 +2322,7 @@ function DenseTable({
 }) {
   const pageSize = 10;
   const [page, setPage] = useState(1);
-  const [internalDetailsRow, setInternalDetailsRow] = useState<DataRow | null>(
-    null,
-  );
+  const [internalDetailsRow, setInternalDetailsRow] = useState<DataRow | null>(null);
   const isServerPaginated = Boolean(pagination && onPageChange);
   const totalPages = isServerPaginated
     ? pagination!.totalPages
@@ -2536,18 +2392,14 @@ function DenseTable({
               <TableHead key={column.key}>{column.label}</TableHead>
             ))}
             {hasAuditMeta && <TableHead>ثبت / ویرایش</TableHead>}
-            {hasActions && (
-              <TableHead className="w-16 text-center">عملیات</TableHead>
-            )}
+            {hasActions && <TableHead className="w-16 text-center">عملیات</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={
-                  columns.length + (hasAuditMeta ? 1 : 0) + (hasActions ? 1 : 0)
-                }
+                colSpan={columns.length + (hasAuditMeta ? 1 : 0) + (hasActions ? 1 : 0)}
                 className="py-8 text-center text-muted-foreground"
               >
                 موردی برای نمایش وجود ندارد
@@ -2591,9 +2443,7 @@ function DenseTable({
                   <TableCell className="min-w-48 text-xs text-muted-foreground">
                     <div>ثبت: {String(row.createdBy || "-")}</div>
                     <div>{formatDateTime(row.createdAt)}</div>
-                    <div className="mt-1">
-                      ویرایش: {String(row.updatedBy || "-")}
-                    </div>
+                    <div className="mt-1">ویرایش: {String(row.updatedBy || "-")}</div>
                     <div>{formatDateTime(row.updatedAt)}</div>
                   </TableCell>
                 )}
@@ -2601,28 +2451,14 @@ function DenseTable({
                   <TableCell className="text-center">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button
-                          size="icon-sm"
-                          variant="outline"
-                          title="عملیات"
-                          aria-label="عملیات"
-                        >
+                        <Button size="icon-sm" variant="outline" title="عملیات" aria-label="عملیات">
                           <MoreHorizontal className="size-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="end"
-                        sideOffset={6}
-                        className="w-44"
-                        dir="rtl"
-                      >
+                      <DropdownMenuContent align="end" sideOffset={6} className="w-44" dir="rtl">
                         <DropdownMenuLabel>عملیات</DropdownMenuLabel>
                         <DropdownMenuItem
-                          onClick={() =>
-                            onDetails
-                              ? onDetails(row)
-                              : setInternalDetailsRow(row)
-                          }
+                          onClick={() => (onDetails ? onDetails(row) : setInternalDetailsRow(row))}
                         >
                           <Eye className="size-4" />
                           <span>جزئیات</span>
@@ -2723,8 +2559,7 @@ function detailValue(value: any): string {
   if (value === null || value === undefined || value === "") return "-";
   if (value instanceof Date) return formatDateTime(value);
   if (typeof value === "boolean") return value ? "بلی" : "نخیر";
-  if (typeof value === "number")
-    return new Intl.NumberFormat("en-US").format(value);
+  if (typeof value === "number") return new Intl.NumberFormat("en-US").format(value);
   if (typeof value === "string") {
     const parsedDate = Date.parse(value);
     if (/^\d{4}-\d{2}-\d{2}/.test(value) && !Number.isNaN(parsedDate)) {
@@ -2734,14 +2569,7 @@ function detailValue(value: any): string {
   }
   if (Array.isArray(value)) return `${value.length} مورد`;
   if (typeof value === "object") {
-    return (
-      value.name ||
-      value.displayName ||
-      value.username ||
-      value.code ||
-      value.id ||
-      "-"
-    );
+    return value.name || value.displayName || value.username || value.code || value.id || "-";
   }
   return String(value);
 }
@@ -2815,9 +2643,7 @@ const detailLabelMap: Record<string, string> = {
 function detailLabel(key: string) {
   return (
     detailLabelMap[key] ||
-    key
-      .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .replace(/^./, (char) => char.toUpperCase())
+    key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (char) => char.toUpperCase())
   );
 }
 
@@ -2834,8 +2660,7 @@ function shouldHideDetailKey(key: string) {
 function extractCancellationReason(record: any): string {
   if (!record || typeof record !== "object") return "";
 
-  const raw =
-    record.__raw && typeof record.__raw === "object" ? record.__raw : record;
+  const raw = record.__raw && typeof record.__raw === "object" ? record.__raw : record;
   const candidates = [
     record.cancellationReason,
     record.cancelReason,
@@ -2848,9 +2673,7 @@ function extractCancellationReason(record: any): string {
     raw.metadata?.reason,
     raw.metadata?.cancelReason,
   ];
-  const direct = candidates.find(
-    (value) => typeof value === "string" && value.trim().length > 0,
-  );
+  const direct = candidates.find((value) => typeof value === "string" && value.trim().length > 0);
 
   if (direct) return String(direct).trim();
 
@@ -2885,20 +2708,12 @@ function detailRelationValue(key: string, value: any): string {
 
   if (key === "cashRegisterAccount") {
     return (
-      [value.cashRegister?.name, value.currency?.code]
-        .filter(Boolean)
-        .join(" / ") || detailValue(value)
+      [value.cashRegister?.name, value.currency?.code].filter(Boolean).join(" / ") ||
+      detailValue(value)
     );
   }
 
-  return (
-    value.name ||
-    value.displayName ||
-    value.username ||
-    value.code ||
-    value.invoiceNo ||
-    "-"
-  );
+  return value.name || value.displayName || value.username || value.code || value.invoiceNo || "-";
 }
 
 function RecordDetailsDialog({
@@ -2912,30 +2727,21 @@ function RecordDetailsDialog({
   title: string;
   record: DataRow | null;
 }) {
-  const raw =
-    (record?.__raw && typeof record.__raw === "object"
-      ? record.__raw
-      : record) || {};
+  const raw = (record?.__raw && typeof record.__raw === "object" ? record.__raw : record) || {};
   const auditRows = [
     [
       "ثبت کننده",
-      raw.createdByUser?.displayName ||
-        raw.createdByUser?.username ||
-        record?.createdBy,
+      raw.createdByUser?.displayName || raw.createdByUser?.username || record?.createdBy,
     ],
     ["زمان ثبت", raw.createdAt || record?.createdAt],
     [
       "ویرایش کننده",
-      raw.updatedByUser?.displayName ||
-        raw.updatedByUser?.username ||
-        record?.updatedBy,
+      raw.updatedByUser?.displayName || raw.updatedByUser?.username || record?.updatedBy,
     ],
     ["زمان ویرایش", raw.updatedAt || record?.updatedAt],
     [
       "حذف کننده",
-      raw.deletedByUser?.displayName ||
-        raw.deletedByUser?.username ||
-        record?.deletedBy,
+      raw.deletedByUser?.displayName || raw.deletedByUser?.username || record?.deletedBy,
     ],
     ["زمان حذف", raw.deletedAt || record?.deletedAt],
   ].filter(([, value]) => value);
@@ -2951,9 +2757,7 @@ function RecordDetailsDialog({
   const cancellationReason = extractCancellationReason(record || raw);
   const attachmentEntityType = attachmentTypeFor(title, raw);
   const attachmentEntityId =
-    typeof raw.id === "string" || typeof raw.id === "number"
-      ? String(raw.id)
-      : "";
+    typeof raw.id === "string" || typeof raw.id === "number" ? String(raw.id) : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2961,8 +2765,7 @@ function RecordDetailsDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            جزئیات کامل رکورد، اقلام و معلومات ثبت/ویرایش در همین مودال نمایش
-            داده می‌شود.
+            جزئیات کامل رکورد، اقلام و معلومات ثبت/ویرایش در همین مودال نمایش داده می‌شود.
           </DialogDescription>
         </DialogHeader>
 
@@ -2970,9 +2773,7 @@ function RecordDetailsDialog({
           {cancellationReason ? (
             <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-destructive">
               <p className="text-xs">دلیل ابطال</p>
-              <strong className="mt-1 block text-sm">
-                {cancellationReason}
-              </strong>
+              <strong className="mt-1 block text-sm">{cancellationReason}</strong>
             </div>
           ) : null}
 
@@ -2989,16 +2790,9 @@ function RecordDetailsDialog({
 
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {entries.map(([key, value]) => (
-              <div
-                key={key}
-                className="rounded-lg border border-border bg-background/70 p-3"
-              >
-                <p className="text-xs text-muted-foreground">
-                  {detailLabel(key)}
-                </p>
-                <div className="mt-1 break-words text-sm">
-                  {detailRelationValue(key, value)}
-                </div>
+              <div key={key} className="rounded-lg border border-border bg-background/70 p-3">
+                <p className="text-xs text-muted-foreground">{detailLabel(key)}</p>
+                <div className="mt-1 break-words text-sm">{detailRelationValue(key, value)}</div>
               </div>
             ))}
           </div>
@@ -3021,27 +2815,17 @@ function RecordDetailsDialog({
                 <TableBody>
                   {itemRows.map((item: any, index: number) => (
                     <TableRow key={item.id || index} className="border-border">
-                      <TableCell>
-                        {item.product?.name || item.productName || "-"}
-                      </TableCell>
-                      <TableCell>
-                        {item.warehouse?.name || item.warehouseName || "-"}
-                      </TableCell>
-                      <TableCell>
-                        {item.unit?.shortName || item.unit?.name || "-"}
-                      </TableCell>
+                      <TableCell>{item.product?.name || item.productName || "-"}</TableCell>
+                      <TableCell>{item.warehouse?.name || item.warehouseName || "-"}</TableCell>
+                      <TableCell>{item.unit?.shortName || item.unit?.name || "-"}</TableCell>
                       <TableCell>{detailValue(item.quantity)}</TableCell>
-                      <TableCell>
-                        {money(item.unitPrice || item.unitCost || 0)}
-                      </TableCell>
+                      <TableCell>{money(item.unitPrice || item.unitCost || 0)}</TableCell>
                       <TableCell>
                         {item.expiryDate
                           ? formatDateTime(item.expiryDate)
                           : money(item.discount || 0)}
                       </TableCell>
-                      <TableCell>
-                        {money(item.totalPrice || item.totalCost || 0)}
-                      </TableCell>
+                      <TableCell>{money(item.totalPrice || item.totalCost || 0)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -3068,19 +2852,14 @@ function RecordDetailsDialog({
 }
 
 function attachmentTypeFor(title: string, raw: Record<string, any>) {
-  const text =
-    `${title} ${raw.referenceType || ""} ${raw.type || ""}`.toLowerCase();
+  const text = `${title} ${raw.referenceType || ""} ${raw.type || ""}`.toLowerCase();
 
   if (text.includes("برگشت فروش")) return "SALE_RETURN";
   if (text.includes("برگشت خرید")) return "PURCHASE_RETURN";
   if (text.includes("فروش") || raw.saleDate) return "SALE";
   if (text.includes("خرید") || raw.purchaseDate) return "PURCHASE";
   if (text.includes("عواید") || text.includes("مصارف")) return "INCOME_EXPENSE";
-  if (
-    text.includes("صندوق") ||
-    text.includes("بانک") ||
-    text.includes("transfer")
-  )
+  if (text.includes("صندوق") || text.includes("بانک") || text.includes("transfer"))
     return "MONEY_TRANSACTION";
   if (text.includes("موجودی") || text.includes("گدام") || raw.movementType)
     return "INVENTORY_MOVEMENT";
@@ -3122,9 +2901,7 @@ function TransactionAttachments({
       }
       setItems(json?.data || []);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن ضمیمه‌ها ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن ضمیمه‌ها ناکام شد");
     } finally {
       setIsLoading(false);
     }
@@ -3157,9 +2934,7 @@ function TransactionAttachments({
       setNote("");
       await loadAttachments();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "آپلود سند ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "آپلود سند ناکام شد");
     } finally {
       setIsUploading(false);
     }
@@ -3167,12 +2942,9 @@ function TransactionAttachments({
 
   async function deleteAttachment(item: DocumentAttachment) {
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/attachments/${item.id}`,
-        {
-          method: "DELETE",
-        },
-      );
+      const response = await fetch(`${API_BASE_URL}/api/attachments/${item.id}`, {
+        method: "DELETE",
+      });
       const json = await response.json().catch(() => null);
       if (!response.ok) {
         throw new Error(json?.message || "حذف ضمیمه ناکام شد");
@@ -3180,18 +2952,14 @@ function TransactionAttachments({
       toast.success("ضمیمه حذف شد");
       await loadAttachments();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "حذف ضمیمه ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "حذف ضمیمه ناکام شد");
     }
   }
 
   async function openAttachment(item: DocumentAttachment) {
     const popup = window.open("about:blank", "_blank");
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/attachments/${item.id}/download`,
-      );
+      const response = await fetch(`${API_BASE_URL}/api/attachments/${item.id}/download`);
       if (!response.ok) {
         const json = await response.json().catch(() => null);
         throw new Error(json?.message || "بازکردن سند ناکام شد");
@@ -3218,9 +2986,7 @@ function TransactionAttachments({
             عکس رسید، بل فروشنده، PDF قرارداد یا هر سند مربوط به همین معامله.
           </p>
         </div>
-        <Badge className="bg-primary/15 text-primary">
-          {items.length} فایل
-        </Badge>
+        <Badge className="bg-primary/15 text-primary">{items.length} فایل</Badge>
       </div>
 
       <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
@@ -3261,19 +3027,13 @@ function TransactionAttachments({
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell
-                  colSpan={6}
-                  className="py-6 text-center text-muted-foreground"
-                >
+                <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
                   در حال خواندن ضمیمه‌ها...
                 </TableCell>
               </TableRow>
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell
-                  colSpan={6}
-                  className="py-6 text-center text-muted-foreground"
-                >
+                <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
                   هنوز سندی ضمیمه نشده است
                 </TableCell>
               </TableRow>
@@ -3283,9 +3043,7 @@ function TransactionAttachments({
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <FileText className="size-4 text-primary" />
-                      <span className="max-w-56 truncate">
-                        {item.originalName}
-                      </span>
+                      <span className="max-w-56 truncate">{item.originalName}</span>
                     </div>
                   </TableCell>
                   <TableCell>
@@ -3295,13 +3053,9 @@ function TransactionAttachments({
                   </TableCell>
                   <TableCell>{formatFileSize(item.sizeBytes)}</TableCell>
                   <TableCell>
-                    {item.createdByUser?.displayName ||
-                      item.createdByUser?.username ||
-                      "-"}
+                    {item.createdByUser?.displayName || item.createdByUser?.username || "-"}
                   </TableCell>
-                  <TableCell className="max-w-64 whitespace-normal">
-                    {item.note || "-"}
-                  </TableCell>
+                  <TableCell className="max-w-64 whitespace-normal">{item.note || "-"}</TableCell>
                   <TableCell>
                     <div className="flex gap-1">
                       <Button
@@ -3336,9 +3090,7 @@ function TransactionAttachments({
 
 function SettingsPage() {
   const [active, setActive] = useState(settingsConfigs[0].title);
-  const current =
-    settingsConfigs.find((config) => config.title === active) ||
-    settingsConfigs[0];
+  const current = settingsConfigs.find((config) => config.title === active) || settingsConfigs[0];
 
   return (
     <div className="space-y-4">
@@ -3346,8 +3098,7 @@ function SettingsPage() {
         <CardHeader>
           <CardTitle>تنظیمات اولیه سیستم</CardTitle>
           <CardDescription>
-            گدام، واحدات، کرنسی و کتگوری‌ها پایه‌ی خرید، فروش، موجودی و
-            گزارشات‌اند.
+            گدام، واحدات، کرنسی و کتگوری‌ها پایه‌ی خرید، فروش، موجودی و گزارشات‌اند.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -3438,9 +3189,7 @@ function makeSaleLine(
   currency?: LookupItem | null,
 ): SaleLineForm {
   const product = products[0];
-  const saleUnit =
-    product?.units?.find((unit: any) => unit.isDefaultSale) ||
-    product?.units?.[0];
+  const saleUnit = product?.units?.find((unit: any) => unit.isDefaultSale) || product?.units?.[0];
 
   return {
     id: createClientId(),
@@ -3460,8 +3209,7 @@ function makePurchaseLine(
 ): PurchaseLineForm {
   const product = products[0];
   const purchaseUnit =
-    product?.units?.find((unit: any) => unit.isDefaultPurchase) ||
-    product?.units?.[0];
+    product?.units?.find((unit: any) => unit.isDefaultPurchase) || product?.units?.[0];
 
   return {
     id: createClientId(),
@@ -3469,15 +3217,9 @@ function makePurchaseLine(
     warehouseId: warehouses[0]?.id || "",
     unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
     quantity: 1,
-    unitCost: basePriceInCurrency(
-      Number(purchaseUnit?.purchasePrice || 0),
-      currency,
-    ),
+    unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), currency),
     updateSalePrice: false,
-    salePrice: basePriceInCurrency(
-      Number(purchaseUnit?.salePrice || 0),
-      currency,
-    ),
+    salePrice: basePriceInCurrency(Number(purchaseUnit?.salePrice || 0), currency),
     expiryDate: "",
   };
 }
@@ -3519,9 +3261,7 @@ function productHasExpiry(products: any[], id: string) {
 
 function productUnitInfo(products: any[], productId: string, unitId: string) {
   const product = products.find((item) => item.id === productId);
-  const productUnit = product?.units?.find(
-    (unit: any) => unit.unitId === unitId,
-  );
+  const productUnit = product?.units?.find((unit: any) => unit.unitId === unitId);
 
   return {
     product,
@@ -3532,8 +3272,7 @@ function productUnitInfo(products: any[], productId: string, unitId: string) {
         : product?.baseUnitId === unitId
           ? 1
           : 1,
-    baseUnitName:
-      product?.baseUnit?.shortName || product?.baseUnit?.name || "واحد پایه",
+    baseUnitName: product?.baseUnit?.shortName || product?.baseUnit?.name || "واحد پایه",
   };
 }
 
@@ -3552,10 +3291,9 @@ async function searchProductLookupOptions(query: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ limit: "30" });
   if (normalized.length >= 2) params.set("search", normalized);
 
-  const response = await fetch(
-    `${API_BASE_URL}/api/products/lookup?${params.toString()}`,
-    { signal },
-  );
+  const response = await fetch(`${API_BASE_URL}/api/products/lookup?${params.toString()}`, {
+    signal,
+  });
   const json = await response.json().catch(() => null);
 
   if (!response.ok) {
@@ -3605,9 +3343,7 @@ function SalesPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
-  const [paymentAccounts, setPaymentAccounts] = useState<
-    PaymentAccountOption[]
-  >([]);
+  const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccountOption[]>([]);
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState(initialSalesRange.from);
   const [to, setTo] = useState(initialSalesRange.to);
@@ -3615,11 +3351,8 @@ function SalesPage() {
   const [form, setForm] = useState<SaleFormState>(emptySaleForm);
   const [saleLines, setSaleLines] = useState<SaleLineForm[]>([]);
   const [saleItemDialogOpen, setSaleItemDialogOpen] = useState(false);
-  const [editingSaleLineId, setEditingSaleLineId] = useState<string | null>(
-    null,
-  );
-  const [saleLineDraft, setSaleLineDraft] =
-    useState<SaleLineForm>(emptySaleLineDraft);
+  const [editingSaleLineId, setEditingSaleLineId] = useState<string | null>(null);
+  const [saleLineDraft, setSaleLineDraft] = useState<SaleLineForm>(emptySaleLineDraft);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnSale, setReturnSale] = useState<any | null>(null);
   const [returnLines, setReturnLines] = useState<ReturnLineForm[]>([]);
@@ -3661,10 +3394,7 @@ function SalesPage() {
   const saleProductSearchSeqRef = useRef(0);
   const saleProductSearchAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(
-    () => () => saleProductSearchAbortRef.current?.abort(),
-    [],
-  );
+  useEffect(() => () => saleProductSearchAbortRef.current?.abort(), []);
 
   const loadSalesData = async (
     page = salesPagination?.page || 1,
@@ -3699,13 +3429,11 @@ function SalesPage() {
         bankRes,
       ] = await Promise.all([
         fetch(`${API_BASE_URL}/api/sales?${salesParams.toString()}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/sale-returns?${returnsParams.toString()}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
+        fetch(`${API_BASE_URL}/api/sale-returns?${returnsParams.toString()}`).then((res) =>
           res.json(),
         ),
-        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
-          res.json(),
-        ),
+        fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
@@ -3717,9 +3445,7 @@ function SalesPage() {
           ? salesRes.data.map((item: unknown) => normalizeRow(item, "فروشات"))
           : [],
       );
-      setSalesSummary(
-        salesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 },
-      );
+      setSalesSummary(salesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 });
       setSalesPagination(salesRes?.pagination || null);
       setSaleReturns(
         Array.isArray(saleReturnsRes?.data)
@@ -3736,12 +3462,8 @@ function SalesPage() {
       setSaleReturnsPagination(saleReturnsRes?.pagination || null);
       setCustomers(Array.isArray(customersRes?.data) ? customersRes.data : []);
       setProducts(Array.isArray(productsRes?.data) ? productsRes.data : []);
-      setWarehouses(
-        Array.isArray(warehousesRes?.data) ? warehousesRes.data : [],
-      );
-      setCurrencies(
-        Array.isArray(currenciesRes?.data) ? currenciesRes.data : [],
-      );
+      setWarehouses(Array.isArray(warehousesRes?.data) ? warehousesRes.data : []);
+      setCurrencies(Array.isArray(currenciesRes?.data) ? currenciesRes.data : []);
 
       const cashAccounts: PaymentAccountOption[] = Array.isArray(cashRes?.data)
         ? cashRes.data.flatMap((register: any) =>
@@ -3787,9 +3509,7 @@ function SalesPage() {
         params.set(key, value);
       }
 
-      const response = await fetch(
-        `${API_BASE_URL}/api/sales/cogs-quality?${params.toString()}`,
-      );
+      const response = await fetch(`${API_BASE_URL}/api/sales/cogs-quality?${params.toString()}`);
       const json = await response.json().catch(() => null);
 
       if (!response.ok) {
@@ -3810,9 +3530,7 @@ function SalesPage() {
           : [],
       );
       setCogsQualityPagination(json?.pagination || null);
-      setCogsQualitySummary(
-        json?.summary || { missingCount: 0, baseSalesTotal: 0 },
-      );
+      setCogsQualitySummary(json?.summary || { missingCount: 0, baseSalesTotal: 0 });
     } catch (error: any) {
       toast.error(error?.message || "خواندن گزارش کیفیت COGS ناکام شد");
     } finally {
@@ -3826,14 +3544,11 @@ function SalesPage() {
     setIsRepairingCogs(true);
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/sales/${cogsRepairSale.id}/repair-cogs`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ confirm: true }),
-        },
-      );
+      const response = await fetch(`${API_BASE_URL}/api/sales/${cogsRepairSale.id}/repair-cogs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
       const json = await response.json().catch(() => null);
 
       if (!response.ok) {
@@ -3849,10 +3564,7 @@ function SalesPage() {
       }
 
       setCogsRepairSale(null);
-      await loadSalesData(
-        salesPagination?.page || 1,
-        saleReturnsPagination?.page || 1,
-      );
+      await loadSalesData(salesPagination?.page || 1, saleReturnsPagination?.page || 1);
 
       if (cogsQualityOpen) {
         await loadCogsQuality(cogsQualityPagination?.page || 1);
@@ -3864,9 +3576,7 @@ function SalesPage() {
     }
   };
 
-  const loadReturnQuality = async (
-    page = returnQualityPagination?.page || 1,
-  ) => {
+  const loadReturnQuality = async (page = returnQualityPagination?.page || 1) => {
     if (!isAdmin) return;
 
     setIsLoadingReturnQuality(true);
@@ -3881,15 +3591,11 @@ function SalesPage() {
         params.set(key, value);
       }
 
-      const response = await fetch(
-        `${API_BASE_URL}/api/sale-returns/quality?${params.toString()}`,
-      );
+      const response = await fetch(`${API_BASE_URL}/api/sale-returns/quality?${params.toString()}`);
       const json = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(
-          json?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد",
-        );
+        throw new Error(json?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد");
       }
 
       setReturnQualityRows(
@@ -3908,13 +3614,9 @@ function SalesPage() {
           : [],
       );
       setReturnQualityPagination(json?.pagination || null);
-      setReturnQualitySummary(
-        json?.summary || { suspiciousCount: 0, discrepancyTotal: 0 },
-      );
+      setReturnQualitySummary(json?.summary || { suspiciousCount: 0, discrepancyTotal: 0 });
     } catch (error: any) {
-      toast.error(
-        error?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد",
-      );
+      toast.error(error?.message || "خواندن گزارش کیفیت برگشتی‌ها ناکام شد");
     } finally {
       setIsLoadingReturnQuality(false);
     }
@@ -3960,19 +3662,15 @@ function SalesPage() {
   };
 
   const subtotal = saleLines.reduce(
-    (sum, line) =>
-      sum + Math.max(0, line.quantity * line.unitPrice - line.discount),
+    (sum, line) => sum + Math.max(0, line.quantity * line.unitPrice - line.discount),
     0,
   );
   const total = Math.max(0, subtotal - form.discount);
   const remaining = Math.max(0, total - form.paidAmount);
-  const selectedCurrency = currencies.find(
-    (currency) => currency.id === form.currencyId,
-  );
+  const selectedCurrency = currencies.find((currency) => currency.id === form.currencyId);
 
   const openCreate = () => {
-    const baseCurrency =
-      currencies.find((item) => item.isBase) || currencies[0];
+    const baseCurrency = currencies.find((item) => item.isBase) || currencies[0];
     const account = paymentAccounts.find(
       (item) => !baseCurrency || item.currencyId === baseCurrency.id,
     );
@@ -3999,8 +3697,7 @@ function SalesPage() {
 
   const changeSaleCurrency = (currencyId: string) => {
     const nextCurrency = currencies.find((item) => item.id === currencyId);
-    const convert = (value: number) =>
-      convertCurrencyAmount(value, selectedCurrency, nextCurrency);
+    const convert = (value: number) => convertCurrencyAmount(value, selectedCurrency, nextCurrency);
 
     setForm((current) => ({
       ...current,
@@ -4028,11 +3725,7 @@ function SalesPage() {
       current.map((line) => {
         if (line.id !== lineId) return line;
         const next = { ...line, ...patch };
-        if (
-          patch.unitId &&
-          patch.unitId !== line.unitId &&
-          patch.unitPrice === undefined
-        ) {
+        if (patch.unitId && patch.unitId !== line.unitId && patch.unitPrice === undefined) {
           next.unitPrice = saleUnitPrice(next.productId, patch.unitId);
         }
         return next;
@@ -4063,51 +3756,38 @@ function SalesPage() {
           }))
         : []),
     ].filter(
-      (item, index, array) =>
-        array.findIndex((candidate) => candidate.id === item.id) === index,
+      (item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index,
     );
   };
 
   const setSaleLineProduct = (lineId: string, productId: string) => {
     const product = products.find((item) => item.id === productId);
-    const saleUnit =
-      product?.units?.find((unit: any) => unit.isDefaultSale) ||
-      product?.units?.[0];
+    const saleUnit = product?.units?.find((unit: any) => unit.isDefaultSale) || product?.units?.[0];
 
     updateSaleLine(lineId, {
       productId,
       warehouseId: product?.defaultWarehouseId || warehouses[0]?.id || "",
       unitId: saleUnit?.unitId || product?.baseUnitId || "",
-      unitPrice: basePriceInCurrency(
-        Number(saleUnit?.salePrice || 0),
-        selectedCurrency,
-      ),
+      unitPrice: basePriceInCurrency(Number(saleUnit?.salePrice || 0), selectedCurrency),
     });
   };
 
   const openSaleItemDialog = (line?: SaleLineForm) => {
     setEditingSaleLineId(line?.id || null);
-    setSaleLineDraft(
-      line || makeSaleLine(products, warehouses, selectedCurrency),
-    );
+    setSaleLineDraft(line || makeSaleLine(products, warehouses, selectedCurrency));
     setSaleItemDialogOpen(true);
   };
 
   const setSaleDraftProduct = (productId: string) => {
     const product = products.find((item) => item.id === productId);
-    const saleUnit =
-      product?.units?.find((unit: any) => unit.isDefaultSale) ||
-      product?.units?.[0];
+    const saleUnit = product?.units?.find((unit: any) => unit.isDefaultSale) || product?.units?.[0];
 
     setSaleLineDraft((current) => ({
       ...current,
       productId,
       warehouseId: product?.defaultWarehouseId || warehouses[0]?.id || "",
       unitId: saleUnit?.unitId || product?.baseUnitId || "",
-      unitPrice: basePriceInCurrency(
-        Number(saleUnit?.salePrice || 0),
-        selectedCurrency,
-      ),
+      unitPrice: basePriceInCurrency(Number(saleUnit?.salePrice || 0), selectedCurrency),
     }));
   };
 
@@ -4126,9 +3806,7 @@ function SalesPage() {
 
     setSaleLines((current) =>
       editingSaleLineId
-        ? current.map((line) =>
-            line.id === editingSaleLineId ? saleLineDraft : line,
-          )
+        ? current.map((line) => (line.id === editingSaleLineId ? saleLineDraft : line))
         : [...current, { ...saleLineDraft, id: createClientId() }],
     );
     setSaleItemDialogOpen(false);
@@ -4137,19 +3815,14 @@ function SalesPage() {
   const saleLineNetTotals = saleLines.map((line) =>
     invoiceLineTotal(line.quantity, line.unitPrice, line.discount),
   );
-  const saleDiscountAllocations = allocateMoneyByWeight(
-    form.discount,
-    saleLineNetTotals,
-  );
+  const saleDiscountAllocations = allocateMoneyByWeight(form.discount, saleLineNetTotals);
   const saleItemRows: InvoiceItemRow[] = saleLines.map((line, index) => {
     const lineNetBeforeGeneral = saleLineNetTotals[index] ?? 0;
     const generalDiscount = saleDiscountAllocations[index] ?? 0;
     const unitInfo = productUnitInfo(products, line.productId, line.unitId);
     const baseQuantity = line.quantity * unitInfo.conversionRate;
     const baseSalePrice =
-      unitInfo.conversionRate > 0
-        ? line.unitPrice / unitInfo.conversionRate
-        : line.unitPrice;
+      unitInfo.conversionRate > 0 ? line.unitPrice / unitInfo.conversionRate : line.unitPrice;
 
     return {
       id: line.id,
@@ -4187,9 +3860,7 @@ function SalesPage() {
     );
 
     if (invalidLine) {
-      toast.error(
-        "همه اقلام باید جنس، گدام، واحد، مقدار و قیمت معتبر داشته باشند",
-      );
+      toast.error("همه اقلام باید جنس، گدام، واحد، مقدار و قیمت معتبر داشته باشند");
       return;
     }
 
@@ -4255,9 +3926,7 @@ function SalesPage() {
 
       setDetailsSale(json.data);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن جزئیات فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن جزئیات فروش ناکام شد");
     }
   };
 
@@ -4271,9 +3940,7 @@ function SalesPage() {
       }
 
       const sale = json.data;
-      const account = paymentAccounts.find(
-        (item) => item.currencyId === sale.currencyId,
-      );
+      const account = paymentAccounts.find((item) => item.currencyId === sale.currencyId);
 
       setReturnSale(sale);
       setReturnLines(
@@ -4286,9 +3953,7 @@ function SalesPage() {
       setReturnNote("");
       setReturnDialogOpen(true);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد");
     }
   };
 
@@ -4302,21 +3967,15 @@ function SalesPage() {
       }
 
       const sale = json.data;
-      const account = paymentAccounts.find(
-        (item) => item.currencyId === sale.currencyId,
-      );
+      const account = paymentAccounts.find((item) => item.currencyId === sale.currencyId);
 
       setPaymentSale(sale);
       setInvoicePaymentAmount(Number(sale.remainingAmount || 0));
-      setInvoicePaymentAccountKey(
-        account ? `${account.type}:${account.id}` : "",
-      );
+      setInvoicePaymentAccountKey(account ? `${account.type}:${account.id}` : "");
       setInvoicePaymentNote("");
       setPaymentDialogOpen(true);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد");
     }
   };
 
@@ -4332,9 +3991,7 @@ function SalesPage() {
       setCancelSale(json.data);
       setCancelReason("");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور فروش ناکام شد");
     }
   };
 
@@ -4368,9 +4025,7 @@ function SalesPage() {
 
       const productOptions = await Promise.all(
         sourceItems.map(async (item: any) => {
-          const currentProduct = products.find(
-            (product) => product.id === item.productId,
-          );
+          const currentProduct = products.find((product) => product.id === item.productId);
 
           if (currentProduct?.units?.length) return currentProduct;
 
@@ -4383,12 +4038,8 @@ function SalesPage() {
 
           if (String(searchText).trim().length >= 2) {
             try {
-              const options = await searchProductLookupOptions(
-                String(searchText),
-              );
-              const matched = options.find(
-                (product: any) => product.id === item.productId,
-              );
+              const options = await searchProductLookupOptions(String(searchText));
+              const matched = options.find((product: any) => product.id === item.productId);
               if (matched) return matched;
             } catch {
               // A minimal product option below keeps the duplicate draft usable.
@@ -4417,10 +4068,7 @@ function SalesPage() {
       );
 
       setProducts((current) =>
-        mergeById(
-          current,
-          productOptions.filter(Boolean) as Array<{ id: string }>,
-        ),
+        mergeById(current, productOptions.filter(Boolean) as Array<{ id: string }>),
       );
 
       const groupedLines = new Map<string, SaleLineForm>();
@@ -4437,12 +4085,8 @@ function SalesPage() {
         if (existing) {
           groupedLines.set(key, {
             ...existing,
-            quantity: Number(
-              (existing.quantity + Number(item.quantity || 0)).toFixed(4),
-            ),
-            discount: Number(
-              (existing.discount + Number(item.discount || 0)).toFixed(4),
-            ),
+            quantity: Number((existing.quantity + Number(item.quantity || 0)).toFixed(4)),
+            discount: Number((existing.discount + Number(item.discount || 0)).toFixed(4)),
           });
         } else {
           groupedLines.set(key, {
@@ -4458,22 +4102,17 @@ function SalesPage() {
       }
 
       const paidAmount = Number(sale.paidAmount || 0);
-      const account = paymentAccounts.find(
-        (item) => item.currencyId === sale.currencyId,
-      );
+      const account = paymentAccounts.find((item) => item.currencyId === sale.currencyId);
 
       setForm({
         ...emptySaleForm,
         invoiceNo: `INV-${Date.now()}`,
         customerId: sale.customerId || "",
         currencyId: sale.currencyId || "",
-        paymentAccountKey:
-          paidAmount > 0 && account ? `${account.type}:${account.id}` : "",
+        paymentAccountKey: paidAmount > 0 && account ? `${account.type}:${account.id}` : "",
         discount: Number(sale.discount || 0),
         paidAmount,
-        note: sale.invoiceNo
-          ? `دوپلیکیت از فاکتور ${sale.invoiceNo}`
-          : "دوپلیکیت از فاکتور فروش",
+        note: sale.invoiceNo ? `دوپلیکیت از فاکتور ${sale.invoiceNo}` : "دوپلیکیت از فاکتور فروش",
       });
       setSaleLines(Array.from(groupedLines.values()));
       setEditingSaleLineId(null);
@@ -4488,9 +4127,7 @@ function SalesPage() {
         toast.success("نسخه دوپلیکیت فروش آماده ثبت شد");
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "دوپلیکیت فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "دوپلیکیت فروش ناکام شد");
     } finally {
       setIsDuplicatingSale(false);
     }
@@ -4500,14 +4137,11 @@ function SalesPage() {
     if (!cancelSale) return;
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/sales/${cancelSale.id}/cancel`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: cancelReason || null }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/sales/${cancelSale.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelReason || null }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -4518,9 +4152,7 @@ function SalesPage() {
       setCancelSale(null);
       await loadSalesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال فروش ناکام شد");
     }
   };
 
@@ -4555,24 +4187,18 @@ function SalesPage() {
       return;
     }
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/sale-returns/${cancelSaleReturn.id}/cancel`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: cancelSaleReturnReason }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/sale-returns/${cancelSaleReturn.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelSaleReturnReason }),
+      });
       const json = await res.json().catch(() => null);
-      if (!res.ok)
-        throw new Error(json?.message || "ابطال برگشت فروش ناکام شد");
+      if (!res.ok) throw new Error(json?.message || "ابطال برگشت فروش ناکام شد");
       toast.success("برگشت فروش با سند معکوس باطل شد");
       setCancelSaleReturn(null);
       await loadSalesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال برگشت فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال برگشت فروش ناکام شد");
     }
   };
 
@@ -4594,19 +4220,16 @@ function SalesPage() {
     }
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/sales/${paymentSale.id}/payments`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: invoicePaymentAmount,
-            paymentAccountType: paymentAccount.type,
-            paymentAccountId: paymentAccount.id,
-            note: invoicePaymentNote || null,
-          }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/sales/${paymentSale.id}/payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: invoicePaymentAmount,
+          paymentAccountType: paymentAccount.type,
+          paymentAccountId: paymentAccount.id,
+          note: invoicePaymentNote || null,
+        }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -4617,21 +4240,15 @@ function SalesPage() {
       setPaymentDialogOpen(false);
       await loadSalesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت پرداخت فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت پرداخت فروش ناکام شد");
     }
   };
 
   const saleReturnSubtotal = returnLines.reduce((sum, line) => {
-    const item = returnSale?.items?.find(
-      (candidate: any) => candidate.id === line.itemId,
-    );
+    const item = returnSale?.items?.find((candidate: any) => candidate.id === line.itemId);
     if (!item || Number(item.quantity || 0) <= 0) return sum;
     const soldQuantity = Number(item.quantity || 0);
-    const returnableQuantity = Number(
-      item.returnableQuantity ?? soldQuantity,
-    );
+    const returnableQuantity = Number(item.returnableQuantity ?? soldQuantity);
     const returnableNetTotal = Number(
       item.returnableNetTotal ??
         item.effectiveNetTotalPrice ??
@@ -4640,10 +4257,7 @@ function SalesPage() {
         0,
     );
     const fullNetTotal = Number(
-      item.effectiveNetTotalPrice ??
-        item.netTotalPrice ??
-        item.totalPrice ??
-        0,
+      item.effectiveNetTotalPrice ?? item.netTotalPrice ?? item.totalPrice ?? 0,
     );
     const quantity = Math.min(line.quantity, returnableQuantity);
     const lineTotal =
@@ -4668,9 +4282,7 @@ function SalesPage() {
       return;
     }
 
-    const effectiveRefundAmount = returnSale.customerId
-      ? refundAmount
-      : roundedSaleReturnSubtotal;
+    const effectiveRefundAmount = returnSale.customerId ? refundAmount : roundedSaleReturnSubtotal;
 
     if (effectiveRefundAmount > 0 && !paymentAccount) {
       toast.error("برای برگشت نقدی، حساب صندوق یا بانک را انتخاب کنید");
@@ -4703,9 +4315,7 @@ function SalesPage() {
       setReturnDialogOpen(false);
       await loadSalesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت برگشت فروش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت برگشت فروش ناکام شد");
     }
   };
 
@@ -4821,9 +4431,7 @@ function SalesPage() {
                   icon: <ShieldCheck className="size-4" />,
                   onClick: setCogsRepairSale,
                   isVisible: (row) =>
-                    isAdmin &&
-                    row.__canDelete !== false &&
-                    row.__raw?.cogsStatus === "MISSING",
+                    isAdmin && row.__canDelete !== false && row.__raw?.cogsStatus === "MISSING",
                 },
                 {
                   label: "دوپلیکیت فروش",
@@ -4847,9 +4455,7 @@ function SalesPage() {
         rows={saleReturns}
         onRefresh={() => void loadSalesData()}
         pagination={saleReturnsPagination}
-        onPageChange={(page) =>
-          void loadSalesData(salesPagination?.page || 1, page)
-        }
+        onPageChange={(page) => void loadSalesData(salesPagination?.page || 1, page)}
         onDetails={setDetailsSaleReturn}
         onCancel={(row) => {
           setCancelSaleReturn(row);
@@ -4919,9 +4525,9 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>گزارش برگشتی‌های قدیمی مشکوک</DialogTitle>
             <DialogDescription>
-              این گزارش فقط برگشتی‌های legacy را نشان می‌دهد که احتمالاً تخفیف
-              عمومی فروش در مبلغ‌شان لحاظ نشده است. اصلاح خودکار انجام نمی‌شود؛
-              هر سند باید جداگانه بررسی و در صورت نیاز ابطال و دوباره ثبت شود.
+              این گزارش فقط برگشتی‌های legacy را نشان می‌دهد که احتمالاً تخفیف عمومی فروش در
+              مبلغ‌شان لحاظ نشده است. اصلاح خودکار انجام نمی‌شود؛ هر سند باید جداگانه بررسی و در
+              صورت نیاز ابطال و دوباره ثبت شود.
             </DialogDescription>
           </DialogHeader>
 
@@ -4975,8 +4581,8 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>تایید اصلاح COGS</DialogTitle>
             <DialogDescription>
-              برای فاکتور {String(cogsRepairSale?.name || "-")} سند COGS از قیمت‌های
-              ذخیره‌شده اقلام ساخته می‌شود. خود فروش و موجودی تغییر نمی‌کنند.
+              برای فاکتور {String(cogsRepairSale?.name || "-")} سند COGS از قیمت‌های ذخیره‌شده اقلام
+              ساخته می‌شود. خود فروش و موجودی تغییر نمی‌کنند.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -4987,10 +4593,7 @@ function SalesPage() {
             >
               انصراف
             </Button>
-            <Button
-              disabled={isRepairingCogs}
-              onClick={() => void confirmCogsRepair()}
-            >
+            <Button disabled={isRepairingCogs} onClick={() => void confirmCogsRepair()}>
               <ShieldCheck className="size-4" />
               {isRepairingCogs ? "در حال اصلاح..." : "تایید و ثبت سند"}
             </Button>
@@ -5012,18 +4615,14 @@ function SalesPage() {
               <TextField
                 label="شماره فاکتور"
                 value={form.invoiceNo}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, invoiceNo: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, invoiceNo: value }))}
               />
               <LookupSelect
                 label="مشتری"
                 value={form.customerId}
                 options={customers}
                 emptyLabel="مشتری نقدی"
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, customerId: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, customerId: value }))}
               />
               <LookupSelect
                 label="کرنسی"
@@ -5037,26 +4636,18 @@ function SalesPage() {
               <NumberField
                 label="تخفیف فاکتور"
                 value={form.discount}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, discount: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, discount: value }))}
               />
               <NumberField
                 label="پرداخت شده"
                 value={form.paidAmount}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, paidAmount: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, paidAmount: value }))}
               />
               <LookupSelect
                 label="حساب دریافت"
                 value={form.paymentAccountKey}
                 options={paymentAccounts
-                  .filter(
-                    (account) =>
-                      !form.currencyId ||
-                      account.currencyId === form.currencyId,
-                  )
+                  .filter((account) => !form.currencyId || account.currencyId === form.currencyId)
                   .map((account) => ({
                     id: `${account.type}:${account.id}`,
                     name: account.name,
@@ -5083,11 +4674,7 @@ function SalesPage() {
                 const line = saleLines.find((item) => item.id === id);
                 if (line) openSaleItemDialog(line);
               }}
-              onDelete={(id) =>
-                setSaleLines((current) =>
-                  current.filter((item) => item.id !== id),
-                )
-              }
+              onDelete={(id) => setSaleLines((current) => current.filter((item) => item.id !== id))}
             />
             {/* Legacy inline item editor is replaced by the table above. */}
             <div className="hidden">
@@ -5124,38 +4711,28 @@ function SalesPage() {
                       label="گدام"
                       value={line.warehouseId}
                       options={warehouses}
-                      onChange={(value) =>
-                        updateSaleLine(line.id, { warehouseId: value })
-                      }
+                      onChange={(value) => updateSaleLine(line.id, { warehouseId: value })}
                     />
                     <LookupSelect
                       label="واحد"
                       value={line.unitId}
                       options={saleUnitOptions(line.productId)}
-                      onChange={(value) =>
-                        updateSaleLine(line.id, { unitId: value })
-                      }
+                      onChange={(value) => updateSaleLine(line.id, { unitId: value })}
                     />
                     <NumberField
                       label="مقدار"
                       value={line.quantity}
-                      onChange={(value) =>
-                        updateSaleLine(line.id, { quantity: value })
-                      }
+                      onChange={(value) => updateSaleLine(line.id, { quantity: value })}
                     />
                     <NumberField
                       label="قیمت"
                       value={line.unitPrice}
-                      onChange={(value) =>
-                        updateSaleLine(line.id, { unitPrice: value })
-                      }
+                      onChange={(value) => updateSaleLine(line.id, { unitPrice: value })}
                     />
                     <NumberField
                       label="تخفیف قلم"
                       value={line.discount}
-                      onChange={(value) =>
-                        updateSaleLine(line.id, { discount: value })
-                      }
+                      onChange={(value) => updateSaleLine(line.id, { discount: value })}
                     />
                     <div className="flex items-end">
                       <Button
@@ -5163,9 +4740,7 @@ function SalesPage() {
                         variant="destructive"
                         disabled={saleLines.length <= 1}
                         onClick={() =>
-                          setSaleLines((current) =>
-                            current.filter((item) => item.id !== line.id),
-                          )
+                          setSaleLines((current) => current.filter((item) => item.id !== line.id))
                         }
                       >
                         <Trash2 className="size-4" />
@@ -5179,9 +4754,7 @@ function SalesPage() {
             <TextField
               label="یادداشت"
               value={form.note}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, note: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, note: value }))}
             />
 
             <div className="grid gap-3 rounded-xl border border-border bg-muted/30 p-4 md:grid-cols-3">
@@ -5195,11 +4768,7 @@ function SalesPage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">باقی</p>
-                <strong
-                  className={
-                    remaining > 0 ? "text-amber-300" : "text-emerald-300"
-                  }
-                >
+                <strong className={remaining > 0 ? "text-amber-300" : "text-emerald-300"}>
                   {money(remaining, selectedCurrency?.code)}
                 </strong>
               </div>
@@ -5241,8 +4810,7 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>ابطال برگشت فروش</DialogTitle>
             <DialogDescription>
-              موجودی، صندوق یا بانک، حساب مشتری و ژورنال با سند معکوس اصلاح
-              می‌شود.
+              موجودی، صندوق یا بانک، حساب مشتری و ژورنال با سند معکوس اصلاح می‌شود.
             </DialogDescription>
           </DialogHeader>
           <TextField
@@ -5264,9 +4832,7 @@ function SalesPage() {
       <Dialog open={saleItemDialogOpen} onOpenChange={setSaleItemDialogOpen}>
         <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
-            <DialogTitle>
-              {editingSaleLineId ? "ویرایش قلم فروش" : "افزودن قلم فروش"}
-            </DialogTitle>
+            <DialogTitle>{editingSaleLineId ? "ویرایش قلم فروش" : "افزودن قلم فروش"}</DialogTitle>
             <DialogDescription>
               جنس، گدام، واحد، مقدار و قیمت این قلم را جداگانه ثبت کنید.
             </DialogDescription>
@@ -5350,10 +4916,7 @@ function SalesPage() {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setSaleItemDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setSaleItemDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={saveSaleItem}>
@@ -5368,8 +4931,8 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>برگشت فروش</DialogTitle>
             <DialogDescription>
-              اقلام برگشتی را وارد کنید؛ سیستم موجودی، صندوق/بانک، حساب مشتری و
-              سند حسابداری را ثبت می‌کند.
+              اقلام برگشتی را وارد کنید؛ سیستم موجودی، صندوق/بانک، حساب مشتری و سند حسابداری را ثبت
+              می‌کند.
             </DialogDescription>
           </DialogHeader>
 
@@ -5380,19 +4943,14 @@ function SalesPage() {
                 value={returnSale?.invoiceNo || returnSale?.id || ""}
                 onChange={() => undefined}
               />
-              <NumberField
-                label="مبلغ برگشت پول"
-                value={refundAmount}
-                onChange={setRefundAmount}
-              />
+              <NumberField label="مبلغ برگشت پول" value={refundAmount} onChange={setRefundAmount} />
               <LookupSelect
                 label="حساب برگشت پول"
                 value={refundAccountKey}
                 options={paymentAccounts
                   .filter(
                     (account) =>
-                      !returnSale?.currencyId ||
-                      account.currencyId === returnSale.currencyId,
+                      !returnSale?.currencyId || account.currencyId === returnSale.currencyId,
                   )
                   .map((account) => ({
                     id: `${account.type}:${account.id}`,
@@ -5405,18 +4963,14 @@ function SalesPage() {
 
             <div className="space-y-3 rounded-xl border border-border bg-muted/20 p-3">
               {returnSale?.items?.map((item: any) => {
-                const line = returnLines.find(
-                  (candidate) => candidate.itemId === item.id,
-                );
+                const line = returnLines.find((candidate) => candidate.itemId === item.id);
                 return (
                   <div
                     key={item.id}
                     className="grid gap-2 rounded-lg border border-border bg-background/60 p-3 md:grid-cols-[2fr_1fr_1fr_1fr]"
                   >
                     <div>
-                      <p className="text-sm font-medium">
-                        {item.product?.name || "-"}
-                      </p>
+                      <p className="text-sm font-medium">{item.product?.name || "-"}</p>
                       <p className="text-xs text-muted-foreground">
                         {item.warehouse?.name || "-"} /{" "}
                         {item.unit?.shortName || item.unit?.name || "-"}
@@ -5424,9 +4978,7 @@ function SalesPage() {
                     </div>
                     <div className="text-sm">
                       <span className="text-muted-foreground">فروخته شده</span>
-                      <strong className="block">
-                        {Number(item.quantity || 0)}
-                      </strong>
+                      <strong className="block">{Number(item.quantity || 0)}</strong>
                       {Number(item.returnedQuantity || 0) > 0 && (
                         <span className="text-xs text-muted-foreground">
                           قابل برگشت: {Number(item.returnableQuantity || 0)}
@@ -5435,9 +4987,7 @@ function SalesPage() {
                     </div>
                     <div className="text-sm">
                       <span className="text-muted-foreground">قیمت قلم</span>
-                      <strong className="block">
-                        {money(item.totalPrice || 0)}
-                      </strong>
+                      <strong className="block">{money(item.totalPrice || 0)}</strong>
                     </div>
                     <NumberField
                       label="مقدار برگشت"
@@ -5450,9 +5000,7 @@ function SalesPage() {
                                   ...candidate,
                                   quantity: Math.min(
                                     Math.max(0, value),
-                                    Number(
-                                      item.returnableQuantity ?? item.quantity ?? 0,
-                                    ),
+                                    Number(item.returnableQuantity ?? item.quantity ?? 0),
                                   ),
                                 }
                               : candidate,
@@ -5465,11 +5013,7 @@ function SalesPage() {
               })}
             </div>
 
-            <TextField
-              label="یادداشت"
-              value={returnNote}
-              onChange={setReturnNote}
-            />
+            <TextField label="یادداشت" value={returnNote} onChange={setReturnNote} />
             <div className="rounded-xl border border-border bg-muted/30 p-4">
               <p className="text-xs text-muted-foreground">جمع تخمینی برگشت</p>
               <strong>{money(roundedSaleReturnSubtotal)}</strong>
@@ -5477,10 +5021,7 @@ function SalesPage() {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setReturnDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setReturnDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={submitSaleReturn}>ثبت برگشت فروش</Button>
@@ -5493,8 +5034,8 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>پرداخت فاکتور فروش</DialogTitle>
             <DialogDescription>
-              پرداخت مرحله‌ای روی فاکتور ثبت می‌شود و طلب مشتری، صندوق/بانک و
-              سند حسابداری همزمان اصلاح می‌گردد.
+              پرداخت مرحله‌ای روی فاکتور ثبت می‌شود و طلب مشتری، صندوق/بانک و سند حسابداری همزمان
+              اصلاح می‌گردد.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
@@ -5524,8 +5065,7 @@ function SalesPage() {
               options={paymentAccounts
                 .filter(
                   (account) =>
-                    !paymentSale?.currencyId ||
-                    account.currencyId === paymentSale.currencyId,
+                    !paymentSale?.currencyId || account.currencyId === paymentSale.currencyId,
                 )
                 .map((account) => ({
                   id: `${account.type}:${account.id}`,
@@ -5540,10 +5080,7 @@ function SalesPage() {
             />
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setPaymentDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setPaymentDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={submitSalePayment}>ثبت پرداخت</Button>
@@ -5561,8 +5098,8 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>دوپلیکیت فاکتور فروش</DialogTitle>
             <DialogDescription>
-              یک نسخه جدید از این فروش در مودال ثبت فروش آماده می‌شود. تا وقتی
-              ثبت فاکتور را نزنید، موجودی، صندوق/بانک و حسابداری تغییر نمی‌کند.
+              یک نسخه جدید از این فروش در مودال ثبت فروش آماده می‌شود. تا وقتی ثبت فاکتور را نزنید،
+              موجودی، صندوق/بانک و حسابداری تغییر نمی‌کند.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -5602,8 +5139,8 @@ function SalesPage() {
           <DialogHeader>
             <DialogTitle>ابطال فاکتور فروش</DialogTitle>
             <DialogDescription>
-              با ابطال، موجودی برگشت می‌خورد، دریافت‌های صندوق/بانک معکوس می‌شود
-              و حساب مشتری/ژورنال اثر معکوس می‌گیرد. این عملیات حذف ساده نیست.
+              با ابطال، موجودی برگشت می‌خورد، دریافت‌های صندوق/بانک معکوس می‌شود و حساب مشتری/ژورنال
+              اثر معکوس می‌گیرد. این عملیات حذف ساده نیست.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -5612,11 +5149,7 @@ function SalesPage() {
               value={cancelSale?.invoiceNo || cancelSale?.id || ""}
               onChange={() => undefined}
             />
-            <TextField
-              label="دلیل ابطال"
-              value={cancelReason}
-              onChange={setCancelReason}
-            />
+            <TextField label="دلیل ابطال" value={cancelReason} onChange={setCancelReason} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCancelSale(null)}>
@@ -5643,17 +5176,14 @@ function PurchasesPage() {
   });
   const [purchasesPagination, setPurchasesPagination] = useState<any>(null);
   const [purchaseReturns, setPurchaseReturns] = useState<DataRow[]>([]);
-  const [purchaseReturnsPagination, setPurchaseReturnsPagination] =
-    useState<any>(null);
+  const [purchaseReturnsPagination, setPurchaseReturnsPagination] = useState<any>(null);
   const [suppliers, setSuppliers] = useState<LookupItem[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [productCategories, setProductCategories] = useState<LookupItem[]>([]);
   const [productUnits, setProductUnits] = useState<LookupItem[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
-  const [paymentAccounts, setPaymentAccounts] = useState<
-    PaymentAccountOption[]
-  >([]);
+  const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccountOption[]>([]);
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState(initialPurchasesRange.from);
   const [to, setTo] = useState(initialPurchasesRange.to);
@@ -5661,20 +5191,13 @@ function PurchasesPage() {
   const [form, setForm] = useState<PurchaseFormState>(emptyPurchaseForm);
   const [purchaseLines, setPurchaseLines] = useState<PurchaseLineForm[]>([]);
   const [purchaseItemDialogOpen, setPurchaseItemDialogOpen] = useState(false);
-  const [editingPurchaseLineId, setEditingPurchaseLineId] = useState<
-    string | null
-  >(null);
-  const [purchaseLineDraft, setPurchaseLineDraft] = useState<PurchaseLineForm>(
-    emptyPurchaseLineDraft,
-  );
-  const [purchaseProductSearchText, setPurchaseProductSearchText] =
-    useState("");
+  const [editingPurchaseLineId, setEditingPurchaseLineId] = useState<string | null>(null);
+  const [purchaseLineDraft, setPurchaseLineDraft] =
+    useState<PurchaseLineForm>(emptyPurchaseLineDraft);
+  const [purchaseProductSearchText, setPurchaseProductSearchText] = useState("");
   const [quickProductDialogOpen, setQuickProductDialogOpen] = useState(false);
-  const [quickProductForm, setQuickProductForm] =
-    useState<ProductFormState>(emptyProductForm);
-  const [quickProductUnitLines, setQuickProductUnitLines] = useState<
-    ProductUnitForm[]
-  >([]);
+  const [quickProductForm, setQuickProductForm] = useState<ProductFormState>(emptyProductForm);
+  const [quickProductUnitLines, setQuickProductUnitLines] = useState<ProductUnitForm[]>([]);
   const [isSavingQuickProduct, setIsSavingQuickProduct] = useState(false);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnPurchase, setReturnPurchase] = useState<any | null>(null);
@@ -5685,14 +5208,9 @@ function PurchasesPage() {
   const [detailsPurchase, setDetailsPurchase] = useState<any | null>(null);
   const [cancelPurchase, setCancelPurchase] = useState<any | null>(null);
   const [cancelPurchaseReason, setCancelPurchaseReason] = useState("");
-  const [detailsPurchaseReturn, setDetailsPurchaseReturn] = useState<
-    any | null
-  >(null);
-  const [cancelPurchaseReturn, setCancelPurchaseReturn] = useState<any | null>(
-    null,
-  );
-  const [cancelPurchaseReturnReason, setCancelPurchaseReturnReason] =
-    useState("");
+  const [detailsPurchaseReturn, setDetailsPurchaseReturn] = useState<any | null>(null);
+  const [cancelPurchaseReturn, setCancelPurchaseReturn] = useState<any | null>(null);
+  const [cancelPurchaseReturnReason, setCancelPurchaseReturnReason] = useState("");
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentPurchase, setPaymentPurchase] = useState<any | null>(null);
   const [invoicePaymentAmount, setInvoicePaymentAmount] = useState(0);
@@ -5702,10 +5220,7 @@ function PurchasesPage() {
   const purchaseProductSearchSeqRef = useRef(0);
   const purchaseProductSearchAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(
-    () => () => purchaseProductSearchAbortRef.current?.abort(),
-    [],
-  );
+  useEffect(() => () => purchaseProductSearchAbortRef.current?.abort(), []);
 
   const loadPurchasesData = async (
     page = purchasesPagination?.page || 1,
@@ -5741,17 +5256,15 @@ function PurchasesPage() {
         cashRes,
         bankRes,
       ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/purchases?${purchasesParams.toString()}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/purchase-returns?${returnsParams.toString()}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) =>
+        fetch(`${API_BASE_URL}/api/purchases?${purchasesParams.toString()}`).then((res) =>
           res.json(),
         ),
-        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) =>
+        fetch(`${API_BASE_URL}/api/purchase-returns?${returnsParams.toString()}`).then((res) =>
           res.json(),
         ),
-        fetch(`${API_BASE_URL}/api/product-categories`).then((res) =>
-          res.json(),
-        ),
+        fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/products/lookup?limit=50`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/product-categories`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/units`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/warehouses`).then((res) => res.json()),
         fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
@@ -5761,14 +5274,10 @@ function PurchasesPage() {
 
       setPurchases(
         Array.isArray(purchasesRes?.data)
-          ? purchasesRes.data.map((item: unknown) =>
-              normalizeRow(item, "خریداری"),
-            )
+          ? purchasesRes.data.map((item: unknown) => normalizeRow(item, "خریداری"))
           : [],
       );
-      setPurchasesSummary(
-        purchasesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 },
-      );
+      setPurchasesSummary(purchasesRes?.summary || { count: 0, total: 0, paid: 0, remaining: 0 });
       setPurchasesPagination(purchasesRes?.pagination || null);
       setPurchaseReturns(
         Array.isArray(purchaseReturnsRes?.data)
@@ -5785,16 +5294,10 @@ function PurchasesPage() {
       setPurchaseReturnsPagination(purchaseReturnsRes?.pagination || null);
       setSuppliers(Array.isArray(suppliersRes?.data) ? suppliersRes.data : []);
       setProducts(Array.isArray(productsRes?.data) ? productsRes.data : []);
-      setProductCategories(
-        Array.isArray(categoryRes?.data) ? categoryRes.data : [],
-      );
+      setProductCategories(Array.isArray(categoryRes?.data) ? categoryRes.data : []);
       setProductUnits(Array.isArray(unitRes?.data) ? unitRes.data : []);
-      setWarehouses(
-        Array.isArray(warehousesRes?.data) ? warehousesRes.data : [],
-      );
-      setCurrencies(
-        Array.isArray(currenciesRes?.data) ? currenciesRes.data : [],
-      );
+      setWarehouses(Array.isArray(warehousesRes?.data) ? warehousesRes.data : []);
+      setCurrencies(Array.isArray(currenciesRes?.data) ? currenciesRes.data : []);
 
       const cashAccounts: PaymentAccountOption[] = Array.isArray(cashRes?.data)
         ? cashRes.data.flatMap((register: any) =>
@@ -5869,8 +5372,7 @@ function PurchasesPage() {
   const openQuickProductDialog = () => {
     const searchText = purchaseProductSearchText.trim();
     const barcodeCandidate = searchText.replace(/[\s-]/g, "");
-    const isBarcodeLike =
-      barcodeCandidate.length >= 5 && /^[0-9]+$/.test(barcodeCandidate);
+    const isBarcodeLike = barcodeCandidate.length >= 5 && /^[0-9]+$/.test(barcodeCandidate);
     const baseUnitId = productUnits[0]?.id || "";
 
     setQuickProductForm({
@@ -5879,9 +5381,7 @@ function PurchasesPage() {
       barcode: isBarcodeLike ? searchText : "",
       baseUnitId,
       defaultWarehouseId:
-        warehouses.find((item: any) => item.isDefault)?.id ||
-        warehouses[0]?.id ||
-        "",
+        warehouses.find((item: any) => item.isDefault)?.id || warehouses[0]?.id || "",
       purchasePrice: purchaseLineDraft.unitCost || 0,
       salePrice: purchaseLineDraft.salePrice || 0,
       openingCurrencyId: form.currencyId,
@@ -5905,13 +5405,11 @@ function PurchasesPage() {
     patch: Partial<Pick<ProductUnitForm, "purchasePrice" | "salePrice">>,
   ) => {
     const currentBase = lines.find((line) => line.unitId === baseUnitId);
-    const basePurchasePrice =
-      patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
+    const basePurchasePrice = patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
     const baseSalePrice = patch.salePrice ?? currentBase?.salePrice ?? 0;
 
     return lines.map((line) => {
-      const conversionRate =
-        line.unitId === baseUnitId ? 1 : line.conversionRate;
+      const conversionRate = line.unitId === baseUnitId ? 1 : line.conversionRate;
 
       return {
         ...line,
@@ -5956,8 +5454,7 @@ function PurchasesPage() {
 
     const normalizedUnitLines = validUnitLines.map((line, index) => ({
       ...line,
-      conversionRate:
-        line.unitId === quickProductForm.baseUnitId ? 1 : line.conversionRate,
+      conversionRate: line.unitId === quickProductForm.baseUnitId ? 1 : line.conversionRate,
       isDefaultPurchase: validUnitLines.some((item) => item.isDefaultPurchase)
         ? line.isDefaultPurchase
         : index === 0,
@@ -6009,50 +5506,35 @@ function PurchasesPage() {
       setQuickProductDialogOpen(false);
       setPurchaseProductSearchText("");
       const purchaseUnit =
-        product?.units?.find((unit: any) => unit.isDefaultPurchase) ||
-        product?.units?.[0];
+        product?.units?.find((unit: any) => unit.isDefaultPurchase) || product?.units?.[0];
       setPurchaseLineDraft((current) => ({
         ...current,
         productId: product.id,
         unitId: purchaseUnit?.unitId || product.baseUnitId || "",
         unitCost: selectedCurrency
-          ? basePriceInCurrency(
-              Number(purchaseUnit?.purchasePrice || 0),
-              selectedCurrency,
-            )
+          ? basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), selectedCurrency)
           : Number(purchaseUnit?.purchasePrice || 0),
         salePrice: selectedCurrency
-          ? basePriceInCurrency(
-              Number(purchaseUnit?.salePrice || 0),
-              selectedCurrency,
-            )
+          ? basePriceInCurrency(Number(purchaseUnit?.salePrice || 0), selectedCurrency)
           : Number(purchaseUnit?.salePrice || 0),
         updateSalePrice: true,
         expiryDate: product.hasExpiry ? current.expiryDate : "",
       }));
       toast.success("محصول جدید ثبت و به لیست خرید اضافه شد");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت محصول جدید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت محصول جدید ناکام شد");
     } finally {
       setIsSavingQuickProduct(false);
     }
   };
 
-  const selectedCurrency = currencies.find(
-    (currency) => currency.id === form.currencyId,
-  );
-  const subtotal = purchaseLines.reduce(
-    (sum, line) => sum + line.quantity * line.unitCost,
-    0,
-  );
+  const selectedCurrency = currencies.find((currency) => currency.id === form.currencyId);
+  const subtotal = purchaseLines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
   const total = Math.max(0, subtotal - form.discount);
   const remaining = Math.max(0, total - form.paidAmount);
 
   const openCreate = () => {
-    const baseCurrency =
-      currencies.find((item) => item.isBase) || currencies[0];
+    const baseCurrency = currencies.find((item) => item.isBase) || currencies[0];
     const product = products[0];
     const unitId =
       product?.units?.find((unit: any) => unit.isDefaultPurchase)?.unitId ||
@@ -6067,9 +5549,7 @@ function PurchasesPage() {
       invoiceNo: `PO-${Date.now()}`,
       supplierId: suppliers[0]?.id || "",
       currencyId: baseCurrency?.id || "",
-      paymentAccountKey: defaultPayment
-        ? `${defaultPayment.type}:${defaultPayment.id}`
-        : "",
+      paymentAccountKey: defaultPayment ? `${defaultPayment.type}:${defaultPayment.id}` : "",
       productId: product?.id || "",
       warehouseId: warehouses[0]?.id || "",
       unitId,
@@ -6084,10 +5564,7 @@ function PurchasesPage() {
   const purchaseUnitCost = (productId: string, unitId: string) => {
     const product = products.find((item) => item.id === productId);
     const unit = product?.units?.find((item: any) => item.unitId === unitId);
-    return basePriceInCurrency(
-      Number(unit?.purchasePrice || 0),
-      selectedCurrency,
-    );
+    return basePriceInCurrency(Number(unit?.purchasePrice || 0), selectedCurrency);
   };
 
   const purchaseSalePrice = (productId: string, unitId: string) => {
@@ -6098,8 +5575,7 @@ function PurchasesPage() {
 
   const changePurchaseCurrency = (currencyId: string) => {
     const nextCurrency = currencies.find((item) => item.id === currencyId);
-    const convert = (value: number) =>
-      convertCurrencyAmount(value, selectedCurrency, nextCurrency);
+    const convert = (value: number) => convertCurrencyAmount(value, selectedCurrency, nextCurrency);
 
     setForm((current) => ({
       ...current,
@@ -6122,19 +5598,12 @@ function PurchasesPage() {
     }));
   };
 
-  const updatePurchaseLine = (
-    lineId: string,
-    patch: Partial<PurchaseLineForm>,
-  ) => {
+  const updatePurchaseLine = (lineId: string, patch: Partial<PurchaseLineForm>) => {
     setPurchaseLines((current) =>
       current.map((line) => {
         if (line.id !== lineId) return line;
         const next = { ...line, ...patch };
-        if (
-          patch.unitId &&
-          patch.unitId !== line.unitId &&
-          patch.unitCost === undefined
-        ) {
+        if (patch.unitId && patch.unitId !== line.unitId && patch.unitCost === undefined) {
           next.unitCost = purchaseUnitCost(next.productId, patch.unitId);
           next.salePrice = purchaseSalePrice(next.productId, patch.unitId);
         }
@@ -6146,49 +5615,33 @@ function PurchasesPage() {
   const setPurchaseLineProduct = (lineId: string, productId: string) => {
     const product = products.find((item) => item.id === productId);
     const purchaseUnit =
-      product?.units?.find((unit: any) => unit.isDefaultPurchase) ||
-      product?.units?.[0];
+      product?.units?.find((unit: any) => unit.isDefaultPurchase) || product?.units?.[0];
 
     updatePurchaseLine(lineId, {
       productId,
       unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
-      unitCost: basePriceInCurrency(
-        Number(purchaseUnit?.purchasePrice || 0),
-        selectedCurrency,
-      ),
-      salePrice: basePriceInCurrency(
-        Number(purchaseUnit?.salePrice || 0),
-        selectedCurrency,
-      ),
+      unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), selectedCurrency),
+      salePrice: basePriceInCurrency(Number(purchaseUnit?.salePrice || 0), selectedCurrency),
     });
   };
 
   const openPurchaseItemDialog = (line?: PurchaseLineForm) => {
     setEditingPurchaseLineId(line?.id || null);
-    setPurchaseLineDraft(
-      line || makePurchaseLine(products, warehouses, selectedCurrency),
-    );
+    setPurchaseLineDraft(line || makePurchaseLine(products, warehouses, selectedCurrency));
     setPurchaseItemDialogOpen(true);
   };
 
   const setPurchaseDraftProduct = (productId: string) => {
     const product = products.find((item) => item.id === productId);
     const purchaseUnit =
-      product?.units?.find((unit: any) => unit.isDefaultPurchase) ||
-      product?.units?.[0];
+      product?.units?.find((unit: any) => unit.isDefaultPurchase) || product?.units?.[0];
 
     setPurchaseLineDraft((current) => ({
       ...current,
       productId,
       unitId: purchaseUnit?.unitId || product?.baseUnitId || "",
-      unitCost: basePriceInCurrency(
-        Number(purchaseUnit?.purchasePrice || 0),
-        selectedCurrency,
-      ),
-      salePrice: basePriceInCurrency(
-        Number(purchaseUnit?.salePrice || 0),
-        selectedCurrency,
-      ),
+      unitCost: basePriceInCurrency(Number(purchaseUnit?.purchasePrice || 0), selectedCurrency),
+      salePrice: basePriceInCurrency(Number(purchaseUnit?.salePrice || 0), selectedCurrency),
       updateSalePrice: false,
       expiryDate: product?.hasExpiry ? current.expiryDate : "",
     }));
@@ -6208,9 +5661,7 @@ function PurchasesPage() {
 
     setPurchaseLines((current) =>
       editingPurchaseLineId
-        ? current.map((line) =>
-            line.id === editingPurchaseLineId ? purchaseLineDraft : line,
-          )
+        ? current.map((line) => (line.id === editingPurchaseLineId ? purchaseLineDraft : line))
         : [...current, { ...purchaseLineDraft, id: createClientId() }],
     );
     setPurchaseItemDialogOpen(false);
@@ -6239,53 +5690,45 @@ function PurchasesPage() {
           }))
         : []),
     ].filter(
-      (item, index, array) =>
-        array.findIndex((candidate) => candidate.id === item.id) === index,
+      (item, index, array) => array.findIndex((candidate) => candidate.id === item.id) === index,
     );
   };
 
   let remainingPurchaseDiscount = form.discount;
-  const purchaseItemRows: InvoiceItemRow[] = purchaseLines.map(
-    (line, index) => {
-      const grossTotal = invoiceLineTotal(line.quantity, line.unitCost);
-      const generalDiscount =
-        index === purchaseLines.length - 1
-          ? remainingPurchaseDiscount
-          : subtotal > 0
-            ? Number(((grossTotal / subtotal) * form.discount).toFixed(4))
-            : 0;
-      remainingPurchaseDiscount = Number(
-        (remainingPurchaseDiscount - generalDiscount).toFixed(4),
-      );
-      const unitInfo = productUnitInfo(products, line.productId, line.unitId);
+  const purchaseItemRows: InvoiceItemRow[] = purchaseLines.map((line, index) => {
+    const grossTotal = invoiceLineTotal(line.quantity, line.unitCost);
+    const generalDiscount =
+      index === purchaseLines.length - 1
+        ? remainingPurchaseDiscount
+        : subtotal > 0
+          ? Number(((grossTotal / subtotal) * form.discount).toFixed(4))
+          : 0;
+    remainingPurchaseDiscount = Number((remainingPurchaseDiscount - generalDiscount).toFixed(4));
+    const unitInfo = productUnitInfo(products, line.productId, line.unitId);
 
-      return {
-        id: line.id,
-        product: productLabel(products, line.productId),
-        warehouse: lookupLabel(warehouses, line.warehouseId),
-        unit: lookupLabel(productUnitOptions(line.productId), line.unitId),
-        quantity: line.quantity,
-        unitAmount: line.unitCost,
-        generalDiscount,
-        netTotal: Math.max(0, grossTotal - generalDiscount),
-        baseQuantity: line.quantity * unitInfo.conversionRate,
-        baseUnit: unitInfo.baseUnitName,
-        baseUnitAmount:
-          line.quantity * unitInfo.conversionRate > 0
-            ? Math.max(0, grossTotal - generalDiscount) /
-              (line.quantity * unitInfo.conversionRate)
-            : 0,
-        salePrice: line.salePrice,
-        baseSalePrice:
-          unitInfo.conversionRate > 0
-            ? line.salePrice / unitInfo.conversionRate
-            : line.salePrice,
-        salePriceUpdate: line.updateSalePrice,
-        expiryDate: line.expiryDate || "-",
-        total: grossTotal,
-      };
-    },
-  );
+    return {
+      id: line.id,
+      product: productLabel(products, line.productId),
+      warehouse: lookupLabel(warehouses, line.warehouseId),
+      unit: lookupLabel(productUnitOptions(line.productId), line.unitId),
+      quantity: line.quantity,
+      unitAmount: line.unitCost,
+      generalDiscount,
+      netTotal: Math.max(0, grossTotal - generalDiscount),
+      baseQuantity: line.quantity * unitInfo.conversionRate,
+      baseUnit: unitInfo.baseUnitName,
+      baseUnitAmount:
+        line.quantity * unitInfo.conversionRate > 0
+          ? Math.max(0, grossTotal - generalDiscount) / (line.quantity * unitInfo.conversionRate)
+          : 0,
+      salePrice: line.salePrice,
+      baseSalePrice:
+        unitInfo.conversionRate > 0 ? line.salePrice / unitInfo.conversionRate : line.salePrice,
+      salePriceUpdate: line.updateSalePrice,
+      expiryDate: line.expiryDate || "-",
+      total: grossTotal,
+    };
+  });
   const purchaseDraftUnitInfo = productUnitInfo(
     products,
     purchaseLineDraft.productId,
@@ -6300,12 +5743,7 @@ function PurchasesPage() {
   const purchaseDraftSubtotal = subtotal + purchaseDraftGrossTotal;
   const purchaseDraftGeneralDiscount =
     purchaseDraftSubtotal > 0
-      ? Number(
-          (
-            (purchaseDraftGrossTotal / purchaseDraftSubtotal) *
-            form.discount
-          ).toFixed(4),
-        )
+      ? Number(((purchaseDraftGrossTotal / purchaseDraftSubtotal) * form.discount).toFixed(4))
       : 0;
   const purchaseDraftBaseUnitCost =
     purchaseDraftUnitInfo.conversionRate > 0
@@ -6333,9 +5771,7 @@ function PurchasesPage() {
     );
 
     if (invalidLine) {
-      toast.error(
-        "همه اقلام باید جنس، گدام، واحد، مقدار و قیمت معتبر داشته باشند",
-      );
+      toast.error("همه اقلام باید جنس، گدام، واحد، مقدار و قیمت معتبر داشته باشند");
       return;
     }
 
@@ -6374,9 +5810,7 @@ function PurchasesPage() {
             unitCost: line.unitCost,
             updateSalePrice: line.updateSalePrice,
             salePrice: line.updateSalePrice ? line.salePrice : null,
-            expiryDate: productHasExpiry(products, line.productId)
-              ? line.expiryDate || null
-              : null,
+            expiryDate: productHasExpiry(products, line.productId) ? line.expiryDate || null : null,
           })),
         }),
       });
@@ -6405,9 +5839,7 @@ function PurchasesPage() {
 
       setDetailsPurchase(json.data);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن جزئیات خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن جزئیات خرید ناکام شد");
     }
   };
 
@@ -6421,9 +5853,7 @@ function PurchasesPage() {
       }
 
       const purchase = json.data;
-      const account = paymentAccounts.find(
-        (item) => item.currencyId === purchase.currencyId,
-      );
+      const account = paymentAccounts.find((item) => item.currencyId === purchase.currencyId);
 
       setReturnPurchase(purchase);
       setReturnLines(
@@ -6439,9 +5869,7 @@ function PurchasesPage() {
       setReturnNote("");
       setReturnDialogOpen(true);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد");
     }
   };
 
@@ -6455,21 +5883,15 @@ function PurchasesPage() {
       }
 
       const purchase = json.data;
-      const account = paymentAccounts.find(
-        (item) => item.currencyId === purchase.currencyId,
-      );
+      const account = paymentAccounts.find((item) => item.currencyId === purchase.currencyId);
 
       setPaymentPurchase(purchase);
       setInvoicePaymentAmount(Number(purchase.remainingAmount || 0));
-      setInvoicePaymentAccountKey(
-        account ? `${account.type}:${account.id}` : "",
-      );
+      setInvoicePaymentAccountKey(account ? `${account.type}:${account.id}` : "");
       setInvoicePaymentNote("");
       setPaymentDialogOpen(true);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد");
     }
   };
 
@@ -6485,9 +5907,7 @@ function PurchasesPage() {
       setCancelPurchase(json.data);
       setCancelPurchaseReason("");
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن فاکتور خرید ناکام شد");
     }
   };
 
@@ -6495,14 +5915,11 @@ function PurchasesPage() {
     if (!cancelPurchase) return;
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/purchases/${cancelPurchase.id}/cancel`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: cancelPurchaseReason || null }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/purchases/${cancelPurchase.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelPurchaseReason || null }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -6513,9 +5930,7 @@ function PurchasesPage() {
       setCancelPurchase(null);
       await loadPurchasesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال خرید ناکام شد");
     }
   };
 
@@ -6534,15 +5949,12 @@ function PurchasesPage() {
         },
       );
       const json = await res.json().catch(() => null);
-      if (!res.ok)
-        throw new Error(json?.message || "ابطال برگشت خرید ناکام شد");
+      if (!res.ok) throw new Error(json?.message || "ابطال برگشت خرید ناکام شد");
       toast.success("برگشت خرید با سند معکوس باطل شد");
       setCancelPurchaseReturn(null);
       await loadPurchasesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال برگشت خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال برگشت خرید ناکام شد");
     }
   };
 
@@ -6564,19 +5976,16 @@ function PurchasesPage() {
     }
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/purchases/${paymentPurchase.id}/payments`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: invoicePaymentAmount,
-            paymentAccountType: paymentAccount.type,
-            paymentAccountId: paymentAccount.id,
-            note: invoicePaymentNote || null,
-          }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/purchases/${paymentPurchase.id}/payments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: invoicePaymentAmount,
+          paymentAccountType: paymentAccount.type,
+          paymentAccountId: paymentAccount.id,
+          note: invoicePaymentNote || null,
+        }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -6587,21 +5996,14 @@ function PurchasesPage() {
       setPaymentDialogOpen(false);
       await loadPurchasesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت پرداخت خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت پرداخت خرید ناکام شد");
     }
   };
 
   const purchaseReturnSubtotal = returnLines.reduce((sum, line) => {
-    const item = returnPurchase?.items?.find(
-      (candidate: any) => candidate.id === line.itemId,
-    );
+    const item = returnPurchase?.items?.find((candidate: any) => candidate.id === line.itemId);
     if (!item || Number(item.quantity || 0) <= 0) return sum;
-    return (
-      sum +
-      (Number(item.totalCost || 0) / Number(item.quantity || 1)) * line.quantity
-    );
+    return sum + (Number(item.totalCost || 0) / Number(item.quantity || 1)) * line.quantity;
   }, 0);
 
   const submitPurchaseReturn = async () => {
@@ -6652,9 +6054,7 @@ function PurchasesPage() {
       setReturnDialogOpen(false);
       await loadPurchasesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت برگشت خرید ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت برگشت خرید ناکام شد");
     }
   };
 
@@ -6691,8 +6091,7 @@ function PurchasesPage() {
               خریداری
             </CardTitle>
             <CardDescription>
-              ثبت فاکتور خرید، ورود خودکار موجودی، پرداخت نقد/بانک و باقیات
-              فروشنده.
+              ثبت فاکتور خرید، ورود خودکار موجودی، پرداخت نقد/بانک و باقیات فروشنده.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -6707,10 +6106,7 @@ function PurchasesPage() {
                 className="w-72 ps-9"
               />
             </div>
-            <Button
-              variant="outline"
-              onClick={() => void loadPurchasesData(1, 1)}
-            >
+            <Button variant="outline" onClick={() => void loadPurchasesData(1, 1)}>
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
@@ -6754,9 +6150,7 @@ function PurchasesPage() {
         rows={purchaseReturns}
         onRefresh={() => void loadPurchasesData()}
         pagination={purchaseReturnsPagination}
-        onPageChange={(page) =>
-          void loadPurchasesData(purchasesPagination?.page || 1, page)
-        }
+        onPageChange={(page) => void loadPurchasesData(purchasesPagination?.page || 1, page)}
         onDetails={setDetailsPurchaseReturn}
         onCancel={(row) => {
           setCancelPurchaseReturn(row);
@@ -6764,17 +6158,12 @@ function PurchasesPage() {
         }}
       />
 
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        disablePointerDismissal
-      >
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen} disablePointerDismissal>
         <DialogContent dir="rtl" className="sm:max-w-[min(196vw,1280px)]">
           <DialogHeader>
             <DialogTitle>ثبت خرید جدید</DialogTitle>
             <DialogDescription>
-              فاکتور چندقلمی با ورود خودکار موجودی، پرداخت نقد/بانک و باقیات
-              فروشنده.
+              فاکتور چندقلمی با ورود خودکار موجودی، پرداخت نقد/بانک و باقیات فروشنده.
             </DialogDescription>
           </DialogHeader>
 
@@ -6783,18 +6172,14 @@ function PurchasesPage() {
               <TextField
                 label="شماره فاکتور"
                 value={form.invoiceNo}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, invoiceNo: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, invoiceNo: value }))}
               />
               <LookupSelect
                 label="فروشنده"
                 value={form.supplierId}
                 options={suppliers}
                 emptyLabel="خرید نقدی / بدون فروشنده"
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, supplierId: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, supplierId: value }))}
               />
               <LookupSelect
                 label="کرنسی"
@@ -6808,26 +6193,18 @@ function PurchasesPage() {
               <NumberField
                 label="تخفیف فاکتور"
                 value={form.discount}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, discount: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, discount: value }))}
               />
               <NumberField
                 label="پرداخت شده"
                 value={form.paidAmount}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, paidAmount: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, paidAmount: value }))}
               />
               <LookupSelect
                 label="حساب پرداخت"
                 value={form.paymentAccountKey}
                 options={paymentAccounts
-                  .filter(
-                    (account) =>
-                      !form.currencyId ||
-                      account.currencyId === form.currencyId,
-                  )
+                  .filter((account) => !form.currencyId || account.currencyId === form.currencyId)
                   .map((account) => ({
                     id: `${account.type}:${account.id}`,
                     name: account.name,
@@ -6855,9 +6232,7 @@ function PurchasesPage() {
                 if (line) openPurchaseItemDialog(line);
               }}
               onDelete={(id) =>
-                setPurchaseLines((current) =>
-                  current.filter((item) => item.id !== id),
-                )
+                setPurchaseLines((current) => current.filter((item) => item.id !== id))
               }
             />
             {/* Legacy inline item editor is replaced by the table above. */}
@@ -6890,47 +6265,35 @@ function PurchasesPage() {
                       value={line.productId}
                       options={products}
                       onSearchChange={searchPurchaseProducts}
-                      onChange={(value) =>
-                        setPurchaseLineProduct(line.id, value)
-                      }
+                      onChange={(value) => setPurchaseLineProduct(line.id, value)}
                     />
                     <LookupSelect
                       label="گدام"
                       value={line.warehouseId}
                       options={warehouses}
-                      onChange={(value) =>
-                        updatePurchaseLine(line.id, { warehouseId: value })
-                      }
+                      onChange={(value) => updatePurchaseLine(line.id, { warehouseId: value })}
                     />
                     <LookupSelect
                       label="واحد"
                       value={line.unitId}
                       options={productUnitOptions(line.productId)}
-                      onChange={(value) =>
-                        updatePurchaseLine(line.id, { unitId: value })
-                      }
+                      onChange={(value) => updatePurchaseLine(line.id, { unitId: value })}
                     />
                     <NumberField
                       label="مقدار"
                       value={line.quantity}
-                      onChange={(value) =>
-                        updatePurchaseLine(line.id, { quantity: value })
-                      }
+                      onChange={(value) => updatePurchaseLine(line.id, { quantity: value })}
                     />
                     <NumberField
                       label="قیمت"
                       value={line.unitCost}
-                      onChange={(value) =>
-                        updatePurchaseLine(line.id, { unitCost: value })
-                      }
+                      onChange={(value) => updatePurchaseLine(line.id, { unitCost: value })}
                     />
                     <TextField
                       label="انقضا"
                       type="date"
                       value={line.expiryDate}
-                      onChange={(value) =>
-                        updatePurchaseLine(line.id, { expiryDate: value })
-                      }
+                      onChange={(value) => updatePurchaseLine(line.id, { expiryDate: value })}
                     />
                     <div className="flex items-end">
                       <Button
@@ -6954,9 +6317,7 @@ function PurchasesPage() {
             <TextField
               label="یادداشت"
               value={form.note}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, note: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, note: value }))}
             />
 
             <div className="grid gap-3 rounded-xl border border-border bg-muted/30 p-4 md:grid-cols-3">
@@ -6970,11 +6331,7 @@ function PurchasesPage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">باقی</p>
-                <strong
-                  className={
-                    remaining > 0 ? "text-amber-300" : "text-emerald-300"
-                  }
-                >
+                <strong className={remaining > 0 ? "text-amber-300" : "text-emerald-300"}>
                   {money(remaining, selectedCurrency?.code)}
                 </strong>
               </div>
@@ -7021,8 +6378,7 @@ function PurchasesPage() {
           <DialogHeader>
             <DialogTitle>ابطال برگشت خرید</DialogTitle>
             <DialogDescription>
-              موجودی، صندوق یا بانک، حساب فروشنده و ژورنال با سند معکوس اصلاح
-              می‌شود.
+              موجودی، صندوق یا بانک، حساب فروشنده و ژورنال با سند معکوس اصلاح می‌شود.
             </DialogDescription>
           </DialogHeader>
           <TextField
@@ -7031,10 +6387,7 @@ function PurchasesPage() {
             onChange={setCancelPurchaseReturnReason}
           />
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setCancelPurchaseReturn(null)}
-            >
+            <Button variant="outline" onClick={() => setCancelPurchaseReturn(null)}>
               لغو
             </Button>
             <Button variant="destructive" onClick={submitPurchaseReturnCancel}>
@@ -7055,8 +6408,7 @@ function PurchasesPage() {
               {editingPurchaseLineId ? "ویرایش قلم خرید" : "افزودن قلم خرید"}
             </DialogTitle>
             <DialogDescription>
-              مشخصات جنس، گدام، واحد، مقدار، قیمت خرید و تاریخ انقضا را جداگانه
-              ثبت کنید.
+              مشخصات جنس، گدام، واحد، مقدار، قیمت خرید و تاریخ انقضا را جداگانه ثبت کنید.
             </DialogDescription>
           </DialogHeader>
 
@@ -7068,12 +6420,7 @@ function PurchasesPage() {
               onSearchChange={searchPurchaseProducts}
               onChange={setPurchaseDraftProduct}
               emptyAction={
-                <Button
-                  type="button"
-                  size="sm"
-                  className="w-full"
-                  onClick={openQuickProductDialog}
-                >
+                <Button type="button" size="sm" className="w-full" onClick={openQuickProductDialog}>
                   <Plus className="size-4" />
                   افزودن جنس جدید
                 </Button>
@@ -7183,10 +6530,7 @@ function PurchasesPage() {
                 <p className="text-xs text-muted-foreground">جمع قلم</p>
                 <strong>
                   {money(
-                    invoiceLineTotal(
-                      purchaseLineDraft.quantity,
-                      purchaseLineDraft.unitCost,
-                    ),
+                    invoiceLineTotal(purchaseLineDraft.quantity, purchaseLineDraft.unitCost),
                     selectedCurrency?.code,
                   )}
                 </strong>
@@ -7194,42 +6538,27 @@ function PurchasesPage() {
               <div>
                 <p className="text-xs text-muted-foreground">مقدار واحد پایه</p>
                 <strong>
-                  {new Intl.NumberFormat("en-US").format(
-                    purchaseDraftBaseQuantity,
-                  )}{" "}
+                  {new Intl.NumberFormat("en-US").format(purchaseDraftBaseQuantity)}{" "}
                   {purchaseDraftUnitInfo.baseUnitName}
                 </strong>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">
-                  قیمت خرید واحد پایه
-                </p>
-                <strong>
-                  {money(purchaseDraftBaseUnitCost, selectedCurrency?.code)}
-                </strong>
+                <p className="text-xs text-muted-foreground">قیمت خرید واحد پایه</p>
+                <strong>{money(purchaseDraftBaseUnitCost, selectedCurrency?.code)}</strong>
                 {purchaseDraftGeneralDiscount > 0 ? (
                   <div className="text-[11px] text-muted-foreground">
-                    بعد تخفیف:{" "}
-                    {money(
-                      purchaseDraftNetBaseUnitCost,
-                      selectedCurrency?.code,
-                    )}
+                    بعد تخفیف: {money(purchaseDraftNetBaseUnitCost, selectedCurrency?.code)}
                   </div>
                 ) : null}
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">
-                  قیمت فروش پیشنهادی
-                </p>
-                <strong>
-                  {money(purchaseLineDraft.salePrice, selectedCurrency?.code)}
-                </strong>
+                <p className="text-xs text-muted-foreground">قیمت فروش پیشنهادی</p>
+                <strong>{money(purchaseLineDraft.salePrice, selectedCurrency?.code)}</strong>
                 <div className="text-[11px] text-muted-foreground">
                   واحد پایه:{" "}
                   {money(
                     purchaseDraftUnitInfo.conversionRate > 0
-                      ? purchaseLineDraft.salePrice /
-                          purchaseDraftUnitInfo.conversionRate
+                      ? purchaseLineDraft.salePrice / purchaseDraftUnitInfo.conversionRate
                       : purchaseLineDraft.salePrice,
                     selectedCurrency?.code,
                   )}
@@ -7239,10 +6568,7 @@ function PurchasesPage() {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setPurchaseItemDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setPurchaseItemDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={savePurchaseItem}>
@@ -7261,8 +6587,8 @@ function PurchasesPage() {
           <DialogHeader>
             <DialogTitle>ثبت سریع جنس جدید</DialogTitle>
             <DialogDescription>
-              اگر جنس در جستجوی خرید پیدا نشد، همین‌جا کالا را ثبت کنید و سپس
-              به قلم خرید اضافه کنید.
+              اگر جنس در جستجوی خرید پیدا نشد، همین‌جا کالا را ثبت کنید و سپس به قلم خرید اضافه
+              کنید.
             </DialogDescription>
           </DialogHeader>
 
@@ -7320,13 +6646,9 @@ function PurchasesPage() {
                     baseUnitId: value,
                   }));
                   setQuickProductUnitLines((current) => {
-                    const nextLines = current.some(
-                      (line) => line.unitId === value,
-                    )
+                    const nextLines = current.some((line) => line.unitId === value)
                       ? current.map((line) =>
-                          line.unitId === value
-                            ? { ...line, conversionRate: 1 }
-                            : line,
+                          line.unitId === value ? { ...line, conversionRate: 1 } : line,
                         )
                       : [
                           makeProductUnitLine(productUnits, {
@@ -7447,9 +6769,7 @@ function PurchasesPage() {
                                 ...item,
                                 unitId: value,
                                 conversionRate:
-                                  value === quickProductForm.baseUnitId
-                                    ? 1
-                                    : item.conversionRate,
+                                  value === quickProductForm.baseUnitId ? 1 : item.conversionRate,
                               }
                             : item,
                         ),
@@ -7467,18 +6787,14 @@ function PurchasesPage() {
                             ? {
                                 ...item,
                                 conversionRate:
-                                  item.unitId === quickProductForm.baseUnitId
-                                    ? 1
-                                    : value,
+                                  item.unitId === quickProductForm.baseUnitId ? 1 : value,
                                 purchasePrice:
                                   item.unitId === quickProductForm.baseUnitId
                                     ? item.purchasePrice
                                     : Number(
                                         (
                                           (current.find(
-                                            (base) =>
-                                              base.unitId ===
-                                              quickProductForm.baseUnitId,
+                                            (base) => base.unitId === quickProductForm.baseUnitId,
                                           )?.purchasePrice || 0) * value
                                         ).toFixed(4),
                                       ),
@@ -7488,9 +6804,7 @@ function PurchasesPage() {
                                     : Number(
                                         (
                                           (current.find(
-                                            (base) =>
-                                              base.unitId ===
-                                              quickProductForm.baseUnitId,
+                                            (base) => base.unitId === quickProductForm.baseUnitId,
                                           )?.salePrice || 0) * value
                                         ).toFixed(4),
                                       ),
@@ -7506,9 +6820,7 @@ function PurchasesPage() {
                     onChange={(value) =>
                       setQuickProductUnitLines((current) => {
                         const next = current.map((item) =>
-                          item.id === line.id
-                            ? { ...item, purchasePrice: value }
-                            : item,
+                          item.id === line.id ? { ...item, purchasePrice: value } : item,
                         );
 
                         return line.unitId === quickProductForm.baseUnitId
@@ -7525,9 +6837,7 @@ function PurchasesPage() {
                     onChange={(value) =>
                       setQuickProductUnitLines((current) => {
                         const next = current.map((item) =>
-                          item.id === line.id
-                            ? { ...item, salePrice: value }
-                            : item,
+                          item.id === line.id ? { ...item, salePrice: value } : item,
                         );
 
                         return line.unitId === quickProductForm.baseUnitId
@@ -7613,8 +6923,8 @@ function PurchasesPage() {
           <DialogHeader>
             <DialogTitle>برگشت خرید</DialogTitle>
             <DialogDescription>
-              اقلام برگشتی به فروشنده را وارد کنید؛ سیستم موجودی، صندوق/بانک،
-              حساب فروشنده و سند حسابداری را ثبت می‌کند.
+              اقلام برگشتی به فروشنده را وارد کنید؛ سیستم موجودی، صندوق/بانک، حساب فروشنده و سند
+              حسابداری را ثبت می‌کند.
             </DialogDescription>
           </DialogHeader>
 
@@ -7650,18 +6960,14 @@ function PurchasesPage() {
 
             <div className="space-y-3 rounded-xl border border-border bg-muted/20 p-3">
               {returnPurchase?.items?.map((item: any) => {
-                const line = returnLines.find(
-                  (candidate) => candidate.itemId === item.id,
-                );
+                const line = returnLines.find((candidate) => candidate.itemId === item.id);
                 return (
                   <div
                     key={item.id}
                     className="grid gap-2 rounded-lg border border-border bg-background/60 p-3 md:grid-cols-[2fr_1fr_1fr_1fr]"
                   >
                     <div>
-                      <p className="text-sm font-medium">
-                        {item.product?.name || "-"}
-                      </p>
+                      <p className="text-sm font-medium">{item.product?.name || "-"}</p>
                       <p className="text-xs text-muted-foreground">
                         {item.warehouse?.name || "-"} /{" "}
                         {item.unit?.shortName || item.unit?.name || "-"}
@@ -7669,15 +6975,11 @@ function PurchasesPage() {
                     </div>
                     <div className="text-sm">
                       <span className="text-muted-foreground">خرید شده</span>
-                      <strong className="block">
-                        {Number(item.quantity || 0)}
-                      </strong>
+                      <strong className="block">{Number(item.quantity || 0)}</strong>
                     </div>
                     <div className="text-sm">
                       <span className="text-muted-foreground">قیمت قلم</span>
-                      <strong className="block">
-                        {money(item.totalCost || 0)}
-                      </strong>
+                      <strong className="block">{money(item.totalCost || 0)}</strong>
                     </div>
                     <NumberField
                       label="مقدار برگشت"
@@ -7697,11 +6999,7 @@ function PurchasesPage() {
               })}
             </div>
 
-            <TextField
-              label="یادداشت"
-              value={returnNote}
-              onChange={setReturnNote}
-            />
+            <TextField label="یادداشت" value={returnNote} onChange={setReturnNote} />
             <div className="rounded-xl border border-border bg-muted/30 p-4">
               <p className="text-xs text-muted-foreground">جمع تخمینی برگشت</p>
               <strong>{money(purchaseReturnSubtotal)}</strong>
@@ -7709,10 +7007,7 @@ function PurchasesPage() {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setReturnDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setReturnDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={submitPurchaseReturn}>ثبت برگشت خرید</Button>
@@ -7725,8 +7020,8 @@ function PurchasesPage() {
           <DialogHeader>
             <DialogTitle>پرداخت فاکتور خرید</DialogTitle>
             <DialogDescription>
-              پرداخت مرحله‌ای روی فاکتور خرید ثبت می‌شود و بدهی فروشنده،
-              صندوق/بانک و سند حسابداری همزمان اصلاح می‌گردد.
+              پرداخت مرحله‌ای روی فاکتور خرید ثبت می‌شود و بدهی فروشنده، صندوق/بانک و سند حسابداری
+              همزمان اصلاح می‌گردد.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 md:grid-cols-2">
@@ -7773,10 +7068,7 @@ function PurchasesPage() {
             />
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setPaymentDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setPaymentDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={submitPurchasePayment}>ثبت پرداخت</Button>
@@ -7794,9 +7086,9 @@ function PurchasesPage() {
           <DialogHeader>
             <DialogTitle>ابطال فاکتور خرید</DialogTitle>
             <DialogDescription>
-              با ابطال، موجودی خرید خارج می‌شود، پرداخت‌های صندوق/بانک معکوس
-              می‌شود و حساب فروشنده/ژورنال اثر معکوس می‌گیرد. اگر جنس این خرید
-              مصرف یا منتقل شده باشد، API ابطال را رد می‌کند.
+              با ابطال، موجودی خرید خارج می‌شود، پرداخت‌های صندوق/بانک معکوس می‌شود و حساب
+              فروشنده/ژورنال اثر معکوس می‌گیرد. اگر جنس این خرید مصرف یا منتقل شده باشد، API ابطال
+              را رد می‌کند.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -7903,14 +7195,8 @@ function buildPaymentAccounts(cashData: any, bankData: any) {
   return [...cashAccounts, ...bankAccounts];
 }
 
-function normalizeMoneyTransaction(
-  item: any,
-  cancelledKeys = new Set<string>(),
-): DataRow {
-  const accountName =
-    item.cashRegisterAccount?.cashRegister?.name ||
-    item.bankAccount?.name ||
-    "-";
+function normalizeMoneyTransaction(item: any, cancelledKeys = new Set<string>()): DataRow {
+  const accountName = item.cashRegisterAccount?.cashRegister?.name || item.bankAccount?.name || "-";
   const accountType = item.cashRegisterAccountId ? "صندوق" : "بانک";
   const rowKey =
     item.type === "TRANSFER" && item.transferGroupId
@@ -7936,11 +7222,9 @@ function normalizeMoneyTransaction(
     item.referenceType === "SUPPLIER_PAYMENT" ||
     item.referenceType === "SUPPLIER_PAYMENT_CANCEL";
   const partyBalance = isCustomerPartyTransaction
-    ? Number(partyAccount?.debitBalance || 0) -
-      Number(partyAccount?.creditBalance || 0)
+    ? Number(partyAccount?.debitBalance || 0) - Number(partyAccount?.creditBalance || 0)
     : isSupplierPartyTransaction
-      ? Number(partyAccount?.creditBalance || 0) -
-        Number(partyAccount?.debitBalance || 0)
+      ? Number(partyAccount?.creditBalance || 0) - Number(partyAccount?.debitBalance || 0)
       : null;
 
   return {
@@ -7951,26 +7235,18 @@ function normalizeMoneyTransaction(
     typeRaw: item.type,
     directionRaw: item.direction,
     __raw: item,
-    date: item.createdAt
-      ? new Date(item.createdAt).toLocaleString("fa-AF")
-      : "-",
+    date: item.createdAt ? formatKabulDateTime(item.createdAt) : "-",
     account: `${accountType} / ${accountName}`,
     party: party?.name || "-",
-    partyType: isCustomerPartyTransaction
-      ? "مشتری"
-      : isSupplierPartyTransaction
-        ? "فروشنده"
-        : "-",
-    partyBalance:
-      partyBalance === null ? "-" : money(Math.max(0, partyBalance), currencyCode),
+    partyType: isCustomerPartyTransaction ? "مشتری" : isSupplierPartyTransaction ? "فروشنده" : "-",
+    partyBalance: partyBalance === null ? "-" : money(Math.max(0, partyBalance), currencyCode),
     type: item.type || "-",
     direction: item.direction === "IN" ? "ورودی" : "خروجی",
     amount: money(item.amount || 0, currencyCode),
     balanceAfter: money(item.balanceAfter || 0, currencyCode),
     status: isCancelled ? "ابطال" : "فعال",
     __canDelete: !isCancelled && item.type !== "ADJUSTMENT",
-    user:
-      item.createdByUser?.displayName || item.createdByUser?.username || "-",
+    user: item.createdByUser?.displayName || item.createdByUser?.username || "-",
     note: item.note || item.referenceType || "-",
   };
 }
@@ -7978,11 +7254,8 @@ function normalizeMoneyTransaction(
 function CashBankPage() {
   const initialTreasuryRange = recentDateRange();
   const [transactions, setTransactions] = useState<DataRow[]>([]);
-  const [transactionsPagination, setTransactionsPagination] =
-    useState<any>(null);
-  const [paymentAccounts, setPaymentAccounts] = useState<
-    PaymentAccountOption[]
-  >([]);
+  const [transactionsPagination, setTransactionsPagination] = useState<any>(null);
+  const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccountOption[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
@@ -7996,15 +7269,9 @@ function CashBankPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [action, setAction] = useState<CashBankAction | null>(null);
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
-  const [accountForm, setAccountForm] = useState<TreasuryAccountForm>(
-    emptyTreasuryAccountForm,
-  );
-  const [partyForm, setPartyForm] = useState<PartyPaymentForm>(
-    emptyPartyPaymentForm,
-  );
-  const [transferForm, setTransferForm] = useState<MoneyTransferForm>(
-    emptyMoneyTransferForm,
-  );
+  const [accountForm, setAccountForm] = useState<TreasuryAccountForm>(emptyTreasuryAccountForm);
+  const [partyForm, setPartyForm] = useState<PartyPaymentForm>(emptyPartyPaymentForm);
+  const [transferForm, setTransferForm] = useState<MoneyTransferForm>(emptyMoneyTransferForm);
   const [cancelRow, setCancelRow] = useState<DataRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [partyEditing, setPartyEditing] = useState<{
@@ -8024,35 +7291,24 @@ function CashBankPage() {
       }
       if (query.trim()) transferParams.set("search", query.trim());
       if (transactionFilter !== "ALL") transferParams.set("kind", transactionFilter);
-      const [
-        cashRes,
-        bankRes,
-        transfersRes,
-        customersRes,
-        suppliersRes,
-        currenciesRes,
-      ] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/money-transfers?${transferParams.toString()}`).then((res) => res.json()),
-        fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) =>
-          res.json(),
-        ),
-        fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) =>
-          res.json(),
-        ),
-        fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
-      ]);
+      const [cashRes, bankRes, transfersRes, customersRes, suppliersRes, currenciesRes] =
+        await Promise.all([
+          fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
+          fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
+          fetch(`${API_BASE_URL}/api/money-transfers?${transferParams.toString()}`).then((res) =>
+            res.json(),
+          ),
+          fetch(`${API_BASE_URL}/api/parties?type=CUSTOMER`).then((res) => res.json()),
+          fetch(`${API_BASE_URL}/api/parties?type=SUPPLIER`).then((res) => res.json()),
+          fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
+        ]);
 
       setPaymentAccounts(buildPaymentAccounts(cashRes?.data, bankRes?.data));
       const cancelledTransactionKeys = new Set<string>();
       if (Array.isArray(transfersRes?.data)) {
         transfersRes.data.forEach((item: any) => {
           if (!String(item.referenceType || "").endsWith("_CANCEL")) return;
-          if (
-            item.referenceType === "MONEY_TRANSFER_CANCEL" &&
-            item.referenceId
-          ) {
+          if (item.referenceType === "MONEY_TRANSFER_CANCEL" && item.referenceId) {
             cancelledTransactionKeys.add(`TRANSFER:${item.referenceId}`);
           }
           if (item.referenceId) {
@@ -8071,15 +7327,9 @@ function CashBankPage() {
       setTransactionsPagination(transfersRes?.pagination || null);
       setCustomers(Array.isArray(customersRes?.data) ? customersRes.data : []);
       setSuppliers(Array.isArray(suppliersRes?.data) ? suppliersRes.data : []);
-      setCurrencies(
-        Array.isArray(currenciesRes?.data) ? currenciesRes.data : [],
-      );
+      setCurrencies(Array.isArray(currenciesRes?.data) ? currenciesRes.data : []);
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "خواندن اطلاعات صندوق و بانک ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن اطلاعات صندوق و بانک ناکام شد");
     } finally {
       setIsLoading(false);
     }
@@ -8105,10 +7355,7 @@ function CashBankPage() {
     (sum, customer) => sum + partyBalance(customer, "CUSTOMER"),
     0,
   );
-  const payables = suppliers.reduce(
-    (sum, supplier) => sum + partyBalance(supplier, "SUPPLIER"),
-    0,
-  );
+  const payables = suppliers.reduce((sum, supplier) => sum + partyBalance(supplier, "SUPPLIER"), 0);
 
   const treasuryAccountRows = useMemo(() => {
     const rows = paymentAccounts.map((account) => ({
@@ -8129,16 +7376,12 @@ function CashBankPage() {
     name: `${account.name} - ${money(account.balance || 0)}`,
   }));
 
-  const setDefaultPartyForm = (
-    nextAction: "CUSTOMER_RECEIPT" | "SUPPLIER_PAYMENT",
-  ) => {
-    const baseCurrency =
-      currencies.find((currency) => currency.isBase) || currencies[0];
+  const setDefaultPartyForm = (nextAction: "CUSTOMER_RECEIPT" | "SUPPLIER_PAYMENT") => {
+    const baseCurrency = currencies.find((currency) => currency.isBase) || currencies[0];
     const account = paymentAccounts.find(
       (item) => !baseCurrency || item.currencyId === baseCurrency.id,
     );
-    const party =
-      nextAction === "CUSTOMER_RECEIPT" ? customers[0] : suppliers[0];
+    const party = nextAction === "CUSTOMER_RECEIPT" ? customers[0] : suppliers[0];
 
     setPartyForm({
       ...emptyPartyPaymentForm,
@@ -8160,8 +7403,7 @@ function CashBankPage() {
   };
 
   const openTreasuryAccount = (kind: "CASH" | "BANK") => {
-    const baseCurrency =
-      currencies.find((currency) => currency.isBase) || currencies[0];
+    const baseCurrency = currencies.find((currency) => currency.isBase) || currencies[0];
     setAccountForm({
       ...emptyTreasuryAccountForm,
       kind,
@@ -8233,17 +7475,11 @@ function CashBankPage() {
         }
       }
 
-      toast.success(
-        accountForm.kind === "CASH"
-          ? "حساب صندوق ساخته شد"
-          : "حساب بانکی ساخته شد",
-      );
+      toast.success(accountForm.kind === "CASH" ? "حساب صندوق ساخته شد" : "حساب بانکی ساخته شد");
       setAccountDialogOpen(false);
       await loadCashBankData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ساخت حساب خزانه ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ساخت حساب خزانه ناکام شد");
     }
   };
 
@@ -8256,15 +7492,9 @@ function CashBankPage() {
       action === "CUSTOMER_RECEIPT"
         ? "/api/payments/customer-receipts"
         : "/api/payments/supplier-payments";
-    const partyKey =
-      action === "CUSTOMER_RECEIPT" ? "customerId" : "supplierId";
+    const partyKey = action === "CUSTOMER_RECEIPT" ? "customerId" : "supplierId";
 
-    if (
-      !partyForm.partyId ||
-      !partyForm.currencyId ||
-      !selectedAccount ||
-      partyForm.amount <= 0
-    ) {
+    if (!partyForm.partyId || !partyForm.currencyId || !selectedAccount || partyForm.amount <= 0) {
       toast.error("طرف حساب، کرنسی، حساب پرداخت و مبلغ معتبر ضروری است");
       return;
     }
@@ -8282,14 +7512,10 @@ function CashBankPage() {
         const cancelJson = await cancelRes.json().catch(() => null);
 
         if (!cancelRes.ok) {
-          throw new Error(
-            cancelJson?.message || "ابطال نسخه قبلی سند ناکام شد",
-          );
+          throw new Error(cancelJson?.message || "ابطال نسخه قبلی سند ناکام شد");
         }
 
-        setPartyEditing((current) =>
-          current ? { ...current, reversed: true } : current,
-        );
+        setPartyEditing((current) => (current ? { ...current, reversed: true } : current));
         reversedExisting = true;
       }
 
@@ -8323,10 +7549,7 @@ function CashBankPage() {
         const receiptUrl = await refreshReceiptAccessUrl(
           `${API_BASE_URL}/api/receipts/party-payments/${receiptId}/html`,
         );
-        window.open(
-          receiptUrl,
-          "_blank",
-        );
+        window.open(receiptUrl, "_blank");
       }
       setAction(null);
       setPartyEditing(null);
@@ -8379,17 +7602,12 @@ function CashBankPage() {
       setAction(null);
       await loadCashBankData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "انتقال پول ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "انتقال پول ناکام شد");
     }
   };
 
   const openCashBankCancel = (row: DataRow) => {
-    if (
-      row.referenceType?.endsWith?.("_CANCEL") ||
-      row.typeRaw === "ADJUSTMENT"
-    ) {
+    if (row.referenceType?.endsWith?.("_CANCEL") || row.typeRaw === "ADJUSTMENT") {
       toast.info("این ردیف خودش سند اصلاحی/ابطال است و دوباره ابطال نمی‌شود.");
       return;
     }
@@ -8400,17 +7618,13 @@ function CashBankPage() {
   };
 
   const openCashBankCorrection = async (row: DataRow) => {
-    if (
-      row.referenceType?.endsWith?.("_CANCEL") ||
-      row.typeRaw === "ADJUSTMENT"
-    ) {
+    if (row.referenceType?.endsWith?.("_CANCEL") || row.typeRaw === "ADJUSTMENT") {
       toast.info("این ردیف خودش سند اصلاحی/ابطال است و دوباره اصلاح نمی‌شود.");
       return;
     }
 
     if (
-      (row.typeRaw === "CUSTOMER_PAYMENT" ||
-        row.typeRaw === "SUPPLIER_PAYMENT") &&
+      (row.typeRaw === "CUSTOMER_PAYMENT" || row.typeRaw === "SUPPLIER_PAYMENT") &&
       row.referenceId
     ) {
       try {
@@ -8439,23 +7653,15 @@ function CashBankPage() {
           note: partyTransaction?.note || "",
         });
         setPartyEditing({ row, reversed: false });
-        setAction(
-          row.typeRaw === "CUSTOMER_PAYMENT"
-            ? "CUSTOMER_RECEIPT"
-            : "SUPPLIER_PAYMENT",
-        );
+        setAction(row.typeRaw === "CUSTOMER_PAYMENT" ? "CUSTOMER_RECEIPT" : "SUPPLIER_PAYMENT");
         return;
       } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "خواندن جزئیات سند ناکام شد",
-        );
+        toast.error(error instanceof Error ? error.message : "خواندن جزئیات سند ناکام شد");
         return;
       }
     }
 
-    toast.info(
-      "برای اصلاح انتقال، سند فعلی را ابطال و انتقال درست را دوباره ثبت کنید.",
-    );
+    toast.info("برای اصلاح انتقال، سند فعلی را ابطال و انتقال درست را دوباره ثبت کنید.");
     openCashBankCancel(row);
   };
 
@@ -8466,8 +7672,7 @@ function CashBankPage() {
     if (cancelRow.typeRaw === "TRANSFER" && cancelRow.transferGroupId) {
       endpoint = `/api/money-transfers/${cancelRow.transferGroupId}/cancel`;
     } else if (
-      (cancelRow.typeRaw === "CUSTOMER_PAYMENT" ||
-        cancelRow.typeRaw === "SUPPLIER_PAYMENT") &&
+      (cancelRow.typeRaw === "CUSTOMER_PAYMENT" || cancelRow.typeRaw === "SUPPLIER_PAYMENT") &&
       cancelRow.referenceId
     ) {
       endpoint = `/api/payments/party-transactions/${cancelRow.referenceId}/cancel`;
@@ -8500,41 +7705,22 @@ function CashBankPage() {
       setCancelReason("");
       await loadCashBankData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال سند ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال سند ناکام شد");
     }
   };
 
   const partyOptions = action === "SUPPLIER_PAYMENT" ? suppliers : customers;
   const selectedCurrencyAccounts = paymentAccounts.filter(
-    (account) =>
-      !partyForm.currencyId || account.currencyId === partyForm.currencyId,
+    (account) => !partyForm.currencyId || account.currencyId === partyForm.currencyId,
   );
 
   return (
     <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="نقد فعلی صندوق"
-          value={money(cashTotal)}
-          icon={<Banknote />}
-        />
-        <MetricCard
-          label="مانده فعلی بانک"
-          value={money(bankTotal)}
-          icon={<Landmark />}
-        />
-        <MetricCard
-          label="طلب فعلی مشتریان"
-          value={money(receivables)}
-          icon={<UsersRound />}
-        />
-        <MetricCard
-          label="بدهی فعلی فروشندگان"
-          value={money(payables)}
-          icon={<Building2 />}
-        />
+        <MetricCard label="نقد فعلی صندوق" value={money(cashTotal)} icon={<Banknote />} />
+        <MetricCard label="مانده فعلی بانک" value={money(bankTotal)} icon={<Landmark />} />
+        <MetricCard label="طلب فعلی مشتریان" value={money(receivables)} icon={<UsersRound />} />
+        <MetricCard label="بدهی فعلی فروشندگان" value={money(payables)} icon={<Building2 />} />
       </div>
 
       <Tabs>
@@ -8567,17 +7753,11 @@ function CashBankPage() {
                     className="w-72 ps-9"
                   />
                 </div>
-                <Button
-                  variant="outline"
-                  onClick={() => void loadCashBankData(1)}
-                >
+                <Button variant="outline" onClick={() => void loadCashBankData(1)}>
                   <RefreshCcw className="size-4" />
                   تازه‌سازی
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => openTreasuryAccount("CASH")}
-                >
+                <Button variant="outline" onClick={() => openTreasuryAccount("CASH")}>
                   <Banknote className="size-4" />
                   صندوق جدید
                 </Button>
@@ -8616,8 +7796,8 @@ function CashBankPage() {
                   پرداختی و دریافتی
                 </CardTitle>
                 <CardDescription>
-                  دریافت از مشتری، پرداخت به فروشنده، انتقال بین صندوق و بانک و
-                  پیگیری کاربر ثبت‌کننده.
+                  دریافت از مشتری، پرداخت به فروشنده، انتقال بین صندوق و بانک و پیگیری کاربر
+                  ثبت‌کننده.
                 </CardDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -8636,11 +7816,7 @@ function CashBankPage() {
                   value={transactionFilter}
                   onChange={(event) =>
                     setTransactionFilter(
-                      event.target.value as
-                        | "ALL"
-                        | "RECEIPT"
-                        | "PAYMENT"
-                        | "TRANSFER",
+                      event.target.value as "ALL" | "RECEIPT" | "PAYMENT" | "TRANSFER",
                     )
                   }
                   className="h-9 rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
@@ -8650,24 +7826,15 @@ function CashBankPage() {
                   <option value="PAYMENT">پرداختی</option>
                   <option value="TRANSFER">انتقال</option>
                 </select>
-                <Button
-                  variant="outline"
-                  onClick={() => void loadCashBankData(1)}
-                >
+                <Button variant="outline" onClick={() => void loadCashBankData(1)}>
                   <RefreshCcw className="size-4" />
                   تازه‌سازی
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setDefaultPartyForm("CUSTOMER_RECEIPT")}
-                >
+                <Button variant="outline" onClick={() => setDefaultPartyForm("CUSTOMER_RECEIPT")}>
                   <TrendingUp className="size-4" />
                   دریافت
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setDefaultPartyForm("SUPPLIER_PAYMENT")}
-                >
+                <Button variant="outline" onClick={() => setDefaultPartyForm("SUPPLIER_PAYMENT")}>
                   <TrendingDown className="size-4" />
                   پرداخت
                 </Button>
@@ -8717,13 +7884,11 @@ function CashBankPage() {
         <DialogContent dir="rtl" className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>
-              {accountForm.kind === "CASH"
-                ? "ساخت صندوق نقدی"
-                : "ساخت حساب بانکی"}
+              {accountForm.kind === "CASH" ? "ساخت صندوق نقدی" : "ساخت حساب بانکی"}
             </DialogTitle>
             <DialogDescription>
-              حساب‌های ساخته‌شده در همین بخش برای POS، خرید، فروش، دریافت،
-              پرداخت و انتقال پول استفاده می‌شوند.
+              حساب‌های ساخته‌شده در همین بخش برای POS، خرید، فروش، دریافت، پرداخت و انتقال پول
+              استفاده می‌شوند.
             </DialogDescription>
           </DialogHeader>
 
@@ -8731,9 +7896,7 @@ function CashBankPage() {
             <TextField
               label="نام حساب"
               value={accountForm.name}
-              onChange={(value) =>
-                setAccountForm((current) => ({ ...current, name: value }))
-              }
+              onChange={(value) => setAccountForm((current) => ({ ...current, name: value }))}
             />
             <LookupSelect
               label="کرنسی"
@@ -8742,18 +7905,14 @@ function CashBankPage() {
                 ...item,
                 name: item.code || item.name,
               }))}
-              onChange={(value) =>
-                setAccountForm((current) => ({ ...current, currencyId: value }))
-              }
+              onChange={(value) => setAccountForm((current) => ({ ...current, currencyId: value }))}
             />
             {accountForm.kind === "CASH" ? (
               <>
                 <TextField
                   label="کد صندوق"
                   value={accountForm.code}
-                  onChange={(value) =>
-                    setAccountForm((current) => ({ ...current, code: value }))
-                  }
+                  onChange={(value) => setAccountForm((current) => ({ ...current, code: value }))}
                 />
                 <TextField
                   label="موقعیت"
@@ -8803,17 +7962,12 @@ function CashBankPage() {
             <TextField
               label="یادداشت"
               value={accountForm.note}
-              onChange={(value) =>
-                setAccountForm((current) => ({ ...current, note: value }))
-              }
+              onChange={(value) => setAccountForm((current) => ({ ...current, note: value }))}
             />
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setAccountDialogOpen(false)}
-            >
+            <Button variant="outline" onClick={() => setAccountDialogOpen(false)}>
               لغو
             </Button>
             <Button onClick={submitTreasuryAccount}>ذخیره حساب</Button>
@@ -8842,8 +7996,7 @@ function CashBankPage() {
                     : "انتقال صندوق/بانک"}
             </DialogTitle>
             <DialogDescription>
-              عملیات خزانه بعد از ثبت، مانده صندوق/بانک و حساب طرف معامله را
-              هم‌زمان به‌روز می‌کند.
+              عملیات خزانه بعد از ثبت، مانده صندوق/بانک و حساب طرف معامله را هم‌زمان به‌روز می‌کند.
             </DialogDescription>
           </DialogHeader>
 
@@ -8874,16 +8027,12 @@ function CashBankPage() {
               <NumberField
                 label="مبلغ انتقال"
                 value={transferForm.amount}
-                onChange={(value) =>
-                  setTransferForm((current) => ({ ...current, amount: value }))
-                }
+                onChange={(value) => setTransferForm((current) => ({ ...current, amount: value }))}
               />
               <TextField
                 label="یادداشت"
                 value={transferForm.note}
-                onChange={(value) =>
-                  setTransferForm((current) => ({ ...current, note: value }))
-                }
+                onChange={(value) => setTransferForm((current) => ({ ...current, note: value }))}
               />
             </div>
           ) : (
@@ -8892,9 +8041,7 @@ function CashBankPage() {
                 label={action === "SUPPLIER_PAYMENT" ? "فروشنده" : "مشتری"}
                 value={partyForm.partyId}
                 options={partyOptions}
-                onChange={(value) =>
-                  setPartyForm((current) => ({ ...current, partyId: value }))
-                }
+                onChange={(value) => setPartyForm((current) => ({ ...current, partyId: value }))}
               />
               <LookupSelect
                 label="کرنسی"
@@ -8928,17 +8075,13 @@ function CashBankPage() {
               <NumberField
                 label="مبلغ"
                 value={partyForm.amount}
-                onChange={(value) =>
-                  setPartyForm((current) => ({ ...current, amount: value }))
-                }
+                onChange={(value) => setPartyForm((current) => ({ ...current, amount: value }))}
               />
               <div className="md:col-span-2">
                 <TextField
                   label="یادداشت"
                   value={partyForm.note}
-                  onChange={(value) =>
-                    setPartyForm((current) => ({ ...current, note: value }))
-                  }
+                  onChange={(value) => setPartyForm((current) => ({ ...current, note: value }))}
                 />
               </div>
             </div>
@@ -8948,11 +8091,7 @@ function CashBankPage() {
             <Button variant="outline" onClick={() => setAction(null)}>
               لغو
             </Button>
-            <Button
-              onClick={
-                action === "TRANSFER" ? submitTransfer : submitPartyPayment
-              }
-            >
+            <Button onClick={action === "TRANSFER" ? submitTransfer : submitPartyPayment}>
               {partyEditing ? "ذخیره اصلاحات" : "ثبت عملیات"}
             </Button>
           </DialogFooter>
@@ -8971,8 +8110,8 @@ function CashBankPage() {
           <DialogHeader>
             <DialogTitle>ابطال سند مالی</DialogTitle>
             <DialogDescription>
-              این عملیات ردیف را حذف نمی‌کند؛ یک سند معکوس می‌سازد تا مانده
-              صندوق/بانک و ژورنال حسابداری اصلاح شود.
+              این عملیات ردیف را حذف نمی‌کند؛ یک سند معکوس می‌سازد تا مانده صندوق/بانک و ژورنال
+              حسابداری اصلاح شود.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -9015,9 +8154,7 @@ const emptyIncomeExpenseForm: IncomeExpenseForm = {
 
 function IncomeExpensesPage() {
   const [rows, setRows] = useState<DataRow[]>([]);
-  const [paymentAccounts, setPaymentAccounts] = useState<
-    PaymentAccountOption[]
-  >([]);
+  const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccountOption[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [query, setQuery] = useState("");
@@ -9030,28 +8167,20 @@ function IncomeExpensesPage() {
   const loadIncomeExpensesData = async () => {
     setIsLoading(true);
     try {
-      const [itemsRes, cashRes, bankRes, currenciesRes, categoriesRes] =
-        await Promise.all([
-          fetch(`${API_BASE_URL}/api/income-expenses`).then((res) =>
-            res.json(),
-          ),
-          fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
-          fetch(`${API_BASE_URL}/api/financial-categories`).then((res) =>
-            res.json(),
-          ),
-        ]);
+      const [itemsRes, cashRes, bankRes, currenciesRes, categoriesRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/income-expenses`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/cash-registers`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/bank-accounts`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/currencies`).then((res) => res.json()),
+        fetch(`${API_BASE_URL}/api/financial-categories`).then((res) => res.json()),
+      ]);
 
       setRows(
         Array.isArray(itemsRes?.data)
           ? (() => {
               const cancelledIds = new Set<string>();
               itemsRes.data.forEach((item: any) => {
-                if (
-                  String(item.referenceType || "").endsWith("_CANCEL") &&
-                  item.referenceId
-                ) {
+                if (String(item.referenceType || "").endsWith("_CANCEL") && item.referenceId) {
                   cancelledIds.add(item.referenceId);
                 }
               });
@@ -9072,18 +8201,10 @@ function IncomeExpensesPage() {
           : [],
       );
       setPaymentAccounts(buildPaymentAccounts(cashRes?.data, bankRes?.data));
-      setCurrencies(
-        Array.isArray(currenciesRes?.data) ? currenciesRes.data : [],
-      );
-      setCategories(
-        Array.isArray(categoriesRes?.data) ? categoriesRes.data : [],
-      );
+      setCurrencies(Array.isArray(currenciesRes?.data) ? currenciesRes.data : []);
+      setCategories(Array.isArray(categoriesRes?.data) ? categoriesRes.data : []);
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "خواندن عواید و مصارف ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن عواید و مصارف ناکام شد");
     } finally {
       setIsLoading(false);
     }
@@ -9108,26 +8229,17 @@ function IncomeExpensesPage() {
 
   const incomeTotal = rows
     .filter((row) => String(row.type).includes("عواید"))
-    .reduce(
-      (sum, row) => sum + Number(String(row.amount).replace(/[^\d.-]/g, "")),
-      0,
-    );
+    .reduce((sum, row) => sum + Number(String(row.amount).replace(/[^\d.-]/g, "")), 0);
   const expenseTotal = rows
     .filter((row) => String(row.type).includes("مصرف"))
-    .reduce(
-      (sum, row) => sum + Number(String(row.amount).replace(/[^\d.-]/g, "")),
-      0,
-    );
+    .reduce((sum, row) => sum + Number(String(row.amount).replace(/[^\d.-]/g, "")), 0);
 
   const openCreate = (kind: "INCOME" | "EXPENSE") => {
-    const baseCurrency =
-      currencies.find((currency) => currency.isBase) || currencies[0];
+    const baseCurrency = currencies.find((currency) => currency.isBase) || currencies[0];
     const account = paymentAccounts.find(
       (item) => !baseCurrency || item.currencyId === baseCurrency.id,
     );
-    const category = categories.find(
-      (item) => item.type === "BOTH" || item.type === kind,
-    );
+    const category = categories.find((item) => item.type === "BOTH" || item.type === kind);
 
     setForm({
       ...emptyIncomeExpenseForm,
@@ -9171,17 +8283,12 @@ function IncomeExpensesPage() {
       setDialogOpen(false);
       await loadIncomeExpensesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ثبت عاید/مصرف ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ثبت عاید/مصرف ناکام شد");
     }
   };
 
   const openIncomeExpenseCancel = (row: DataRow) => {
-    if (
-      row.referenceType?.endsWith?.("_CANCEL") ||
-      row.typeRaw === "ADJUSTMENT"
-    ) {
+    if (row.referenceType?.endsWith?.("_CANCEL") || row.typeRaw === "ADJUSTMENT") {
       toast.info("این ردیف خودش سند اصلاحی/ابطال است و دوباره ابطال نمی‌شود.");
       return;
     }
@@ -9194,14 +8301,11 @@ function IncomeExpensesPage() {
     if (!cancelRow) return;
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/income-expenses/${cancelRow.id}/cancel`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: cancelReason || null }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/income-expenses/${cancelRow.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelReason || null }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -9213,9 +8317,7 @@ function IncomeExpensesPage() {
       setCancelReason("");
       await loadIncomeExpensesData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال سند ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال سند ناکام شد");
     }
   };
 
@@ -9229,16 +8331,8 @@ function IncomeExpensesPage() {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="عواید ثبت‌شده"
-          value={money(incomeTotal)}
-          icon={<TrendingUp />}
-        />
-        <MetricCard
-          label="مصارف ثبت‌شده"
-          value={money(expenseTotal)}
-          icon={<TrendingDown />}
-        />
+        <MetricCard label="عواید ثبت‌شده" value={money(incomeTotal)} icon={<TrendingUp />} />
+        <MetricCard label="مصارف ثبت‌شده" value={money(expenseTotal)} icon={<TrendingDown />} />
         <MetricCard
           label="کتگوری‌های مالی"
           value={new Intl.NumberFormat("en-US").format(categories.length)}
@@ -9259,8 +8353,7 @@ function IncomeExpensesPage() {
               عواید و مصارف
             </CardTitle>
             <CardDescription>
-              ثبت دخل و خرچ عمومی با اثر خودکار روی صندوق/بانک و ژورنال
-              حسابداری.
+              ثبت دخل و خرچ عمومی با اثر خودکار روی صندوق/بانک و ژورنال حسابداری.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -9273,10 +8366,7 @@ function IncomeExpensesPage() {
                 className="w-72 ps-9"
               />
             </div>
-            <Button
-              variant="outline"
-              onClick={() => void loadIncomeExpensesData()}
-            >
+            <Button variant="outline" onClick={() => void loadIncomeExpensesData()}>
               <RefreshCcw className="size-4" />
               تازه‌سازی
             </Button>
@@ -9317,9 +8407,7 @@ function IncomeExpensesPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent dir="rtl" className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>
-              {form.kind === "INCOME" ? "ثبت عاید جدید" : "ثبت مصرف جدید"}
-            </DialogTitle>
+            <DialogTitle>{form.kind === "INCOME" ? "ثبت عاید جدید" : "ثبت مصرف جدید"}</DialogTitle>
             <DialogDescription>
               با ثبت این سند، مانده حساب و سند حسابداری هم‌زمان ساخته می‌شود.
             </DialogDescription>
@@ -9362,41 +8450,30 @@ function IncomeExpensesPage() {
               label="حساب صندوق/بانک"
               value={form.accountKey}
               options={paymentAccounts
-                .filter(
-                  (account) =>
-                    !form.currencyId || account.currencyId === form.currencyId,
-                )
+                .filter((account) => !form.currencyId || account.currencyId === form.currencyId)
                 .map((account) => ({
                   id: accountKey(account),
                   name: `${account.name} - ${money(account.balance || 0)}`,
                 }))}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, accountKey: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, accountKey: value }))}
             />
             <LookupSelect
               label="کتگوری"
               value={form.categoryId}
               options={categoryOptions}
               emptyLabel="بدون کتگوری"
-              onChange={(value) =>
-                setForm((current) => ({ ...current, categoryId: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, categoryId: value }))}
             />
             <NumberField
               label="مبلغ"
               value={form.amount}
               fullWidth
-              onChange={(value) =>
-                setForm((current) => ({ ...current, amount: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, amount: value }))}
             />
             <TextField
               label="شرح"
               value={form.note}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, note: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, note: value }))}
             />
           </div>
 
@@ -9419,8 +8496,7 @@ function IncomeExpensesPage() {
           <DialogHeader>
             <DialogTitle>ابطال عاید/مصرف</DialogTitle>
             <DialogDescription>
-              سند اصلی برای تاریخچه باقی می‌ماند و یک سند معکوس روی صندوق/بانک و
-              ژورنال ثبت می‌شود.
+              سند اصلی برای تاریخچه باقی می‌ماند و یک سند معکوس روی صندوق/بانک و ژورنال ثبت می‌شود.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -9476,9 +8552,7 @@ function ReportsPage() {
   const loadReport = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/reports/daily-cashier?date=${date}`,
-      );
+      const res = await fetch(`${API_BASE_URL}/api/reports/daily-cashier?date=${date}`);
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -9487,9 +8561,7 @@ function ReportsPage() {
 
       setReport(json.data);
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "خواندن گزارش ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "خواندن گزارش ناکام شد");
     } finally {
       setIsLoading(false);
     }
@@ -9502,9 +8574,7 @@ function ReportsPage() {
   const recentRows: DataRow[] =
     report?.recentTransactions.map((item) => ({
       id: item.id,
-      date: item.createdAt
-        ? new Date(item.createdAt).toLocaleString("fa-AF")
-        : "-",
+      date: item.createdAt ? formatKabulDateTime(item.createdAt) : "-",
       type: item.type,
       direction: item.direction === "IN" ? "ورودی" : "خروجی",
       amount: money(item.amount),
@@ -9534,9 +8604,7 @@ function ReportsPage() {
         />
         <MetricCard
           label="فاکتورها"
-          value={new Intl.NumberFormat("en-US").format(
-            report?.summary.saleCount || 0,
-          )}
+          value={new Intl.NumberFormat("en-US").format(report?.summary.saleCount || 0)}
           icon={<FileBarChart />}
         />
       </div>
@@ -9549,8 +8617,7 @@ function ReportsPage() {
               گزارش روزانه فروشنده‌ها
             </CardTitle>
             <CardDescription>
-              فروش، دریافت نقد/بانک، خروجی‌ها و جریان خالص بر اساس کاربر و
-              دستگاه POS.
+              فروش، دریافت نقد/بانک، خروجی‌ها و جریان خالص بر اساس کاربر و دستگاه POS.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -9668,9 +8735,7 @@ function ProductsPage() {
   const [form, setForm] = useState<ProductFormState>(emptyProductForm);
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [productImagePreview, setProductImagePreview] = useState("");
-  const [productUnitLines, setProductUnitLines] = useState<ProductUnitForm[]>(
-    [],
-  );
+  const [productUnitLines, setProductUnitLines] = useState<ProductUnitForm[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const productsRequestSeqRef = useRef(0);
   const productsRequestAbortRef = useRef<AbortController | null>(null);
@@ -9686,33 +8751,33 @@ function ProductsPage() {
     setIsLoading(true);
     try {
       const [productRes, lookupResults] = await Promise.all([
-          fetch(
-            `${API_BASE_URL}/api/products?${new URLSearchParams({
-              page: String(page),
-              limit: "20",
-              search: query.trim(),
-              barcodeFilter,
-              ...(categoryFilter !== "all" ? { categoryId: categoryFilter } : {}),
-            }).toString()}`,
-            { signal: abortController.signal },
-          ).then((res) => res.json()),
-          productLookupsLoadedRef.current
-            ? Promise.resolve(null)
-            : Promise.all([
-                fetch(`${API_BASE_URL}/api/product-categories`, {
-                  signal: abortController.signal,
-                }).then((res) => res.json()),
-                fetch(`${API_BASE_URL}/api/units`, {
-                  signal: abortController.signal,
-                }).then((res) => res.json()),
-                fetch(`${API_BASE_URL}/api/warehouses`, {
-                  signal: abortController.signal,
-                }).then((res) => res.json()),
-                fetch(`${API_BASE_URL}/api/currencies`, {
-                  signal: abortController.signal,
-                }).then((res) => res.json()),
-              ]),
-        ]);
+        fetch(
+          `${API_BASE_URL}/api/products?${new URLSearchParams({
+            page: String(page),
+            limit: "20",
+            search: query.trim(),
+            barcodeFilter,
+            ...(categoryFilter !== "all" ? { categoryId: categoryFilter } : {}),
+          }).toString()}`,
+          { signal: abortController.signal },
+        ).then((res) => res.json()),
+        productLookupsLoadedRef.current
+          ? Promise.resolve(null)
+          : Promise.all([
+              fetch(`${API_BASE_URL}/api/product-categories`, {
+                signal: abortController.signal,
+              }).then((res) => res.json()),
+              fetch(`${API_BASE_URL}/api/units`, {
+                signal: abortController.signal,
+              }).then((res) => res.json()),
+              fetch(`${API_BASE_URL}/api/warehouses`, {
+                signal: abortController.signal,
+              }).then((res) => res.json()),
+              fetch(`${API_BASE_URL}/api/currencies`, {
+                signal: abortController.signal,
+              }).then((res) => res.json()),
+            ]),
+      ]);
 
       const loadedProducts = Array.isArray(productRes?.data)
         ? productRes.data.map((item: unknown) => normalizeRow(item, "اجناس"))
@@ -9721,9 +8786,7 @@ function ProductsPage() {
       if (requestSeq !== productsRequestSeqRef.current) return;
 
       setProducts(loadedProducts);
-      setProductsSummary(
-        productRes?.summary || { total: 0, active: 0, barcodeCount: 0 },
-      );
+      setProductsSummary(productRes?.summary || { total: 0, active: 0, barcodeCount: 0 });
       setProductsPagination(productRes?.pagination || null);
       if (lookupResults) {
         const [categoryRes, unitRes, warehouseRes, currencyRes] = lookupResults;
@@ -9773,15 +8836,12 @@ function ProductsPage() {
   };
 
   const openCreate = () => {
-    const baseCurrency =
-      currencies.find((item) => item.isBase) || currencies[0];
+    const baseCurrency = currencies.find((item) => item.isBase) || currencies[0];
     setForm({
       ...emptyProductForm,
       baseUnitId: units[0]?.id || "",
       defaultWarehouseId:
-        warehouses.find((item: any) => item.isDefault)?.id ||
-        warehouses[0]?.id ||
-        "",
+        warehouses.find((item: any) => item.isDefault)?.id || warehouses[0]?.id || "",
       openingCurrencyId: baseCurrency?.id || "",
     });
     setProductImageFile(null);
@@ -9797,28 +8857,18 @@ function ProductsPage() {
     setDialogOpen(true);
   };
 
-  const openProductFormFromRecord = async (
-    row: DataRow,
-    mode: "edit" | "duplicate",
-  ) => {
+  const openProductFormFromRecord = async (row: DataRow, mode: "edit" | "duplicate") => {
     try {
-      const json = await fetch(`${API_BASE_URL}/api/products/${row.id}`).then(
-        (res) => res.json(),
-      );
+      const json = await fetch(`${API_BASE_URL}/api/products/${row.id}`).then((res) => res.json());
       const product = json?.data;
       const defaultSaleUnit =
-        product?.units?.find((item: any) => item.isDefaultSale) ||
-        product?.units?.[0];
+        product?.units?.find((item: any) => item.isDefaultSale) || product?.units?.[0];
       const defaultPurchaseUnit =
-        product?.units?.find((item: any) => item.isDefaultPurchase) ||
-        product?.units?.[0];
+        product?.units?.find((item: any) => item.isDefaultPurchase) || product?.units?.[0];
 
       setForm({
         id: mode === "edit" ? product.id : "",
-        name:
-          mode === "duplicate"
-            ? `${product.name || ""} - کاپی`
-            : product.name || "",
+        name: mode === "duplicate" ? `${product.name || ""} - کاپی` : product.name || "",
         sku: product.sku || "",
         barcode: mode === "duplicate" ? "" : product.barcode || "",
         description: product.description || "",
@@ -9832,14 +8882,11 @@ function ProductsPage() {
         salePrice: Number(defaultSaleUnit?.salePrice || 0),
         openingQuantity: 0,
         openingUnitCost: 0,
-        openingCurrencyId:
-          currencies.find((item) => item.isBase)?.id || currencies[0]?.id || "",
+        openingCurrencyId: currencies.find((item) => item.isBase)?.id || currencies[0]?.id || "",
         openingExpiryDate: "",
       });
       setProductImageFile(null);
-      setProductImagePreview(
-        product.imageUrl ? attachmentUrl(product.imageUrl) : "",
-      );
+      setProductImagePreview(product.imageUrl ? attachmentUrl(product.imageUrl) : "");
       setProductUnitLines(
         Array.isArray(product.units) && product.units.length > 0
           ? product.units.map((item: any) =>
@@ -9914,10 +8961,7 @@ function ProductsPage() {
         : index === 0,
     }));
 
-    if (
-      form.openingQuantity > 0 &&
-      (!form.defaultWarehouseId || !form.openingCurrencyId)
-    ) {
+    if (form.openingQuantity > 0 && (!form.defaultWarehouseId || !form.openingCurrencyId)) {
       toast.error("برای موجودی اولیه، گدام و کرنسی ضروری است");
       return;
     }
@@ -9945,9 +8989,7 @@ function ProductsPage() {
       };
 
       const productRes = await fetch(
-        form.id
-          ? `${API_BASE_URL}/api/products/${form.id}`
-          : `${API_BASE_URL}/api/products`,
+        form.id ? `${API_BASE_URL}/api/products/${form.id}` : `${API_BASE_URL}/api/products`,
         {
           method: form.id ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
@@ -9965,46 +9007,34 @@ function ProductsPage() {
       if (productImageFile && productId) {
         const imageForm = new FormData();
         imageForm.append("file", productImageFile);
-        const imageRes = await fetch(
-          `${API_BASE_URL}/api/products/${productId}/image`,
-          {
-            method: "POST",
-            body: imageForm,
-          },
-        );
+        const imageRes = await fetch(`${API_BASE_URL}/api/products/${productId}/image`, {
+          method: "POST",
+          body: imageForm,
+        });
         const imageJson = await imageRes.json().catch(() => null);
         if (!imageRes.ok) {
-          throw new Error(
-            imageJson?.message || "محصول ثبت شد، اما عکس آپلود نشد",
-          );
+          throw new Error(imageJson?.message || "محصول ثبت شد، اما عکس آپلود نشد");
         }
       }
 
       if (!form.id && form.openingQuantity > 0) {
-        const openingRes = await fetch(
-          `${API_BASE_URL}/api/inventory/opening-stock`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              productId,
-              warehouseId: form.defaultWarehouseId,
-              quantity: form.openingQuantity,
-              unitCost: openingUnitCost,
-              currencyId: form.openingCurrencyId,
-              expiryDate: form.hasExpiry
-                ? form.openingExpiryDate || null
-                : null,
-              note: "موجودی اولیه از فرم محصول",
-            }),
-          },
-        );
+        const openingRes = await fetch(`${API_BASE_URL}/api/inventory/opening-stock`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productId,
+            warehouseId: form.defaultWarehouseId,
+            quantity: form.openingQuantity,
+            unitCost: openingUnitCost,
+            currencyId: form.openingCurrencyId,
+            expiryDate: form.hasExpiry ? form.openingExpiryDate || null : null,
+            note: "موجودی اولیه از فرم محصول",
+          }),
+        });
         const openingJson = await openingRes.json().catch(() => null);
 
         if (!openingRes.ok) {
-          throw new Error(
-            openingJson?.message || "محصول ثبت شد، اما موجودی اولیه ثبت نشد",
-          );
+          throw new Error(openingJson?.message || "محصول ثبت شد، اما موجودی اولیه ثبت نشد");
         }
       }
 
@@ -10012,9 +9042,7 @@ function ProductsPage() {
       setDialogOpen(false);
       await loadProductsData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "عملیات محصول ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "عملیات محصول ناکام شد");
     }
   };
 
@@ -10032,9 +9060,7 @@ function ProductsPage() {
       toast.info("محصول حذف شد");
       setProducts((current) => current.filter((item) => item.id !== row.id));
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "حذف محصول ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "حذف محصول ناکام شد");
     }
   };
 
@@ -10050,28 +9076,21 @@ function ProductsPage() {
     );
   };
 
-  const baseProductUnit = productUnitLines.find(
-    (line) => line.unitId === form.baseUnitId,
-  );
+  const baseProductUnit = productUnitLines.find((line) => line.unitId === form.baseUnitId);
   const basePurchasePrice = baseProductUnit?.purchasePrice || 0;
-  const openingCurrency = currencies.find(
-    (item) => item.id === form.openingCurrencyId,
-  );
+  const openingCurrency = currencies.find((item) => item.id === form.openingCurrencyId);
   const openingUnitCost = basePriceInCurrency(basePurchasePrice, openingCurrency);
-  const openingCurrencyCode =
-    openingCurrency?.code || openingCurrency?.name || "AFN";
+  const openingCurrencyCode = openingCurrency?.code || openingCurrency?.name || "AFN";
   const syncPricesFromBaseUnit = (
     lines: ProductUnitForm[],
     patch: Partial<Pick<ProductUnitForm, "purchasePrice" | "salePrice">>,
   ) => {
     const currentBase = lines.find((line) => line.unitId === form.baseUnitId);
-    const basePurchasePrice =
-      patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
+    const basePurchasePrice = patch.purchasePrice ?? currentBase?.purchasePrice ?? 0;
     const baseSalePrice = patch.salePrice ?? currentBase?.salePrice ?? 0;
 
     return lines.map((line) => {
-      const conversionRate =
-        line.unitId === form.baseUnitId ? 1 : line.conversionRate;
+      const conversionRate = line.unitId === form.baseUnitId ? 1 : line.conversionRate;
 
       return {
         ...line,
@@ -10098,9 +9117,7 @@ function ProductsPage() {
         />
         <MetricCard
           label="بارکوددار"
-          value={new Intl.NumberFormat("en-US").format(
-            productsSummary.barcodeCount,
-          )}
+          value={new Intl.NumberFormat("en-US").format(productsSummary.barcodeCount)}
           icon={<BarChart3 />}
         />
         <MetricCard
@@ -10175,10 +9192,7 @@ function ProductsPage() {
               تازه‌سازی
             </Button>
             {isAdmin ? (
-              <Button
-                variant="outline"
-                onClick={() => setDuplicatesDialogOpen(true)}
-              >
+              <Button variant="outline" onClick={() => setDuplicatesDialogOpen(true)}>
                 <ShieldCheck className="size-4" />
                 بارکدهای تکراری
               </Button>
@@ -10239,9 +9253,7 @@ function ProductsPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent dir="rtl" className="sm:max-w-6xl">
           <DialogHeader>
-            <DialogTitle>
-              {form.id ? "ویرایش کالا" : "ثبت کالای جدید"}
-            </DialogTitle>
+            <DialogTitle>{form.id ? "ویرایش کالا" : "ثبت کالای جدید"}</DialogTitle>
             <DialogDescription>
               اطلاعات اصلی کالا، قیمت‌ها و موجودی اولیه را وارد کنید.
             </DialogDescription>
@@ -10252,31 +9264,23 @@ function ProductsPage() {
               <TextField
                 label="نام کالا"
                 value={form.name}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, name: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, name: value }))}
               />
               <TextField
                 label="SKU"
                 value={form.sku}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, sku: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, sku: value }))}
               />
               <TextField
                 label="بارکود (اختیاری)"
                 value={form.barcode}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, barcode: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, barcode: value }))}
               />
               <LookupSelect
                 label="کتگوری"
                 value={form.categoryId}
                 options={categories}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, categoryId: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, categoryId: value }))}
                 emptyLabel="بدون کتگوری"
               />
               <LookupSelect
@@ -10288,13 +9292,9 @@ function ProductsPage() {
                   setProductUnitLines((current) => {
                     if (current.some((line) => line.unitId === value)) {
                       const nextLines = current.map((line) =>
-                        line.unitId === value
-                          ? { ...line, conversionRate: 1 }
-                          : line,
+                        line.unitId === value ? { ...line, conversionRate: 1 } : line,
                       );
-                      const nextBase = nextLines.find(
-                        (line) => line.unitId === value,
-                      );
+                      const nextBase = nextLines.find((line) => line.unitId === value);
                       const basePurchasePrice = nextBase?.purchasePrice || 0;
                       const baseSalePrice = nextBase?.salePrice || 0;
 
@@ -10302,14 +9302,12 @@ function ProductsPage() {
                         ...line,
                         purchasePrice: Number(
                           (
-                            basePurchasePrice *
-                            (line.unitId === value ? 1 : line.conversionRate)
+                            basePurchasePrice * (line.unitId === value ? 1 : line.conversionRate)
                           ).toFixed(4),
                         ),
                         salePrice: Number(
                           (
-                            baseSalePrice *
-                            (line.unitId === value ? 1 : line.conversionRate)
+                            baseSalePrice * (line.unitId === value ? 1 : line.conversionRate)
                           ).toFixed(4),
                         ),
                       }));
@@ -10342,14 +9340,11 @@ function ProductsPage() {
               <NumberField
                 label="حد هشدار کمبود موجودی"
                 value={form.minStock}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, minStock: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, minStock: value }))}
               />
               <p className="md:col-span-3 text-xs leading-6 text-muted-foreground">
-                این مقدار فقط برای هشدار کمبود موجودی استفاده می‌شود و فروش را
-                متوقف نمی‌کند؛ فروش فقط وقتی متوقف می‌شود که موجودی واقعی کافی
-                نباشد.
+                این مقدار فقط برای هشدار کمبود موجودی استفاده می‌شود و فروش را متوقف نمی‌کند؛ فروش
+                فقط وقتی متوقف می‌شود که موجودی واقعی کافی نباشد.
               </p>
               <NumberField
                 label="قیمت خرید عمومی (واحد پایه / AFN)"
@@ -10364,8 +9359,8 @@ function ProductsPage() {
                 disabled
               />
               <p className="md:col-span-3 text-xs leading-6 text-muted-foreground">
-                قیمت عمومی فقط نمایشی است و به صورت خودکار از قیمت واحد پایه
-                خوانده می‌شود. قیمت تمام واحدات با کرنسی پایه AFN ثبت می‌شود.
+                قیمت عمومی فقط نمایشی است و به صورت خودکار از قیمت واحد پایه خوانده می‌شود. قیمت
+                تمام واحدات با کرنسی پایه AFN ثبت می‌شود.
               </p>
             </div>
 
@@ -10388,8 +9383,8 @@ function ProductsPage() {
                 <div>
                   <strong className="text-sm">عکس برای POS</strong>
                   <p className="mt-1 text-xs leading-6 text-muted-foreground">
-                    این عکس در کارت محصول صفحه فروش سریع نمایش داده می‌شود. بهتر
-                    است عکس واضح، مربع و کمتر از ۵MB باشد.
+                    این عکس در کارت محصول صفحه فروش سریع نمایش داده می‌شود. بهتر است عکس واضح، مربع
+                    و کمتر از ۵MB باشد.
                   </p>
                 </div>
                 <label className="inline-flex h-9 w-fit cursor-pointer items-center justify-center gap-2 border border-input bg-background px-3 text-sm font-medium hover:bg-accent">
@@ -10453,18 +9448,14 @@ function ProductsPage() {
                 setForm((current) => ({
                   ...current,
                   hasExpiry: !current.hasExpiry,
-                  openingExpiryDate: current.hasExpiry
-                    ? ""
-                    : current.openingExpiryDate,
+                  openingExpiryDate: current.hasExpiry ? "" : current.openingExpiryDate,
                 }))
               }
             >
               <span>این کالا تاریخ انقضا دارد؟</span>
               <Badge
                 className={
-                  form.hasExpiry
-                    ? "bg-primary/15 text-primary"
-                    : "bg-muted text-muted-foreground"
+                  form.hasExpiry ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"
                 }
               >
                 {form.hasExpiry ? "بلی" : "نخیر"}
@@ -10476,18 +9467,15 @@ function ProductsPage() {
                 <div>
                   <h3 className="font-medium">واحدات خرید و فروش</h3>
                   <p className="text-xs text-muted-foreground">
-                    نسبت تبدیل یعنی هر واحد انتخاب‌شده چند واحد پایه می‌شود؛
-                    برای واحد پایه همیشه 1 ثبت می‌شود.
+                    نسبت تبدیل یعنی هر واحد انتخاب‌شده چند واحد پایه می‌شود؛ برای واحد پایه همیشه 1
+                    ثبت می‌شود.
                   </p>
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() =>
-                    setProductUnitLines((current) => [
-                      ...current,
-                      makeProductUnitLine(units),
-                    ])
+                    setProductUnitLines((current) => [...current, makeProductUnitLine(units)])
                   }
                 >
                   <Plus className="size-4" />
@@ -10513,9 +9501,7 @@ function ProductsPage() {
                                     ...item,
                                     unitId: value,
                                     conversionRate:
-                                      value === form.baseUnitId
-                                        ? 1
-                                        : item.conversionRate,
+                                      value === form.baseUnitId ? 1 : item.conversionRate,
                                   }
                                 : item,
                             ),
@@ -10526,11 +9512,7 @@ function ProductsPage() {
                     />
                     <NumberField
                       label="نسبت"
-                      value={
-                        line.unitId === form.baseUnitId
-                          ? 1
-                          : line.conversionRate
-                      }
+                      value={line.unitId === form.baseUnitId ? 1 : line.conversionRate}
                       onChange={(value) =>
                         setProductUnitLines((current) =>
                           syncPricesFromBaseUnit(
@@ -10538,10 +9520,7 @@ function ProductsPage() {
                               item.id === line.id
                                 ? {
                                     ...item,
-                                    conversionRate:
-                                      line.unitId === form.baseUnitId
-                                        ? 1
-                                        : value,
+                                    conversionRate: line.unitId === form.baseUnitId ? 1 : value,
                                   }
                                 : item,
                             ),
@@ -10560,9 +9539,7 @@ function ProductsPage() {
                                 purchasePrice: value,
                               })
                             : current.map((item) =>
-                                item.id === line.id
-                                  ? { ...item, purchasePrice: value }
-                                  : item,
+                                item.id === line.id ? { ...item, purchasePrice: value } : item,
                               ),
                         )
                       }
@@ -10577,9 +9554,7 @@ function ProductsPage() {
                                 salePrice: value,
                               })
                             : current.map((item) =>
-                                item.id === line.id
-                                  ? { ...item, salePrice: value }
-                                  : item,
+                                item.id === line.id ? { ...item, salePrice: value } : item,
                               ),
                         )
                       }
@@ -10641,8 +9616,7 @@ function ProductsPage() {
                   <div>
                     <h3 className="font-medium">موجودی اولیه</h3>
                     <p className="text-xs text-muted-foreground">
-                      اختیاری است؛ اگر مقدار وارد شود، lot و stock movement
-                      افتتاحیه ثبت می‌شود.
+                      اختیاری است؛ اگر مقدار وارد شود، lot و stock movement افتتاحیه ثبت می‌شود.
                     </p>
                   </div>
                 </div>
@@ -10692,9 +9666,8 @@ function ProductsPage() {
                   ) : null}
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  قیمت تمام‌شده موجودی اولیه از قیمت خرید واحد پایه محصول گرفته
-                  می‌شود و براساس کرنسی انتخاب‌شده تبدیل می‌گردد. معادل پایه:{" "}
-                  {money(basePurchasePrice)}
+                  قیمت تمام‌شده موجودی اولیه از قیمت خرید واحد پایه محصول گرفته می‌شود و براساس
+                  کرنسی انتخاب‌شده تبدیل می‌گردد. معادل پایه: {money(basePurchasePrice)}
                 </p>
               </div>
             )}
@@ -10852,13 +9825,7 @@ function InventoryMovementSection({
 }
 
 function InventoryPage() {
-  type InventoryTabKey =
-    | "stock"
-    | "opening"
-    | "increase"
-    | "decrease"
-    | "damage"
-    | "transfer";
+  type InventoryTabKey = "stock" | "opening" | "increase" | "decrease" | "damage" | "transfer";
 
   const initialMovementRange = recentDateRange();
   const [stockRows, setStockRows] = useState<DataRow[]>([]);
@@ -10877,19 +9844,18 @@ function InventoryPage() {
     damage: 1,
     transfer: 1,
   });
-  const [movementPagination, setMovementPagination] = useState<
-    Record<string, any>
-  >({});
+  const [movementPagination, setMovementPagination] = useState<Record<string, any>>({});
   const [lotOptions, setLotOptions] = useState<LookupItem[]>([]);
   const [products, setProducts] = useState<LookupItem[]>([]);
+  const [inventoryCategories, setInventoryCategories] = useState<LookupItem[]>([]);
   const [warehouses, setWarehouses] = useState<LookupItem[]>([]);
   const [currencies, setCurrencies] = useState<LookupItem[]>([]);
   const [query, setQuery] = useState("");
-  const [activeInventoryTab, setActiveInventoryTab] =
-    useState<InventoryTabKey>("stock");
+  const [activeInventoryTab, setActiveInventoryTab] = useState<InventoryTabKey>("stock");
   const [stockSortBy, setStockSortBy] = useState("");
   const [stockSortOrder, setStockSortOrder] = useState<"asc" | "desc">("desc");
   const [stockCostFilter, setStockCostFilter] = useState("");
+  const [stockCategoryId, setStockCategoryId] = useState("all");
   const [movementQueries, setMovementQueries] = useState({
     opening: "",
     increase: "",
@@ -10898,11 +9864,8 @@ function InventoryPage() {
     transfer: "",
   });
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState<InventoryActionForm>(
-    emptyInventoryActionForm,
-  );
-  const [inventoryActionSubmitting, setInventoryActionSubmitting] =
-    useState(false);
+  const [form, setForm] = useState<InventoryActionForm>(emptyInventoryActionForm);
+  const [inventoryActionSubmitting, setInventoryActionSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const inventoryLoadSeqRef = useRef(0);
   const inventoryLoadAbortRef = useRef<AbortController | null>(null);
@@ -10923,22 +9886,15 @@ function InventoryPage() {
   const [cancelMovement, setCancelMovement] = useState<DataRow | null>(null);
   const [cancelMovementReason, setCancelMovementReason] = useState("");
 
-  useEffect(
-    () => () => inventoryProductSearchAbortRef.current?.abort(),
-    [],
-  );
+  useEffect(() => () => inventoryProductSearchAbortRef.current?.abort(), []);
 
-  const normalizeMovementRow = (
-    item: any,
-    cancelledKeys = new Set<string>(),
-  ): DataRow => {
+  const normalizeMovementRow = (item: any, cancelledKeys = new Set<string>()): DataRow => {
     const movementKey =
       item.referenceType === "TRANSFER" && item.referenceId
         ? `TRANSFER:${item.referenceId}`
         : `MOVE:${item.id}`;
     const isCancelRow = String(item.referenceType || "").endsWith("_CANCEL");
-    const isCancelled =
-      Boolean(item.isCancelled) || isCancelRow || cancelledKeys.has(movementKey);
+    const isCancelled = Boolean(item.isCancelled) || isCancelRow || cancelledKeys.has(movementKey);
 
     return {
       id: item.id,
@@ -10946,30 +9902,23 @@ function InventoryPage() {
       referenceType: item.referenceType,
       typeRaw: item.type,
       __raw: item,
-      date: item.createdAt
-        ? new Date(item.createdAt).toLocaleString("fa-AF")
-        : "-",
+      date: item.createdAt ? formatKabulDateTime(item.createdAt) : "-",
       product: item.product?.name || "-",
       warehouse: item.warehouse?.name || "-",
       lot: item.lot?.expiryDate
-        ? new Date(item.lot.expiryDate).toLocaleDateString("fa-AF")
+        ? formatKabulDate(item.lot.expiryDate)
         : item.lotId || "-",
       type: inventoryMovementTypeLabel(item.type),
       quantity: `${Number(item.quantity || 0)} ${item.product?.baseUnit?.shortName || item.product?.baseUnit?.name || ""}`,
       status: isCancelled ? "ابطال" : inventoryMovementTypeLabel(item.type),
       __canDelete: !isCancelled,
       __canEdit: !isCancelled,
-      user:
-        item.createdByUser?.displayName || item.createdByUser?.username || "-",
+      user: item.createdByUser?.displayName || item.createdByUser?.username || "-",
       note: item.note || item.referenceId || "-",
     };
   };
 
-  const movementRequestQuery = (
-    page: number,
-    search: string,
-    type?: string,
-  ) => {
+  const movementRequestQuery = (page: number, search: string, type?: string) => {
     const params = new URLSearchParams({
       limit: "20",
       page: String(page),
@@ -11001,9 +9950,7 @@ function InventoryPage() {
       const json = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(
-          json?.message || json?.error?.message || "خواندن اطلاعات ناکام شد",
-        );
+        throw new Error(json?.message || json?.error?.message || "خواندن اطلاعات ناکام شد");
       }
 
       return json;
@@ -11025,6 +9972,9 @@ function InventoryPage() {
         if (stockCostFilter) {
           stockParams.set("costFilter", stockCostFilter);
         }
+        if (stockCategoryId !== "all") {
+          stockParams.set("categoryId", stockCategoryId);
+        }
         dataUrl = `${API_BASE_URL}/api/inventory/stock?${stockParams.toString()}`;
       } else if (tab === "transfer") {
         dataUrl = `${API_BASE_URL}/api/inventory/transfer-reports?${movementRequestQuery(pages.transfer, queries.transfer)}`;
@@ -11038,13 +9988,13 @@ function InventoryPage() {
         dataUrl = `${API_BASE_URL}/api/inventory/movements?${movementRequestQuery(pages[tab], queries[tab], movementTypeByTab[tab])}`;
       }
 
-      const shouldLoadLookups =
-        options.refreshLookups || !inventoryLookupsLoadedRef.current;
+      const shouldLoadLookups = options.refreshLookups || !inventoryLookupsLoadedRef.current;
       const [dataRes, lookupResults] = await Promise.all([
         loadJson(dataUrl),
         shouldLoadLookups
           ? Promise.all([
               loadJson(`${API_BASE_URL}/api/products/lookup?limit=50`),
+              loadJson(`${API_BASE_URL}/api/product-categories/lookup`),
               loadJson(`${API_BASE_URL}/api/warehouses`),
               loadJson(`${API_BASE_URL}/api/currencies`),
             ])
@@ -11054,8 +10004,9 @@ function InventoryPage() {
       if (requestSeq !== inventoryLoadSeqRef.current) return;
 
       if (lookupResults) {
-        const [productRes, warehouseRes, currencyRes] = lookupResults;
+        const [productRes, categoryRes, warehouseRes, currencyRes] = lookupResults;
         setProducts(Array.isArray(productRes?.data) ? productRes.data : []);
+        setInventoryCategories(Array.isArray(categoryRes?.data) ? categoryRes.data : []);
         setWarehouses(Array.isArray(warehouseRes?.data) ? warehouseRes.data : []);
         setCurrencies(Array.isArray(currencyRes?.data) ? currencyRes.data : []);
         inventoryLookupsLoadedRef.current = true;
@@ -11069,9 +10020,7 @@ function InventoryPage() {
       if (tab === "stock") {
         setStockRows(
           Array.isArray(dataRes?.data)
-            ? dataRes.data.map((item: unknown) =>
-                normalizeRow(item, "موجودی و گدام"),
-              )
+            ? dataRes.data.map((item: unknown) => normalizeRow(item, "موجودی و گدام"))
             : [],
         );
         return;
@@ -11103,11 +10052,7 @@ function InventoryPage() {
       if (error?.name === "AbortError") return;
       if (requestSeq !== inventoryLoadSeqRef.current) return;
 
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "داده موجودی از API خوانده نشد",
-      );
+      toast.error(error instanceof Error ? error.message : "داده موجودی از API خوانده نشد");
       const clearRowsByTab = {
         stock: setStockRows,
         opening: setOpeningRows,
@@ -11152,7 +10097,7 @@ function InventoryPage() {
     return () => window.clearTimeout(timer);
     // loadInventoryData intentionally stays local to keep this page compact.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, stockSortBy, stockSortOrder, stockCostFilter]);
+  }, [query, stockSortBy, stockSortOrder, stockCostFilter, stockCategoryId]);
 
   useEffect(() => {
     if (!didMountMovementQueryRef.current) {
@@ -11167,11 +10112,7 @@ function InventoryPage() {
         [activeInventoryTab]: 1,
       };
       setMovementPages(firstPages);
-      void loadInventoryData(
-        firstPages,
-        movementQueries,
-        activeInventoryTab,
-      );
+      void loadInventoryData(firstPages, movementQueries, activeInventoryTab);
     }, 250);
 
     return () => window.clearTimeout(timer);
@@ -11192,11 +10133,7 @@ function InventoryPage() {
         [activeInventoryTab]: 1,
       };
       setMovementPages(firstPages);
-      void loadInventoryData(
-        firstPages,
-        movementQueries,
-        activeInventoryTab,
-      );
+      void loadInventoryData(firstPages, movementQueries, activeInventoryTab);
     }, 250);
 
     return () => window.clearTimeout(timer);
@@ -11217,11 +10154,7 @@ function InventoryPage() {
       const rows = await searchProductLookupOptions(query, abortController.signal);
       if (requestSeq !== inventoryProductSearchSeqRef.current) return;
       setProducts((current) =>
-        replaceLookupOptionsKeepingSelected(
-          current,
-          rows,
-          form.productId ? [form.productId] : [],
-        ),
+        replaceLookupOptionsKeepingSelected(current, rows, form.productId ? [form.productId] : []),
       );
     } catch (error: any) {
       if (error?.name === "AbortError") return;
@@ -11233,10 +10166,7 @@ function InventoryPage() {
     }
   };
 
-  const changeMovementPage = (
-    key: keyof typeof movementPages,
-    page: number,
-  ) => {
+  const changeMovementPage = (key: keyof typeof movementPages, page: number) => {
     const next = { ...movementPages, [key]: page };
     setMovementPages(next);
     void loadInventoryData(next, movementQueries, key);
@@ -11259,10 +10189,7 @@ function InventoryPage() {
 
   useEffect(() => {
     const shouldLoadLots =
-      dialogOpen &&
-      form.productId &&
-      form.warehouseId &&
-      form.type !== "ADJUSTMENT_IN";
+      dialogOpen && form.productId && form.warehouseId && form.type !== "ADJUSTMENT_IN";
 
     if (!shouldLoadLots) {
       setLotOptions([]);
@@ -11282,7 +10209,7 @@ function InventoryPage() {
               .filter((lot: any) => Number(lot.remainingQuantity || 0) > 0)
               .map((lot: any) => ({
                 id: lot.id,
-                name: `${Number(lot.remainingQuantity || 0)} ${lot.product?.baseUnit?.shortName || lot.product?.baseUnit?.name || ""} / ${lot.expiryDate ? new Date(lot.expiryDate).toLocaleDateString("fa-AF") : "بدون انقضا"}`,
+                name: `${Number(lot.remainingQuantity || 0)} ${lot.product?.baseUnit?.shortName || lot.product?.baseUnit?.name || ""} / ${lot.expiryDate ? formatKabulDate(lot.expiryDate) : "بدون انقضا"}`,
               }))
           : [];
         setLotOptions(options);
@@ -11294,10 +10221,7 @@ function InventoryPage() {
     };
   }, [dialogOpen, form.productId, form.warehouseId, form.type]);
 
-  const setMovementQuery = (
-    key: keyof typeof movementQueries,
-    value: string,
-  ) => {
+  const setMovementQuery = (key: keyof typeof movementQueries, value: string) => {
     const nextQueries = { ...movementQueries, [key]: value };
     const nextPages = { ...movementPages, [key]: 1 };
     setMovementQueries(nextQueries);
@@ -11311,9 +10235,7 @@ function InventoryPage() {
       quantity: Number(raw.quantity || 0),
       unitCost: Number(raw.unitCost || 0),
       currencyId: raw.currencyId || raw.lot?.currencyId || "",
-      expiryDate: raw.lot?.expiryDate
-        ? kabulDateString(new Date(raw.lot.expiryDate))
-        : "",
+      expiryDate: raw.lot?.expiryDate ? kabulDateString(new Date(raw.lot.expiryDate)) : "",
       note: raw.note || "",
     });
   };
@@ -11322,20 +10244,17 @@ function InventoryPage() {
     if (!openingEdit) return;
 
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/api/inventory/opening-stock/${openingEdit.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            quantity: openingEditForm.quantity,
-            unitCost: openingEditForm.unitCost,
-            currencyId: openingEditForm.currencyId || null,
-            expiryDate: openingEditForm.expiryDate || null,
-            note: openingEditForm.note || null,
-          }),
-        },
-      );
+      const res = await fetch(`${API_BASE_URL}/api/inventory/opening-stock/${openingEdit.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quantity: openingEditForm.quantity,
+          unitCost: openingEditForm.unitCost,
+          currencyId: openingEditForm.currencyId || null,
+          expiryDate: openingEditForm.expiryDate || null,
+          note: openingEditForm.note || null,
+        }),
+      });
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
@@ -11346,9 +10265,7 @@ function InventoryPage() {
       setOpeningEdit(null);
       await loadInventoryData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ویرایش موجودی اولیه ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ویرایش موجودی اولیه ناکام شد");
     }
   };
 
@@ -11359,8 +10276,7 @@ function InventoryPage() {
     if (product?.baseUnitId) {
       optionMap.set(product.baseUnitId, {
         id: product.baseUnitId,
-        name:
-          product.baseUnit?.shortName || product.baseUnit?.name || "واحد پایه",
+        name: product.baseUnit?.shortName || product.baseUnit?.name || "واحد پایه",
       });
     }
 
@@ -11389,11 +10305,7 @@ function InventoryPage() {
     );
   };
 
-  const inventoryUnitCost = (
-    productId: string,
-    unitId: string,
-    currencyId = form.currencyId,
-  ) => {
+  const inventoryUnitCost = (productId: string, unitId: string, currencyId = form.currencyId) => {
     const product: any = products.find((item) => item.id === productId);
     const unit =
       product?.units?.find((item: any) => item.unitId === unitId) ||
@@ -11401,16 +10313,11 @@ function InventoryPage() {
       product?.units?.[0];
     const currency = currencies.find((item) => item.id === currencyId);
 
-    return Number(
-      basePriceInCurrency(Number(unit?.purchasePrice || 0), currency).toFixed(
-        4,
-      ),
-    );
+    return Number(basePriceInCurrency(Number(unit?.purchasePrice || 0), currency).toFixed(4));
   };
 
   const openAction = (type: InventoryActionForm["type"]) => {
-    const baseCurrency =
-      currencies.find((item) => item.isBase) || currencies[0];
+    const baseCurrency = currencies.find((item) => item.isBase) || currencies[0];
     const firstProductId = products[0]?.id || "";
     const unitId = defaultInventoryUnitId(firstProductId);
     setForm({
@@ -11500,9 +10407,7 @@ function InventoryPage() {
       setDialogOpen(false);
       await loadInventoryData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "عملیات موجودی ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "عملیات موجودی ناکام شد");
     } finally {
       setInventoryActionSubmitting(false);
     }
@@ -11543,14 +10448,18 @@ function InventoryPage() {
       setCancelMovementReason("");
       await loadInventoryData();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "ابطال حرکت گدام ناکام شد",
-      );
+      toast.error(error instanceof Error ? error.message : "ابطال حرکت گدام ناکام شد");
     }
   };
 
   return (
-    <div className="space-y-4">
+    <div className="app-print-page space-y-4">
+      <div className="hidden print:block">
+        <h1 className="text-lg font-bold">گزارش موجودی فعلی گدام</h1>
+        <p className="mt-1 text-xs">
+          کتگوری: {inventoryCategories.find((item) => item.id === stockCategoryId)?.name || "همه کتگوری‌ها"}
+        </p>
+      </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="ردیف‌های موجودی"
@@ -11574,9 +10483,7 @@ function InventoryPage() {
 
       <Tabs
         value={activeInventoryTab}
-        onValueChange={(value) =>
-          setActiveInventoryTab(value as InventoryTabKey)
-        }
+        onValueChange={(value) => setActiveInventoryTab(value as InventoryTabKey)}
       >
         <div className="overflow-x-auto">
           <TabsList className="min-w-max">
@@ -11601,7 +10508,7 @@ function InventoryPage() {
                   موجودی قابل فروش هر جنس در هر گدام، با نزدیک‌ترین تاریخ انقضا.
                 </CardDescription>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 print:hidden">
                 <div className="relative">
                   <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
@@ -11611,6 +10518,22 @@ function InventoryPage() {
                     className="w-72 ps-9"
                   />
                 </div>
+                <select
+                  value={stockCategoryId}
+                  onChange={(event) => {
+                    setMovementPages((current) => ({ ...current, stock: 1 }));
+                    setStockCategoryId(event.target.value);
+                  }}
+                  className="h-10 min-w-48 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="فیلتر کتگوری موجودی"
+                >
+                  <option value="all">همه کتگوری‌ها</option>
+                  {inventoryCategories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={stockSortBy}
                   onChange={(event) => {
@@ -11633,29 +10556,35 @@ function InventoryPage() {
                 >
                   <option value="">همه قیمت‌ها</option>
                   <option value="costAboveSale">آمد بالاتر از فروش</option>
-                  <option value="costBelowHalfSale">
-                    آمد کمتر از نصف فروش
-                  </option>
+                  <option value="costBelowHalfSale">آمد کمتر از نصف فروش</option>
                 </select>
                 <select
                   value={stockSortOrder}
                   onChange={(event) => {
                     setMovementPages((current) => ({ ...current, stock: 1 }));
-                    setStockSortOrder(
-                      event.target.value === "asc" ? "asc" : "desc",
-                    );
+                    setStockSortOrder(event.target.value === "asc" ? "asc" : "desc");
                   }}
                   className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <option value="desc">زیاد به کم</option>
                   <option value="asc">کم به زیاد</option>
                 </select>
-                <Button
-                  variant="outline"
-                  onClick={refreshInventoryFromFirstPage}
-                >
+                <Button variant="outline" onClick={refreshInventoryFromFirstPage}>
                   <RefreshCcw className="size-4" />
                   تازه‌سازی
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (stockRows.length === 0) {
+                      toast.warning("برای چاپ، موجودی در این صفحه وجود ندارد");
+                      return;
+                    }
+                    window.print();
+                  }}
+                >
+                  <Printer className="size-4" />
+                  چاپ / PDF
                 </Button>
               </div>
             </CardHeader>
@@ -11797,8 +10726,7 @@ function InventoryPage() {
                     : "افزایش موجودی"}
             </DialogTitle>
             <DialogDescription>
-              این عملیات stock movement ثبت می‌کند و بعد از ذخیره، جدول موجودی
-              تازه می‌شود.
+              این عملیات stock movement ثبت می‌کند و بعد از ذخیره، جدول موجودی تازه می‌شود.
             </DialogDescription>
           </DialogHeader>
 
@@ -11821,9 +10749,7 @@ function InventoryPage() {
                       current.type === "ADJUSTMENT_IN"
                         ? inventoryUnitCost(value, unitId, current.currencyId)
                         : current.unitCost,
-                    expiryDate: productHasExpiry(products, value)
-                      ? current.expiryDate
-                      : "",
+                    expiryDate: productHasExpiry(products, value) ? current.expiryDate : "",
                   };
                 })
               }
@@ -11846,9 +10772,7 @@ function InventoryPage() {
                 value={form.lotId}
                 options={lotOptions}
                 emptyLabel="FIFO خودکار"
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, lotId: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, lotId: value }))}
               />
             )}
             {form.type === "TRANSFER" && (
@@ -11856,9 +10780,7 @@ function InventoryPage() {
                 label="گدام مقصد"
                 value={form.toWarehouseId}
                 options={warehouses}
-                onChange={(value) =>
-                  setForm((current) => ({ ...current, toWarehouseId: value }))
-                }
+                onChange={(value) => setForm((current) => ({ ...current, toWarehouseId: value }))}
               />
             )}
             <LookupSelect
@@ -11871,11 +10793,7 @@ function InventoryPage() {
                   unitId: value,
                   unitCost:
                     current.type === "ADJUSTMENT_IN"
-                      ? inventoryUnitCost(
-                          current.productId,
-                          value,
-                          current.currencyId,
-                        )
+                      ? inventoryUnitCost(current.productId, value, current.currencyId)
                       : current.unitCost,
                 }))
               }
@@ -11883,9 +10801,7 @@ function InventoryPage() {
             <NumberField
               label="مقدار"
               value={form.quantity}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, quantity: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, quantity: value }))}
             />
             {form.productId ? (
               <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -11893,13 +10809,9 @@ function InventoryPage() {
                 <strong className="text-foreground">
                   {new Intl.NumberFormat("en-US").format(
                     form.quantity *
-                      productUnitInfo(products, form.productId, form.unitId)
-                        .conversionRate,
+                      productUnitInfo(products, form.productId, form.unitId).conversionRate,
                   )}{" "}
-                  {
-                    productUnitInfo(products, form.productId, form.unitId)
-                      .baseUnitName
-                  }
+                  {productUnitInfo(products, form.productId, form.unitId).baseUnitName}
                 </strong>
               </div>
             ) : null}
@@ -11908,9 +10820,7 @@ function InventoryPage() {
                 <NumberField
                   label="قیمت تمام‌شده واحد انتخاب‌شده"
                   value={form.unitCost}
-                  onChange={(value) =>
-                    setForm((current) => ({ ...current, unitCost: value }))
-                  }
+                  onChange={(value) => setForm((current) => ({ ...current, unitCost: value }))}
                 />
                 <LookupSelect
                   label="کرنسی"
@@ -11923,11 +10833,7 @@ function InventoryPage() {
                     setForm((current) => ({
                       ...current,
                       currencyId: value,
-                      unitCost: inventoryUnitCost(
-                        current.productId,
-                        current.unitId,
-                        value,
-                      ),
+                      unitCost: inventoryUnitCost(current.productId, current.unitId, value),
                     }))
                   }
                 />
@@ -11936,9 +10842,7 @@ function InventoryPage() {
                     label="تاریخ انقضا"
                     type="date"
                     value={form.expiryDate}
-                    onChange={(value) =>
-                      setForm((current) => ({ ...current, expiryDate: value }))
-                    }
+                    onChange={(value) => setForm((current) => ({ ...current, expiryDate: value }))}
                   />
                 ) : null}
               </>
@@ -11946,9 +10850,7 @@ function InventoryPage() {
             <TextField
               label="یادداشت"
               value={form.note}
-              onChange={(value) =>
-                setForm((current) => ({ ...current, note: value }))
-              }
+              onChange={(value) => setForm((current) => ({ ...current, note: value }))}
             />
           </div>
 
@@ -11960,10 +10862,7 @@ function InventoryPage() {
             >
               لغو
             </Button>
-            <Button
-              disabled={inventoryActionSubmitting}
-              onClick={submitInventoryAction}
-            >
+            <Button disabled={inventoryActionSubmitting} onClick={submitInventoryAction}>
               {inventoryActionSubmitting ? "در حال ثبت..." : "ثبت عملیات"}
             </Button>
           </DialogFooter>
@@ -11980,8 +10879,8 @@ function InventoryPage() {
           <DialogHeader>
             <DialogTitle>ویرایش موجودی اولیه</DialogTitle>
             <DialogDescription>
-              اگر از این lot مقداری مصرف شده باشد، مقدار افتتاحیه فقط تا حد
-              مقدار مصرف‌شده قابل کاهش است.
+              اگر از این lot مقداری مصرف شده باشد، مقدار افتتاحیه فقط تا حد مقدار مصرف‌شده قابل کاهش
+              است.
             </DialogDescription>
           </DialogHeader>
 
@@ -12021,31 +10920,22 @@ function InventoryPage() {
                 }))}
                 onChange={(value) =>
                   setOpeningEditForm((current) => {
-                    const fromCurrency = currencies.find(
-                      (item) => item.id === current.currencyId,
-                    );
-                    const toCurrency = currencies.find(
-                      (item) => item.id === value,
-                    );
+                    const fromCurrency = currencies.find((item) => item.id === current.currencyId);
+                    const toCurrency = currencies.find((item) => item.id === value);
 
                     return {
                       ...current,
                       currencyId: value,
                       unitCost: Number(
-                        convertCurrencyAmount(
-                          current.unitCost,
-                          fromCurrency,
-                          toCurrency,
-                        ).toFixed(4),
+                        convertCurrencyAmount(current.unitCost, fromCurrency, toCurrency).toFixed(
+                          4,
+                        ),
                       ),
                     };
                   })
                 }
               />
-              {productHasExpiry(
-                products,
-                String(openingEdit?.__raw?.productId || ""),
-              ) ? (
+              {productHasExpiry(products, String(openingEdit?.__raw?.productId || "")) ? (
                 <TextField
                   label="تاریخ انقضا"
                   type="date"
@@ -12061,9 +10951,7 @@ function InventoryPage() {
               <TextField
                 label="یادداشت"
                 value={openingEditForm.note}
-                onChange={(value) =>
-                  setOpeningEditForm((current) => ({ ...current, note: value }))
-                }
+                onChange={(value) => setOpeningEditForm((current) => ({ ...current, note: value }))}
               />
             </div>
           </div>
@@ -12087,8 +10975,8 @@ function InventoryPage() {
           <DialogHeader>
             <DialogTitle>ابطال حرکت گدام</DialogTitle>
             <DialogDescription>
-              این عملیات یک حرکت معکوس ثبت می‌کند. اگر موجودی بعد از این حرکت
-              مصرف شده باشد، API ابطال را رد می‌کند.
+              این عملیات یک حرکت معکوس ثبت می‌کند. اگر موجودی بعد از این حرکت مصرف شده باشد، API
+              ابطال را رد می‌کند.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -12101,9 +10989,7 @@ function InventoryPage() {
               <span className="text-muted-foreground">دلیل ابطال</span>
               <textarea
                 value={cancelMovementReason}
-                onChange={(event) =>
-                  setCancelMovementReason(event.target.value)
-                }
+                onChange={(event) => setCancelMovementReason(event.target.value)}
                 placeholder="دلیل ابطال حرکت گدام را بنویسید..."
               />
             </label>
@@ -12152,11 +11038,7 @@ function TextField({
       ) : type === "date" ? (
         <ManualDateInput value={value} onChange={onChange} />
       ) : (
-        <Input
-          type={type}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
+        <Input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
       )}
     </label>
   );
@@ -12244,10 +11126,7 @@ function InvoiceItemsPanel({
         <TableBody>
           {rows.length === 0 ? (
             <TableRow>
-              <TableCell
-                colSpan={12}
-                className="py-8 text-center text-muted-foreground"
-              >
+              <TableCell colSpan={12} className="py-8 text-center text-muted-foreground">
                 {emptyLabel}
               </TableCell>
             </TableRow>
@@ -12270,16 +11149,11 @@ function InvoiceItemsPanel({
                 </TableCell>
                 <TableCell>{money(row.unitAmount, currencyCode)}</TableCell>
                 <TableCell>
-                  {row.expiryDate ||
-                    money(Number(row.discount || 0), currencyCode)}
+                  {row.expiryDate || money(Number(row.discount || 0), currencyCode)}
                 </TableCell>
-                <TableCell>
-                  {money(Number(row.generalDiscount || 0), currencyCode)}
-                </TableCell>
+                <TableCell>{money(Number(row.generalDiscount || 0), currencyCode)}</TableCell>
                 <TableCell>{money(row.total, currencyCode)}</TableCell>
-                <TableCell>
-                  {money(row.netTotal ?? row.total, currencyCode)}
-                </TableCell>
+                <TableCell>{money(row.netTotal ?? row.total, currencyCode)}</TableCell>
                 <TableCell>
                   {row.salePrice !== undefined ? (
                     <>
@@ -12301,11 +11175,7 @@ function InvoiceItemsPanel({
                 </TableCell>
                 <TableCell>
                   <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onEdit(row.id)}
-                    >
+                    <Button size="sm" variant="outline" onClick={() => onEdit(row.id)}>
                       ویرایش
                     </Button>
                     <ConfirmButton
@@ -12394,17 +11264,12 @@ function LookupSelect({
             label: option.code || option.shortName || option.name,
             description:
               option.barcode || option.sku
-                ? [option.name, option.barcode, option.sku]
-                    .filter(Boolean)
-                    .join(" / ")
+                ? [option.name, option.barcode, option.sku].filter(Boolean).join(" / ")
                 : option.code || option.shortName
                   ? option.name
                   : option.shortName || option.code,
             meta:
-              option.barcode ||
-              option.sku ||
-              option.baseUnit?.shortName ||
-              option.baseUnit?.name,
+              option.barcode || option.sku || option.baseUnit?.shortName || option.baseUnit?.name,
             barcode: option.barcode,
             sku: option.sku,
             searchText: [
@@ -12451,11 +11316,7 @@ function MetricCard({
           <strong className="mt-2 block truncate font-heading text-2xl font-semibold tracking-normal">
             {value}
           </strong>
-          {trend && (
-            <span className="mt-1 block truncate text-xs text-primary">
-              {trend}
-            </span>
-          )}
+          {trend && <span className="mt-1 block truncate text-xs text-primary">{trend}</span>}
         </div>
         <div className="relative flex size-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary shadow-inner">
           <div className="[&_svg]:size-6">{icon}</div>
@@ -12486,8 +11347,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
 
   if (pageTitle === "فروشات") {
     const isCancelled = item.status === "CANCELLED";
-    const isPaid =
-      item.paymentStatus === "PAID" || Number(item.remainingAmount || 0) <= 0;
+    const isPaid = item.paymentStatus === "PAID" || Number(item.remainingAmount || 0) <= 0;
     return {
       id: item.id,
       name: item.invoiceNo || item.id || "-",
@@ -12510,8 +11370,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
 
   if (pageTitle === "خریداری") {
     const isCancelled = item.status === "CANCELLED";
-    const isPaid =
-      item.paymentStatus === "PAID" || Number(item.remainingAmount || 0) <= 0;
+    const isPaid = item.paymentStatus === "PAID" || Number(item.remainingAmount || 0) <= 0;
     return {
       id: item.id,
       name: item.invoiceNo || item.id || "-",
@@ -12529,8 +11388,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
   if (pageTitle === "اجناس") {
     const baseSaleUnit =
       Array.isArray(item.units) && item.units.length > 0
-        ? item.units.find((unit: any) => unit.unitId === item.baseUnitId) ||
-          item.units[0]
+        ? item.units.find((unit: any) => unit.unitId === item.baseUnitId) || item.units[0]
         : null;
 
     return {
@@ -12563,7 +11421,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
       value: money(Number(item.valueBase || 0)),
       expiry:
         Array.isArray(item.lots) && item.lots[0]?.expiryDate
-          ? new Date(item.lots[0].expiryDate).toLocaleDateString("fa-AF")
+          ? formatKabulDate(item.lots[0].expiryDate)
           : "-",
       status: isCostAboveSale
         ? "آمد بالاتر از فروش"
@@ -12628,7 +11486,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
             }).format(Number(item.latestRate))
           : "بدون نرخ",
       latestRateAt: item.latestRateAt
-        ? new Date(item.latestRateAt).toLocaleDateString("fa-AF")
+        ? formatKabulDate(item.latestRateAt)
         : "-",
       isBase: Boolean(item.isBase),
       isActive: item.isActive !== false,
@@ -12651,9 +11509,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
 
   if (pageTitle === "عواید و مصارف") {
     const accountName =
-      item.cashRegisterAccount?.cashRegister?.name ||
-      item.bankAccount?.name ||
-      "-";
+      item.cashRegisterAccount?.cashRegister?.name || item.bankAccount?.name || "-";
 
     return {
       id: item.id,
@@ -12676,7 +11532,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     return {
       id: item.id || item.name,
       name: item.name || "-",
-      date: item.date ? new Date(item.date).toLocaleString("fa-AF") : "-",
+      date: item.date ? formatKabulDateTime(item.date) : "-",
       size: item.size || "-",
       status: item.status || "موفق",
     };
@@ -12695,8 +11551,7 @@ function normalizeRow(item: any, pageTitle = ""): DataRow {
     };
   }
 
-  const partyKind: "CUSTOMER" | "SUPPLIER" =
-    item.type === "SUPPLIER" ? "SUPPLIER" : "CUSTOMER";
+  const partyKind: "CUSTOMER" | "SUPPLIER" = item.type === "SUPPLIER" ? "SUPPLIER" : "CUSTOMER";
 
   return {
     id: item.id,

@@ -197,7 +197,7 @@ test("Admin can preview and explicitly confirm a safe duplicate product merge", 
       ([, operation]: [string, { operationId: string }]) =>
         operation.operationId === mergeOperationId,
     ),
-  ).toBe(true);
+  ).toBe(false);
   expect(runtimeErrors).toEqual([]);
 });
 

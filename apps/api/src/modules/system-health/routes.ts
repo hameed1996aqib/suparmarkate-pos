@@ -5,6 +5,7 @@ import { getMaintenanceMode } from "../../lib/maintenance-mode";
 import { getPersistentJobWorkerHealth } from "../../lib/persistent-jobs";
 import { listBackupFiles } from "../backups/service";
 import { getRuntimeServerConfig } from "../../lib/runtime-server-config";
+import { BUSINESS_TIME_ZONE, kabulDateKey } from "../../lib/kabul-date";
 import { getRedisHealth } from "../../lib/cache";
 
 export const systemHealthRoute = new Hono();
@@ -69,13 +70,17 @@ systemHealthRoute.get("/", async (c) => {
   const failedSince = new Date(Date.now() - 7 * 86400000);
   const partitionRows = Math.max(1000000, Number(process.env.PARTITION_WARNING_ROWS || 10000000));
 
-  const [disk, resources, redis, databaseSize, backups, latestBackupJob, latestReconciliation, latestRetention, failedJobs, pendingJobs, tables] =
+  const [disk, resources, redis, databaseSize, backups, databaseClock, latestBackupJob, latestReconciliation, latestRetention, failedJobs, pendingJobs, tables] =
     await Promise.all([
       getDiskHealth(),
       getServerResourceHealth(),
       getRedisHealth(),
       prisma.$queryRaw<Array<{ bytes: bigint }>>`SELECT pg_database_size(current_database()) AS bytes`,
       listBackupFiles(),
+      prisma.$queryRaw<Array<{ dbNow: Date; dbTimeZone: string }>>`
+        SELECT CURRENT_TIMESTAMP AS "dbNow",
+          current_setting('TimeZone') AS "dbTimeZone"
+      `,
       prisma.persistentJob.findFirst({
         where: { type: "BACKUP_CREATE" },
         orderBy: { createdAt: "desc" }
@@ -363,6 +368,10 @@ systemHealthRoute.get("/", async (c) => {
   const critical = issues.filter((issue) => issue.severity === "critical").length;
   const warning = issues.filter((issue) => issue.severity === "warning").length;
 
+  const apiNow = new Date();
+  const dbNow = new Date(databaseClock[0]?.dbNow ?? apiNow);
+  const apiDbClockSkewMs = Math.abs(apiNow.getTime() - dbNow.getTime());
+
   return c.json({
     data: {
       status: critical > 0 ? "critical" : warning > 0 ? "warning" : "healthy",
@@ -388,6 +397,15 @@ systemHealthRoute.get("/", async (c) => {
         connected: true,
         sizeBytes: Number(databaseSize[0]?.bytes || 0),
         tables: tableRows
+      },
+      clock: {
+        apiUtc: apiNow.toISOString(),
+        databaseUtc: dbNow.toISOString(),
+        kabulDate: kabulDateKey(apiNow),
+        businessTimeZone: BUSINESS_TIME_ZONE,
+        configuredBusinessTimeZone: process.env.BUSINESS_TIME_ZONE || null,
+        databaseTimeZone: databaseClock[0]?.dbTimeZone || null,
+        apiDatabaseSkewMs: apiDbClockSkewMs
       },
       backup: {
         count: backups.length,

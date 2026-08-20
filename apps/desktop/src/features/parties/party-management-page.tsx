@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DatePicker } from "@/components/ui/date-picker";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 import { DenseTable } from "@/features/admin/components/dense-table";
 import {
   NumberField,
@@ -347,7 +348,7 @@ function PartyManagementPage({ kind }: { kind: PartyKind }) {
 
   const transactionRows: DataRow[] = transactions.map((item) => ({
     id: item.id,
-    date: item.createdAt ? new Date(item.createdAt).toLocaleString("fa-AF") : "-",
+    date: item.createdAt ? formatKabulDateTime(item.createdAt) : "-",
     type: item.type || "-",
     side: item.side === "DEBIT" ? "بدهکار" : "بستانکار",
     amount: money(item.amount || 0),

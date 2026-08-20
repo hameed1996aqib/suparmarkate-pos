@@ -18,6 +18,8 @@
     "seed": "tsx src/seed.ts",
     "backup:create": "tsx src/scripts/create-backup.ts",
     "stock:reconcile": "tsx src/scripts/reconcile-stock-balances.ts",
+    "stock:validate-constraints": "tsx src/scripts/validate-stock-constraints.ts",
+    "attendance:preview-local-dates": "tsx src/scripts/preview-attendance-local-dates.ts",
     "db:metrics": "tsx src/scripts/database-metrics.ts"
   },
   "dependencies": {

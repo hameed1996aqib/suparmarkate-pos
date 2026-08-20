@@ -3,7 +3,11 @@ import { Prisma } from "../../generated/prisma/client";
 import { prisma } from "../../lib/prisma";
 import { cacheGetJson, cacheSetJson } from "../../lib/cache";
 import { getCurrentCurrencyRates } from "../../lib/currency-rates";
-import { kabulDateString, parseKabulDateInput } from "../../lib/kabul-date";
+import {
+  kabulDateString,
+  kabulExpiryWindow,
+  parseKabulDateInput
+} from "../../lib/kabul-date";
 
 export const dashboardRoute = new Hono();
 
@@ -95,10 +99,11 @@ function rangeBuckets(start: Date, end: Date, period: DashboardPeriod) {
 }
 
 function dateBucket(period: DashboardPeriod, column: string) {
+  const kabulTimestamp = `((${column} AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kabul')`;
   return Prisma.raw(
     period === "fourMonths"
-      ? `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM')`
-      : `TO_CHAR(${column} AT TIME ZONE 'Asia/Kabul', 'YYYY-MM-DD')`,
+      ? `TO_CHAR(${kabulTimestamp}, 'YYYY-MM')`
+      : `TO_CHAR(${kabulTimestamp}, 'YYYY-MM-DD')`,
   );
 }
 
@@ -110,9 +115,7 @@ dashboardRoute.get("/summary", async (c) => {
   if (cached) return c.json({ data: cached, cache: "hit" });
 
   const { start, end } = periodRange(period);
-  const now = new Date();
-  const expiryTarget = new Date(now);
-  expiryTarget.setDate(expiryTarget.getDate() + 30);
+  const { todayStart, targetEndExclusive: expiryTarget } = kabulExpiryWindow(30);
 
   const [selectedCurrency, baseCurrency, rates] = await Promise.all([
     currencyId
@@ -364,13 +367,13 @@ dashboardRoute.get("/summary", async (c) => {
     prisma.stockLot.count({
       where: {
         remainingQuantity: { gt: 0 },
-        expiryDate: { not: null, lt: now },
+        expiryDate: { not: null, lt: todayStart },
       },
     }),
     prisma.stockLot.count({
       where: {
         remainingQuantity: { gt: 0 },
-        expiryDate: { not: null, gte: now, lte: expiryTarget },
+        expiryDate: { not: null, gte: todayStart, lt: expiryTarget },
       },
     }),
     prisma.auditLog.findMany({

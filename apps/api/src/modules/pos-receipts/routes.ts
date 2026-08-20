@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../../lib/prisma";
 import { issueReceiptAccess, requireReceiptAccess } from "../../lib/receipt-access";
+import { formatKabulDateTime } from "../../lib/kabul-date";
 
 export const posReceiptsRoute = new Hono();
 
@@ -375,7 +376,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
 
   <div class="row">
     <span>تاریخ:</span>
-    <strong>${new Date((sale as any).createdAt).toLocaleString("en-AF")}</strong>
+    <strong>${formatKabulDateTime((sale as any).createdAt)}</strong>
   </div>
 
   <div class="row">
@@ -490,7 +491,7 @@ posReceiptsRoute.get("/sales/:id/html", async (c) => {
       (saleReturn) => `
     <div class="return-meta row">
       <span>سند: ${safeText(saleReturn.returnNo || saleReturn.id)}</span>
-      <span>${new Date(saleReturn.createdAt).toLocaleString("en-AF")}</span>
+      <span>${formatKabulDateTime(saleReturn.createdAt)}</span>
     </div>
     <table>
       <thead>

@@ -204,6 +204,7 @@ model Employee {
   address  String?
   position String?
   note     String?
+  hireDate DateTime? @db.Date
 
   monthlySalary      Decimal @default(0) @db.Decimal(18, 4)
   overtimeHourlyRate Decimal @default(0) @db.Decimal(18, 4)
@@ -278,6 +279,7 @@ model AttendanceWorkday {
   period   AttendancePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
   date        DateTime
+  localDate   String?  @db.VarChar(10)
   isWorkday   Boolean @default(true)
   isHalfDay   Boolean @default(false)
   description String?
@@ -288,6 +290,7 @@ model AttendanceWorkday {
   updatedAt DateTime @updatedAt
 
   @@unique([periodId, date])
+  @@index([periodId, localDate])
   @@index([date])
 }
 
@@ -300,6 +303,7 @@ model AttendanceRecord {
   workday   AttendanceWorkday? @relation(fields: [workdayId], references: [id])
 
   date       DateTime
+  localDate  String?  @db.VarChar(10)
   checkInAt  DateTime?
   checkOutAt DateTime?
   status     AttendanceStatus @default(ABSENT)
@@ -316,6 +320,7 @@ model AttendanceRecord {
   updatedAt       DateTime @updatedAt
 
   @@unique([employeeId, date])
+  @@index([employeeId, localDate])
   @@index([employeeId])
   @@index([date])
   @@index([status])
@@ -338,6 +343,7 @@ model AttendanceDeviceLock {
   id         String   @id @default(cuid())
   deviceId   String
   date       DateTime
+  localDate  String?  @db.VarChar(10)
   employeeId String
   employee   Employee @relation(fields: [employeeId], references: [id])
   userId     String?
@@ -345,6 +351,7 @@ model AttendanceDeviceLock {
   lastScanAt DateTime @default(now())
 
   @@unique([deviceId, date])
+  @@index([deviceId, localDate])
   @@index([employeeId])
   @@index([date])
 }
@@ -689,6 +696,9 @@ model StockMovement {
   lotId String?
   lot   StockLot? @relation(fields: [lotId], references: [id])
 
+  operationId String?
+  operation   InventoryOperation? @relation(fields: [operationId], references: [id])
+
   type StockMovementType
 
   quantity   Decimal  @db.Decimal(18, 4)
@@ -703,17 +713,43 @@ model StockMovement {
   createdByUserId String?
   createdByUser   User?   @relation(fields: [createdByUserId], references: [id])
 
-  createdAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  occurredAt DateTime?
 
   @@index([productId])
   @@index([warehouseId])
   @@index([lotId])
+  @@index([operationId])
   @@index([type])
   @@index([createdByUserId])
   @@index([createdAt])
+  @@index([occurredAt])
   @@index([productId, warehouseId, createdAt])
+  @@index([productId, warehouseId, occurredAt])
   @@index([type, createdAt])
   @@index([referenceType, referenceId])
+}
+
+model InventoryOperation {
+  id String @id @default(cuid())
+
+  clientRequestId String? @unique
+  type            String
+  occurredAt      DateTime
+  status          String   @default("COMPLETED")
+  cancelledAt     DateTime?
+  cancelReason    String?
+
+  createdByUserId   String?
+  cancelledByUserId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  movements StockMovement[]
+
+  @@index([type, occurredAt])
+  @@index([status, occurredAt])
+  @@index([createdAt])
 }
 
 model StockBalance {

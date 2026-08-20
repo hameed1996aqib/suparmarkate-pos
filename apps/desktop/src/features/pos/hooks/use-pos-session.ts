@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { formatKabulDateTime } from "@/lib/kabul-date";
 
 import {
   ApiRequestError,
@@ -1331,8 +1332,8 @@ export function usePosSession() {
 <body>
   <h1>گزارش پایان شیفت POS</h1>
 
-  <div class="center small">شروع: ${new Date(shift.openedAt).toLocaleString("fa-AF")}</div>
-  <div class="center small">چاپ: ${new Date().toLocaleString("fa-AF")}</div>
+  <div class="center small">شروع: ${formatKabulDateTime(shift.openedAt)}</div>
+  <div class="center small">چاپ: ${formatKabulDateTime(new Date())}</div>
 
   <div class="row"><strong>تعداد فاکتور</strong><strong>${shiftStats.invoiceCount}</strong></div>
   <div class="row"><span>مجموع فروش</span><strong>${shiftStats.totalSales}</strong></div>

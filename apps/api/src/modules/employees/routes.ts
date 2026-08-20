@@ -14,6 +14,11 @@ import {
   auditDeleteData,
   auditUpdateData
 } from "../../lib/audit-meta";
+import {
+  kabulDateKey,
+  parseDatabaseDate,
+  startOfKabulDay
+} from "../../lib/kabul-date";
 
 export const employeesRoute = new Hono();
 
@@ -24,6 +29,7 @@ const employeeSchema = z.object({
   address: z.string().trim().max(300).optional().nullable(),
   position: z.string().trim().max(120).optional().nullable(),
   note: z.string().trim().max(500).optional().nullable(),
+  hireDate: z.string().trim().optional().nullable(),
   monthlySalary: z.coerce.number().nonnegative().default(0),
   allowOvertime: z.boolean().optional(),
   overtimeHourlyRate: z.coerce.number().nonnegative().optional(),
@@ -39,9 +45,7 @@ const employeeSchema = z.object({
 });
 
 function startOfDay(date = new Date()) {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
+  return startOfKabulDay(kabulDateKey(date)) as Date;
 }
 
 function canView(c: any) {
@@ -134,10 +138,12 @@ employeesRoute.get("/me", async (c) => {
   }
 
   const now = new Date();
+  const currentLocalDate = kabulDateKey(now);
+  const [currentYear, currentMonth] = currentLocalDate.split("-").map(Number);
   const currentPeriod = await prisma.attendancePeriod.findFirst({
     where: {
-      year: now.getFullYear(),
-      month: now.getMonth() + 1,
+      year: currentYear,
+      month: currentMonth,
       deletedAt: null
     },
     include: { workdays: true }
@@ -159,12 +165,10 @@ employeesRoute.get("/me", async (c) => {
   ).length;
   const overtimeMinutes = monthRecords.reduce((sum, record) => sum + Number(record.overtimeMinutes || 0), 0);
   const latestPayroll = employee.payrollLines[0] || null;
-  const todayRecord = await prisma.attendanceRecord.findUnique({
+  const todayRecord = await prisma.attendanceRecord.findFirst({
     where: {
-      employeeId_date: {
-        employeeId: employee.id,
-        date: startOfDay(now)
-      }
+      employeeId: employee.id,
+      OR: [{ localDate: currentLocalDate }, { date: startOfDay(now) }]
     }
   });
 
@@ -224,6 +228,10 @@ employeesRoute.post("/", async (c) => {
   if (parsed.data.createUser && (!parsed.data.username || !parsed.data.password)) {
     return c.json({ message: "Username and password are required" }, 400);
   }
+  const hireDate = parsed.data.hireDate ? parseDatabaseDate(parsed.data.hireDate) : null;
+  if (parsed.data.hireDate && !hireDate) {
+    return c.json({ message: "Invalid hire date" }, 400);
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     let userId = parsed.data.userId || null;
@@ -258,6 +266,7 @@ employeesRoute.post("/", async (c) => {
         address: parsed.data.address || null,
         position: parsed.data.position || null,
         note: parsed.data.note || null,
+        hireDate,
         monthlySalary: parsed.data.monthlySalary,
         allowOvertime: parsed.data.allowOvertime ?? false,
         overtimeHourlyRate: parsed.data.overtimeHourlyRate ?? 0,
@@ -301,6 +310,16 @@ employeesRoute.patch("/:id", async (c) => {
 
   if (!parsed.success) return c.json(zodError(parsed.error), 400);
 
+  const hireDate =
+    parsed.data.hireDate === undefined
+      ? undefined
+      : parsed.data.hireDate
+        ? parseDatabaseDate(parsed.data.hireDate)
+        : null;
+  if (parsed.data.hireDate && !hireDate) {
+    return c.json({ message: "Invalid hire date" }, 400);
+  }
+
   const result = await prisma.$transaction(async (tx) => {
     let userId = parsed.data.userId;
 
@@ -338,6 +357,7 @@ employeesRoute.patch("/:id", async (c) => {
         address: parsed.data.address,
         position: parsed.data.position,
         note: parsed.data.note,
+        hireDate,
         monthlySalary: parsed.data.monthlySalary,
         allowOvertime: parsed.data.allowOvertime,
         overtimeHourlyRate: parsed.data.overtimeHourlyRate,

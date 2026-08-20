@@ -13,7 +13,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { API_BASE_URL } from "@/lib/api-config";
-import { kabulDateString } from "@/lib/kabul-date";
+import {
+  formatKabulDateTime,
+  kabulDateString,
+  kabulTimeString,
+} from "@/lib/kabul-date";
 
 type Currency = {
   id: string;
@@ -43,11 +47,7 @@ const formatDate = (value?: string | null) => {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  return new Intl.DateTimeFormat("fa-AF", {
-    year: "numeric",
-    month: "short",
-    day: "numeric"
-  }).format(date);
+  return formatKabulDateTime(date);
 };
 
 export function CurrencyHistoryPage() {
@@ -66,6 +66,7 @@ export function CurrencyHistoryPage() {
     currencyId: "",
     rateToBase: "1",
     effectiveAt: kabulDateString(),
+    effectiveTime: kabulTimeString(),
     note: ""
   });
 
@@ -135,6 +136,7 @@ export function CurrencyHistoryPage() {
       currencyId: firstForeign?.id || "",
       rateToBase: firstForeign?.isBase ? "1" : "",
       effectiveAt: kabulDateString(),
+      effectiveTime: kabulTimeString(),
       note: ""
     });
     setIsDialogOpen(true);
@@ -162,7 +164,7 @@ export function CurrencyHistoryPage() {
         body: JSON.stringify({
           currencyId: form.currencyId,
           rateToBase: Number(form.rateToBase),
-          effectiveAt: form.effectiveAt,
+          effectiveAt: `${form.effectiveAt} ${form.effectiveTime}`,
           note: form.note || null
         })
       });
@@ -368,11 +370,25 @@ export function CurrencyHistoryPage() {
                   placeholder="مثلاً 72"
                 />
               </label>
-              <label className="grid gap-1.5 md:col-span-2">
+              <label className="grid gap-1.5">
                 <span className="text-sm text-muted-foreground">تاریخ مؤثر</span>
                 <ManualDateInput
                   value={form.effectiveAt}
                   onChange={(value) => setForm((current) => ({ ...current, effectiveAt: value }))}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-sm text-muted-foreground">ساعت کابل</span>
+                <Input
+                  type="time"
+                  value={form.effectiveTime}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      effectiveTime: event.target.value,
+                    }))
+                  }
+                  required
                 />
               </label>
               <label className="grid gap-1.5 md:col-span-2">

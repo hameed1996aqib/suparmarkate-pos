@@ -36,7 +36,7 @@ export async function reconcileStockBalances(options: { repair?: boolean } = {})
        OR COALESCE(sb."valueBase", 0) <> COALESCE(actual.value, 0)
   `;
 
-  if (options.repair !== false) {
+  if (options.repair === true) {
     for (const mismatch of mismatches) {
       await prisma.$executeRaw`
         SELECT refresh_stock_balance(${mismatch.productId}, ${mismatch.warehouseId})
@@ -47,7 +47,7 @@ export async function reconcileStockBalances(options: { repair?: boolean } = {})
   return {
     checkedAt: new Date().toISOString(),
     mismatches: mismatches.length,
-    repaired: options.repair !== false ? mismatches.length : 0
+    repaired: options.repair === true ? mismatches.length : 0
   };
 }
 

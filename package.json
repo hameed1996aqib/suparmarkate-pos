@@ -52,8 +52,8 @@
     "shell-quote": "1.10.0"
   },
   "allowScripts": {
-    "prisma@6.12.0": true,
-    "@prisma/engines@6.12.0": true,
+    "prisma@7.9.1": true,
+    "@prisma/engines@7.9.1": true,
     "esbuild@0.25.12": true,
     "electron-winstaller@5.4.0": true,
     "msw@2.14.6": true

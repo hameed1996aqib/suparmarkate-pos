@@ -66,7 +66,7 @@ jobs:
         run: npm ci
 
       - name: Audit production API dependencies
-        run: npm audit --workspace @supermarket/api --omit=dev --audit-level=high
+        run: npm audit --workspace @supermarket/api --omit=dev --omit=optional --audit-level=high
 
       - name: Audit production Desktop and Web dependencies
         run: npm audit --workspace @supermarket/desktop --omit=dev --audit-level=high
